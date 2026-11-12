@@ -313,6 +313,9 @@ import {
 } from "./status.ts";
 import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapshot, accountResumableSessions, findAccountTranscript as findTranscript, sessionTranscript } from "./claude-account-sessions.ts";
 import { ParkedJobAttacher } from "./parked-jobs.ts";
+import { claudeSwapRuns } from "./claude-swap-runs.ts";
+import { canonicalDir, elsewhereAccountLabel, elsewhereResumeRequest, ElsewhereWatch, registeredAccount, type ElsewhereRequest } from "./elsewhere.ts";
+import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGroups } from "./sidebar-groups.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
@@ -1203,7 +1206,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // version reading turns out to matter in practice.
   const installVersionCache = new Map<string, string | null>();
   const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof accountRegistrySnapshot>>> => {
-    const snapshot = await accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts());
+    const snapshot = await accountRegistrySnapshot(claudeDir, readClaudeAccounts(claudeDir), readCodexAccounts(), undefined, claudeSwapRuns());
     // The sign-ins' names only while some session runs on one: one small file, read with the registry.
     const signIns = sessionSignIns.size ? readSessionSignInsQuietly() : [];
     return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
@@ -1878,6 +1881,44 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function sessionsMoved(): void {
     processLook.invalidate();
     backgroundServersLook.invalidate();
+  }
+
+  /** Tyler's sidebar groups and order (sidebar-groups.ts): read once, replaced whole when the Mac app saves a change. */
+  let sidebarLayout: SidebarGroups = readSidebarGroups();
+  /** The agents running outside conch (elsewhere.ts), looked for after a registry read, at most every ten seconds. */
+  const elsewhere = new ElsewhereWatch({ onChange: () => void renderSessionPanel() });
+  function observeElsewhere(infos: readonly SessionInfo[]): void {
+    let accounts: ReturnType<typeof readClaudeAccounts> = [];
+    try { accounts = readClaudeAccounts(cfg.claudeDir); } catch { return; }
+    const roots = [...accounts.map((account) => account.configDir), ...claudeSwapRuns().map((run) => run.configDir)];
+    elsewhere.observe(infos, roots, new Map(accounts.map((account) => [canonicalDir(account.configDir), account.label])));
+  }
+  /**
+   * Not in conch's two actions (elsewhere.ts). Resume opens the agent's conversation in a conch terminal, in the profile
+   * discovery found it in, and leaves the original running: the app has said so and asked first. Add reads the folder
+   * an unread Claude profile is in as an account, so the session becomes a row where it runs.
+   */
+  async function actOnElsewhere(request: ElsewhereRequest): Promise<Record<string, unknown>> {
+    const found = elsewhere.find(request.id);
+    if (!found) throw new Error("That agent isn't running any more, or conch has since found it.");
+    const context = { accounts: readClaudeAccounts(cfg.claudeDir), runs: claudeSwapRuns(), defaultDir: cfg.claudeDir };
+    if (request.action === "add-account") {
+      const registered = registeredAccount(found, context);
+      if (registered) return { kind: "elsewhere-done", id: found.agent.id, accountId: registered.id };
+      const label = elsewhereAccountLabel(found, context);
+      if (!label || !found.configDir) throw new Error("Only a Claude profile conch doesn't read can be added as an account.");
+      const account = addClaudeAccount(label, found.configDir);
+      await installAccountHooks({ claudeDir: account.configDir });
+      log(`not in conch: read ${found.agent.id}'s profile as the account "${label}"`);
+      void renderSessionPanel();
+      return { kind: "elsewhere-done", id: found.agent.id, accountId: account.id };
+    }
+    const start = elsewhereResumeRequest(found, context, { host: request.host, bypassPermissions: cfg.bypassPermissions });
+    if (!start) throw new Error("conch can't tell which conversation that agent is in.");
+    await launchSession(start);
+    log(`not in conch: resumed ${found.agent.id} in a conch terminal; the original keeps running`);
+    void renderSessionPanel();
+    return { kind: "elsewhere-done", id: found.agent.id, resumed: true };
   }
 
   const panelRefresh = new SessionReconciler({
@@ -2874,6 +2915,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         })),
       };
     }
+    if (snap) observeElsewhere(registryLive);
     for (const session of registryLive) {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
@@ -3261,6 +3303,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // desk is built (the first renders run earlier in startup).
       const teams = teamDeskReady?.published();
       if (teams?.length) lastPublishedPanelState.teams = teams;
+      // The agents running outside conch, for the sidebar's Not in conch (elsewhere.ts), and Tyler's own groups and order
+      // (sidebar-groups.ts): each only when it says something.
+      const outside = elsewhere.published();
+      if (outside.length) lastPublishedPanelState.elsewhere = outside;
+      if (hasSidebarGroups(sidebarLayout)) lastPublishedPanelState.sidebarGroups = sidebarLayout;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -4748,6 +4795,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     resources,
     teams: teamDesk,
+    elsewhere: { act: actOnElsewhere },
+    sidebarGroups: {
+      save: (layout) => {
+        writeSidebarGroups(layout);
+        sidebarLayout = layout;
+        void renderSessionPanel();
+        return { kind: "sidebar-groups", layout };
+      },
+    },
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,

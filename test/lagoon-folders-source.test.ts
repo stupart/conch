@@ -29,8 +29,9 @@ function between(text: string, start: string, end: string): string {
 describe("one rule for the sidebar's folders and the lagoon's", () => {
   test("the sidebar draws SessionGrouping.sidebar, with the order under its key", () => {
     const folders = between(dashboard, "private var sessionFolders: [SessionFolder] {", "\n    }\n");
-    // A running team's members are drawn under the team (2026-11-12, ConchDesign/Teams.swift); the lagoon's folders stay folders.
-    expect(folders).toContain("SessionGrouping.sidebar((state?.rows ?? []).map(\\.groupedAs), home: NSHomeDirectory(), order: folderOrder, teams: Teams.sidebarTeams(state?.teams ?? []))");
+    // With Tyler's own groups and order on top (2026-11-12, SidebarLayout.swift), the same layout the lagoon is sent.
+    expect(folders).toContain("SessionGrouping.sidebar(groupedSessions, home: NSHomeDirectory(), order: folderOrder, layout: layout, teams: Teams.sidebarTeams(state?.teams ?? []))");
+    expect(dashboard).toContain("private var groupedSessions: [SessionGrouping.Session] { (state?.rows ?? []).map(\\.groupedAs) }");
     // No second copy of the rule left in the view: grouping, the home folder's name and the order are all sidebar()'s.
     expect(dashboard).not.toContain("SessionGrouping.folders(");
     expect(dashboard).not.toContain("SessionGrouping.ordered(");
@@ -45,7 +46,7 @@ describe("one rule for the sidebar's folders and the lagoon's", () => {
   });
 
   test("the snapshot is built from that rule, with the sidebar's home and the dragged order", () => {
-    expect(snapshot).toContain("let sidebar = SessionGrouping.sidebar(source.rows.map(\\.groupedAs), home: home, order: source.folderOrder).filter { !$0.name.isEmpty }");
+    expect(snapshot).toContain("let sidebar = SessionGrouping.sidebar(source.rows.map(\\.groupedAs), home: home, order: source.folderOrder, layout: source.layout)\n            .filter { !$0.name.isEmpty }");
     expect(snapshot).toContain("folders = sidebar.compactMap { Self.folderName($0.name) }.filter { named.insert($0).inserted }");
     expect(snapshot).toContain("for id in folder.sessionIDs where folderOf[id] == nil { folderOf[id] = Self.folderName(folder.name) }");
     expect(snapshot).toContain("try c.encodeIfPresent(folder, forKey: .folder)");

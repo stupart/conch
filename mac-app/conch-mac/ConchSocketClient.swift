@@ -335,6 +335,28 @@ struct ConchSessionCloseRequest: Encodable, Sendable {
     var restart: Bool? = nil
 }
 
+/// Not in conch's Resume and Add (src/elsewhere.ts): an agent by the id the daemon published, never a folder.
+struct ConchElsewhereRequest: Encodable, Sendable {
+    let kind = "elsewhere"
+    /// resume or add-account.
+    let action: String
+    let id: String
+    /// Where a resume opens: terminal or background. Omitted when nil.
+    var host: String? = nil
+}
+
+/// The sidebar's whole layout after a change (src/sidebar-groups.ts), which the daemon saves and publishes.
+struct ConchSidebarGroupsRequest: Encodable, Sendable {
+    let kind = "sidebar-groups"
+    let layout: SidebarLayout
+}
+
+/// The daemon's answer to either: `elsewhere-done` / `sidebar-groups`, or an error naming what was wrong.
+struct ConchSidebarReply: Decodable, Sendable {
+    let kind: String
+    let error: String?
+}
+
 /// The same conversation again as a new session beside this one, holding its deliverables (daemon `forkLiveSession`).
 struct ConchSessionForkRequest: Encodable, Sendable {
     let kind = "session-fork"

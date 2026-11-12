@@ -1,3 +1,5 @@
+import type { ElsewhereAgent } from "./elsewhere.ts";
+import type { SidebarGroups } from "./sidebar-groups.ts";
 import type { FailureDigest } from "./failure-tickets.ts";
 import type { PublishedResources } from "./resource-ledger.ts";
 import type { TeamSummary } from "./teams.ts";
@@ -585,6 +587,17 @@ export interface PublishedState {
    * a header of the team's own instead of their folders. Absent with none, and from older daemons.
    */
   teams?: TeamSummary[];
+  /**
+   * Agents running on this Mac that conch has no row for, each with why and the one thing that would bring it in: the
+   * sidebar's Not in conch (elsewhere.ts, 2026-11-12). Absent when there are none, and from older daemons.
+   */
+  elsewhere?: ElsewhereAgent[];
+  /**
+   * Tyler's own sidebar groups, which session is in which, and the order he dragged sessions and sections into
+   * (sidebar-groups.ts, 2026-11-12). Absent until he has arranged anything, and from older daemons: the apps then group
+   * by folder alone.
+   */
+  sidebarGroups?: SidebarGroups;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;

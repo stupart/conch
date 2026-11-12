@@ -4,6 +4,8 @@ import { decodeBugReportRequest, type BugReportReply, type BugReportRequest } fr
 import { decodePeerMessageRequest, type PeerMessageReply, type PeerMessageRequest } from "./peer-message-send.ts";
 import { decodeResourceRequest, type ResourceReply, type ResourceRequest } from "./resource-ledger.ts";
 import { decodeTeamRequest, type TeamDesk } from "./team-desk.ts";
+import { decodeElsewhereRequest, type ElsewhereRequest } from "./elsewhere.ts";
+import { decodeSidebarGroupsRequest, type SidebarGroups } from "./sidebar-groups.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1387,6 +1389,13 @@ export interface ControlServerOptions {
    */
   teams?: Pick<TeamDesk, "handle">;
   /**
+   * Not in conch's two actions on an agent discovery found (elsewhere.ts): resume its conversation in a conch terminal,
+   * or read its profile folder as an account. Absent: such a request is answered as unavailable.
+   */
+  elsewhere?: { act(request: ElsewhereRequest): Promise<Record<string, unknown>> };
+  /** The Mac sidebar's groups and order (sidebar-groups.ts): saved whole and published. */
+  sidebarGroups?: { save(layout: SidebarGroups): Record<string, unknown> };
+  /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
    */
@@ -1653,6 +1662,29 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "team-error", code: "failed", error: "That was too large to send." })); }
           sock.end(frame);
+          return;
+        }
+        // Not in conch (elsewhere.ts) and the sidebar's groups (sidebar-groups.ts) name no session row: a resume starts
+        // one and an account add changes which folders conch reads, so both are the Mac app's alone, never a phone's
+        // (phone-bridge.ts `MAC_APP_ONLY_DECODERS`).
+        const elsewhere = decodeElsewhereRequest(body);
+        if (elsewhere) {
+          const reply = "error" in elsewhere ? { kind: "elsewhere-error", error: elsewhere.error }
+            : !options.elsewhere ? { kind: "elsewhere-error", error: "This conch can't act on agents outside it." }
+            : await options.elsewhere.act(elsewhere).catch((error: unknown) => ({ kind: "elsewhere-error", error: error instanceof Error ? error.message : String(error) }));
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
+          return;
+        }
+        const groups = decodeSidebarGroupsRequest(body);
+        if (groups) {
+          let reply: Record<string, unknown>;
+          if ("error" in groups) reply = { kind: "sidebar-groups-error", error: groups.error };
+          else if (!options.sidebarGroups) reply = { kind: "sidebar-groups-error", error: "This conch keeps no sidebar groups." };
+          else {
+            try { reply = options.sidebarGroups.save(groups.layout); }
+            catch (error) { reply = { kind: "sidebar-groups-error", error: error instanceof Error ? error.message : String(error) }; }
+          }
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

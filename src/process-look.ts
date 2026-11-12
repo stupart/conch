@@ -1,3 +1,4 @@
+import { readProcessRows } from "./process-table.ts";
 /**
  * One look at something only a process can tell conch (the process table, a tmux server's panes), shared by every
  * caller that asks within an interval.
@@ -104,11 +105,14 @@ export function sameProcessParents(a: ProcessParents, b: ProcessParents): boolea
   return true;
 }
 
+/**
+ * The same `ps` names each process's terminal and executable too (2026-11-12), and the table is kept
+ * (`latestProcessRows`, process-table.ts): finding the agents running outside conch (elsewhere.ts) reads it rather than
+ * running a `ps` of its own.
+ */
 async function readProcessParents(): Promise<Map<number, number> | null> {
-  const proc = Bun.spawn(["ps", "-Ao", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" });
-  const text = await new Response(proc.stdout).text();
-  const table = parseProcessParents(text);
-  return table.size > 0 ? table : null;
+  const rows = await readProcessRows();
+  return rows ? new Map(rows.map((row) => [row.pid, row.ppid])) : null;
 }
 
 /**

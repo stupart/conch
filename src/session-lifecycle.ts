@@ -449,7 +449,7 @@ export function resumeRequest(
  * for values with spaces; no start-table value can contain one.
  */
 export function restartRequest(
-  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "claudeSignInId">,
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd" | "claudeAccountId" | "codexAccountId" | "claudeSignInId" | "claudeConfigDir">,
   args: readonly string[],
 ): { request: StartSessionRequest; notCarriedOver: string[] } {
   const backend = session.backend ?? "claude";
@@ -505,7 +505,10 @@ export function restartRequest(
       ...(session.claudeAccountId ? { claudeAccountId: session.claudeAccountId } : {}),
       // Its sign-in too, so it comes back on the same account; one since removed refuses, never the rotating login.
       ...(session.claudeSignInId ? { claudeSignInId: session.claudeSignInId } : {}),
-      ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}), options },
+      ...(session.codexAccountId ? { codexAccountId: session.codexAccountId } : {}),
+      // A claude-swap run's row has a folder and no conch account (claude-swap-runs.ts): it comes back in that folder,
+      // signed in as that account, never in Default (2026-11-12).
+      ...(session.claudeConfigDir && !session.claudeAccountId ? { claudeConfigDir: session.claudeConfigDir } : {}), options },
     notCarriedOver,
   };
 }

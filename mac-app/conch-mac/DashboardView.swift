@@ -111,7 +111,9 @@ struct DashboardView: View {
                         renameDraft: $renameDraft,
                         rowMessages: store.rowMessages,
                         undoDismissal: store.undoDismissal,
-                        actions: actions
+                        actions: actions,
+                        onSaveLayout: { await store.saveSidebarGroups($0) },
+                        onElsewhere: { await store.actOnElsewhere($0, action: $1, host: $2) }
                     )
                     .equatable()
                     .frame(width: sidebarWidth)
@@ -584,6 +586,10 @@ private struct SessionLedger: View {
     let rowMessages: [SessionRow.ID: String]
     let undoDismissal: SessionDismissUndo?
     let actions: DashboardActions
+    /// Saves the sidebar's layout (StateStore `saveSidebarGroups`): whether it was saved.
+    var onSaveLayout: (SidebarLayout) async -> Bool = { _ in false }
+    /// Not in conch's action on an agent, once asked (StateStore `actOnElsewhere`): nil when done, else why not.
+    var onElsewhere: (ElsewhereAgent, ElsewhereAgent.Action, String) async -> String? = { _, _, _ in "Not connected to conch" }
 
     /// Which row the ledger keeps in view. The same question the pane answers, so it asks the
     /// same rule (ConchDesign/Workspace.swift) rather than keeping a chain — and a label
@@ -604,7 +610,8 @@ private struct SessionLedger: View {
     /// The order Tyler dragged the folders into, newline-joined like the other sidebar
     /// preferences (`conch.sidebarWidth`, `conch.sidebarCollapsed`) so it survives a relaunch;
     /// `WorkspaceModel` is in-memory and forgets everything at quit. The rule for what the
-    /// order means — and why rows are not draggable — is ConchDesign/SessionGrouping.swift.
+    /// order means is ConchDesign/SessionGrouping.swift. Since 2026-11-12 the daemon's layout
+    /// (`layout.sections`) holds the order once anything is arranged; this stands in until then.
     @AppStorage(SessionGrouping.orderKey) private var storedFolderOrder = ""
     private var folderOrder: [String] {
         get { SessionGrouping.storedOrder(storedFolderOrder) }
@@ -612,6 +619,22 @@ private struct SessionLedger: View {
     }
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
     @State private var showsDismissed = false
+    /// Tyler's groups and order (2026-11-12, "would also love to drag and drop for organization"; ConchDesign/
+    /// SidebarLayout.swift): the daemon's, as published, or this list's own copy of a change until it is published back.
+    @State private var pendingLayout: SidebarLayout?
+    /// The row a dragged session is over: it lands just above it, where the drop line is drawn.
+    @State private var dropTargetRowID: String?
+    /// A group being named, new or renamed, and the name being typed.
+    @State private var naming: GroupNaming?
+    @State private var groupName = ""
+    /// Not in conch (2026-11-12): folded away to begin with and remembered like a folder, Tyler's "maybe new section at
+    /// bottom of left sidebar that's usually collapsed".
+    @AppStorage("conch.elsewhereOpen") private var showsElsewhere = false
+    /// Where a resume opens: where the New session sheet opens sessions.
+    @AppStorage("conch.session.host") private var sessionHost = "terminal"
+    /// The agent whose action is being asked about, and conch's word on each one acted on.
+    @State private var confirmingElsewhere: ElsewhereAgent?
+    @State private var elsewhereMessages: [String: String] = [:]
     @State private var scroller = LedgerScroller()
     /// A session the lagoon's panel is on, to bring into view once its folder is unfolded (`reveal`).
     @State private var revealing: LedgerReveal?
@@ -626,7 +649,7 @@ private struct SessionLedger: View {
     /// A running team's members are grouped under the team instead (2026-11-12, ConchDesign/Teams.swift); the lagoon's
     /// `folders`, agreed with the brand repo as folders, stay folders.
     private var sessionFolders: [SessionFolder] {
-        SessionGrouping.sidebar((state?.rows ?? []).map(\.groupedAs), home: NSHomeDirectory(), order: folderOrder, teams: Teams.sidebarTeams(state?.teams ?? []))
+        SessionGrouping.sidebar(groupedSessions, home: NSHomeDirectory(), order: folderOrder, layout: layout, teams: Teams.sidebarTeams(state?.teams ?? []))
     }
 
     /// The team whose header asked for Pass task… (ConchDesign/TeamsViews.swift `TeamTaskSheet`).
@@ -638,18 +661,123 @@ private struct SessionLedger: View {
         state?.teams.first(where: { $0.id == id })
     }
 
-    /// A folder header dropped on another takes its slot (SessionGrouping.order). Anything
-    /// else that lands here as text — a dragged selection from the transcript — is refused.
+    private var layout: SidebarLayout { pendingLayout ?? state?.sidebarGroups ?? .empty }
+    private var groupedSessions: [SessionGrouping.Session] { (state?.rows ?? []).map(\.groupedAs) }
+    /// The rows that move: a subagent or a started session goes with the session above it.
+    private var topLevel: Set<String> { SessionGrouping.topLevel(groupedSessions) }
+
+    /// A dragged session, as its drag carries it. A folder's header carries its path or group id, as before.
+    private static let sessionDrag = "conch-session:"
+
+    private func draggedSession(_ items: [String]) -> String? {
+        guard let item = items.first, item.hasPrefix(Self.sessionDrag) else { return nil }
+        let id = String(item.dropFirst(Self.sessionDrag.count))
+        return topLevel.contains(id) ? id : nil
+    }
+
+    /// A section's header dropped on another takes its slot (SessionGrouping.order); a session dropped on a header goes
+    /// to the end of that section, if it may (`SidebarLayout.accepts`). Anything else that lands here as text — a
+    /// dragged selection from the transcript — is refused.
     private func dropFolder(_ items: [String], onto target: String) -> Bool {
+        if let session = draggedSession(items) { return move(session, into: target, before: nil) }
         guard let dragged = items.first, dragged != target,
               sessionFolders.contains(where: { $0.id == dragged }) else { return false }
-        let next = SessionGrouping.order(
-            folderOrder, moving: dragged, onto: target, visible: sessionFolders.map(\.id)
-        )
+        apply(layout.movingSection(dragged, onto: target, shown: sessionFolders, fallbackOrder: folderOrder))
+        return true
+    }
+
+    /// A session dropped on a row lands just above it, in that row's section; a header dropped on a row takes the slot
+    /// of the row's section.
+    private func dropOnRow(_ items: [String], row: SessionRow.ID) -> Bool {
+        guard let section = sessionFolders.first(where: { $0.sessionIDs.contains(row) }) else { return false }
+        guard let session = draggedSession(items) else { return dropFolder(items, onto: section.id) }
+        guard session != row else { return false }
+        return move(session, into: section.id, before: row)
+    }
+
+    private func move(_ session: String, into section: String, before: String?) -> Bool {
+        // A running team's members stay under its header (`SidebarMove.moves` offers them nothing either).
+        guard sessionFolders.first(where: { $0.sessionIDs.contains(session) })?.team == nil else { return false }
+        let home = SessionGrouping.homeFolders(groupedSessions, home: NSHomeDirectory())[session]?.id
+        guard layout.accepts(session, into: section, folder: home) else { return false }
+        apply(layout.moving(session, into: section, before: before, shown: sessionFolders, topLevel: topLevel, fallbackOrder: folderOrder))
+        return true
+    }
+
+    /// The row's Move to, and its VoiceOver actions of the same names.
+    private func perform(_ move: SidebarMove, on session: SessionRow.ID) {
+        switch move.kind {
+        case let .group(id), let .folder(id):
+            _ = self.move(session, into: id, before: nil)
+        case .newGroup:
+            groupName = ""
+            naming = GroupNaming(renaming: nil, placing: session)
+        case .up, .down:
+            apply(layout.nudging(session, by: move.kind == .up ? -1 : 1, shown: sessionFolders, topLevel: topLevel, fallbackOrder: folderOrder))
+        }
+    }
+
+    /// What one drawing of the list reads of the layout, worked out once: its sections, the rows that move, and the
+    /// folder each runs in. Every row's menu asks them, and worked out per row they would group the list once a row.
+    private struct Plan {
+        let folders: [SessionFolder]
+        let topLevel: Set<String>
+        let homes: [String: SessionFolder]
+    }
+
+    private var plan: Plan {
+        Plan(folders: sessionFolders, topLevel: topLevel, homes: SessionGrouping.homeFolders(groupedSessions, home: NSHomeDirectory()))
+    }
+
+    private func moves(for row: SessionRow, in plan: Plan) -> [SidebarMove] {
+        SidebarMove.moves(for: row.id, layout: layout, shown: plan.folders, topLevel: plan.topLevel, folder: plan.homes[row.id])
+    }
+
+    /// A change shown at once and sent to the daemon, which saves it and publishes it back; one it refused is undone.
+    private func apply(_ next: SidebarLayout) {
+        guard next != layout else { return }
         // §4: a list changing shape is a morph, and Reduce Motion drops the bounce rather
         // than the move (mac-phase1-source.test.ts guards the form).
-        withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) { folderOrder = next }
-        return true
+        withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) { pendingLayout = next }
+        Task { @MainActor in
+            if await !onSaveLayout(next), pendingLayout == next {
+                withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) { pendingLayout = nil }
+            }
+        }
+    }
+
+    private func commitNaming() {
+        guard let naming else { return }
+        let name = groupName
+        if layout.nameProblem(name, renaming: naming.renaming) != nil {
+            // Asked again, with what was wrong, once this alert has gone.
+            DispatchQueue.main.async { self.naming = GroupNaming(renaming: naming.renaming, placing: naming.placing, problem: layout.nameProblem(name, renaming: naming.renaming)) }
+            return
+        }
+        if let id = naming.renaming {
+            apply(layout.renamingGroup(id, to: name))
+        } else {
+            apply(layout.creatingGroup(named: name, placing: naming.placing, shown: sessionFolders, fallbackOrder: folderOrder))
+        }
+        self.naming = nil
+    }
+
+    /// Not in conch's button: Resume and Add ask first (`ElsewhereText.confirmation`); Resume… opens New session.
+    private func act(on agent: ElsewhereAgent) {
+        switch agent.action {
+        case .startSheet: actions.onStartSession()
+        case .resume, .addAccount: confirmingElsewhere = agent
+        case nil: break
+        }
+    }
+
+    private func confirmElsewhere(_ agent: ElsewhereAgent) {
+        guard let action = agent.action else { return }
+        elsewhereMessages[agent.id] = action == .resume ? "Resuming in conch…" : "Adding its profile…"
+        Task { @MainActor in
+            let failure = await onElsewhere(agent, action, sessionHost)
+            elsewhereMessages[agent.id] = failure ?? (action == .resume ? "Opening in conch" : "Added: it becomes a row in a moment")
+        }
     }
 
     private func rows(in folder: SessionFolder) -> [SessionRow] {
@@ -717,8 +845,10 @@ private struct SessionLedger: View {
                                 // agents read as the two or three projects they are actually
                                 // in. The rule — and the cases that make it interesting, two
                                 // checkouts of one repo and a child whose folder differs from
-                                // its parent's — is ConchDesign/SessionGrouping.swift.
-                                ForEach(sessionFolders) { folder in
+                                // its parent's — is ConchDesign/SessionGrouping.swift; Tyler's
+                                // own groups and order on top of it, ConchDesign/SidebarLayout.swift.
+                                let plan = self.plan
+                                ForEach(plan.folders) { folder in
                                     if let team = folder.team {
                                         // A running team's members under its name and task, wherever each works
                                         // (2026-11-12). Dragged and dropped as a folder's header is.
@@ -756,10 +886,10 @@ private struct SessionLedger: View {
                                             onToggle: { toggleFolder(folder.id) }
                                         )
                                         .equatable()
-                                        // Drag a folder onto another to take its slot. Only
-                                        // headers move: a row's place is its folder's place,
-                                        // so there is nothing a row could be dragged to that
-                                        // would not contradict where it runs.
+                                        // Drag a section onto another to take its slot, and a session onto
+                                        // a header to put it at the end of that section (2026-11-12): any of
+                                        // Tyler's groups, or its own folder, never another folder, which
+                                        // would contradict where it runs (`SidebarLayout.accepts`).
                                         // ponytail: the payload is the path as plain text;
                                         // a custom UTType if a stray text drop ever misfires.
                                         .draggable(folder.id)
@@ -772,6 +902,8 @@ private struct SessionLedger: View {
                                                 dropTargetFolderID = nil
                                             }
                                         }
+                                        .contextMenu { sectionMenu(folder) }
+                                        .accessibilityActions { sectionMenu(folder, divided: false) }
                                         .id("folder:\(folder.id)")
                                     }
 
@@ -779,6 +911,14 @@ private struct SessionLedger: View {
                                         // A session's agents fold under it as a small group
                                         // rather than rows of their own (C4).
                                         let folderRows = rows(in: folder)
+                                        if folder.isGroup, folderRows.isEmpty {
+                                            // A group whose sessions have all closed stays, as a place to drop into.
+                                            Text("Drag a session here")
+                                                .font(ConchTypography.font(size: 11))
+                                                .foregroundStyle(ConchPalette.textFaint)
+                                                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                                                .padding(.leading, 20)
+                                        }
                                         ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \.id) { row in
                                           VStack(alignment: .leading, spacing: 0) {
                                             DashboardRow(
@@ -806,7 +946,9 @@ private struct SessionLedger: View {
                                                 // there reads through here (C15).
                                                 startedByLabel: row.startedBySessionId.flatMap { id in
                                                     state.rows.first(where: { $0.id == id })?.label
-                                                }
+                                                },
+                                                moves: moves(for: row, in: plan),
+                                                onMove: { perform($0, on: row.id) }
                                             )
                                             // Drawn again only when what it shows changed (`DashboardRow ==`).
                                             .equatable()
@@ -822,6 +964,24 @@ private struct SessionLedger: View {
                                                 .equatable()
                                                 .padding(.leading, row.startedBySessionId == nil ? 0 : 30)
                                             }
+                                          }
+                                          // Drag a session to reorder it in its section, or into another group
+                                          // (2026-11-12). It lands just above the row it is dropped on, where the
+                                          // line is drawn; its agents and the sessions it started go with it.
+                                          .overlay(alignment: .top) {
+                                              if dropTargetRowID == row.id {
+                                                  SidebarDropLine(color: ConchPalette.dropTarget).offset(y: -4)
+                                              }
+                                          }
+                                          .modifier(SessionDrag(id: plan.topLevel.contains(row.id) ? "\(Self.sessionDrag)\(row.id)" : nil))
+                                          .dropDestination(for: String.self) { items, _ in
+                                              dropOnRow(items, row: row.id)
+                                          } isTargeted: { over in
+                                              if over {
+                                                  dropTargetRowID = row.id
+                                              } else if dropTargetRowID == row.id {
+                                                  dropTargetRowID = nil
+                                              }
                                           }
                                           .id(row.id)
                                         }
@@ -872,6 +1032,7 @@ private struct SessionLedger: View {
                                         }
                                     }
                                 }
+                                elsewhereSection
                                 RemoteMacGroups(onSelect: onSelectRemote)
                             }
                             .padding(.horizontal, 8)
@@ -925,6 +1086,8 @@ private struct SessionLedger: View {
                 ScrollView {
                     VStack {
                         DashboardEmptyState(hasSnapshot: state != nil)
+                        // With no session in conch is when the ones outside it matter most.
+                        elsewhereSection.padding(.horizontal, 8)
                         RemoteMacGroups(onSelect: onSelectRemote)
                     }
                 }
@@ -945,6 +1108,78 @@ private struct SessionLedger: View {
             Button("End team") { Task { _ = await TeamsStore.end(team: team.id, transport: TeamsSocket.send) } }
         } message: { _ in
             Text("Its sessions keep running; they just stop being grouped as a team.")
+        }
+        // Naming a group, new or renamed: one field, and what was wrong with the last try said under it.
+        .alert(naming?.renaming == nil ? "New Group" : "Rename Group", isPresented: Binding(
+            get: { naming != nil }, set: { if !$0 { naming = nil } }
+        )) {
+            TextField("Name", text: $groupName)
+            Button(naming?.renaming == nil ? "Create" : "Rename", action: commitNaming)
+            Button("Cancel", role: .cancel) { naming = nil }
+        } message: {
+            Text(naming?.problem ?? (naming?.placing == nil ? "A group of your own in the sidebar. Drag sessions into it." : "A group of your own, with this session in it."))
+        }
+        // Not in conch's Resume and Add, asked first: what happens, and that the original is never stopped.
+        .alert(
+            confirmingElsewhere.flatMap { ElsewhereText.confirmation($0, background: sessionHost == "background")?.title } ?? "",
+            isPresented: Binding(get: { confirmingElsewhere != nil }, set: { if !$0 { confirmingElsewhere = nil } }),
+            presenting: confirmingElsewhere
+        ) { agent in
+            Button(ElsewhereText.confirmation(agent, background: sessionHost == "background")?.confirm ?? "OK") { confirmElsewhere(agent) }
+            Button("Cancel", role: .cancel) {}
+        } message: { agent in
+            Text(ElsewhereText.confirmation(agent, background: sessionHost == "background")?.message ?? "")
+        }
+        // The published layout caught up with this list's own copy, or moved on without it.
+        .onChange(of: state?.sidebarGroups) { _, _ in pendingLayout = nil }
+    }
+
+    /// A section header's menu, and its VoiceOver actions: a group's Rename and Delete, and New Group on any.
+    @ViewBuilder
+    private func sectionMenu(_ folder: SessionFolder, divided: Bool = true) -> some View {
+        if folder.isGroup {
+            Button("Rename Group…") {
+                groupName = folder.name
+                naming = GroupNaming(renaming: folder.id, placing: nil)
+            }
+            // Its sessions go back under their folders; nothing else is lost, so it isn't asked about.
+            Button("Delete Group") { apply(layout.deletingGroup(folder.id)) }
+            if divided { Divider() }
+        }
+        Button("New Group…") {
+            groupName = ""
+            naming = GroupNaming(renaming: nil, placing: nil)
+        }
+    }
+
+    /// Not in conch (2026-11-12): what discovery found running on this Mac with no row, at the bottom of the list, folded
+    /// away until opened, and counted on its header (src/elsewhere.ts; ConchDesign/Elsewhere.swift says what each is).
+    @ViewBuilder
+    private var elsewhereSection: some View {
+        if let agents = state?.elsewhere, !agents.isEmpty {
+            FolderHeader(
+                name: ElsewhereText.header,
+                count: agents.count,
+                isCollapsed: !showsElsewhere,
+                alwaysCounts: true,
+                accessibilityName: ElsewhereText.headerAccessibility(count: agents.count, collapsed: !showsElsewhere),
+                onToggle: { showsElsewhere.toggle() }
+            )
+            .equatable()
+            .id("elsewhere-header")
+            if showsElsewhere {
+                ForEach(agents) { agent in
+                    ElsewhereRow(
+                        agent,
+                        mark: Image(agent.backend == "codex" ? "AgentCodex" : "AgentClaude").renderingMode(.template),
+                        nameFont: ConchTypography.font(size: 13),
+                        lineFont: ConchTypography.font(size: 11),
+                        message: elsewhereMessages[agent.id],
+                        onAction: { act(on: agent) }
+                    )
+                    .id("elsewhere:\(agent.id)")
+                }
+            }
         }
     }
 
@@ -1051,6 +1286,27 @@ extension SessionLedger: Equatable {
     }
 }
 
+/// A group being named: a new one (with the session whose menu made it, if any), or one being renamed.
+private struct GroupNaming: Equatable {
+    let renaming: String?
+    let placing: String?
+    /// What was wrong with the name tried last, said in the alert asked again.
+    var problem: String? = nil
+}
+
+/// A row's drag, for the rows that move: a subagent or a started session goes with the session above it, so has none.
+private struct SessionDrag: ViewModifier {
+    let id: String?
+
+    func body(content: Content) -> some View {
+        if let id {
+            content.draggable(id)
+        } else {
+            content
+        }
+    }
+}
+
 /// One request to bring a session's row into view: a new one each time, so the same session asked for twice scrolls twice.
 private struct LedgerReveal: Equatable {
     let id: SessionRow.ID
@@ -1126,6 +1382,10 @@ private struct FolderHeader: View {
     let isCollapsed: Bool
     /// Another folder's header is being dragged over this one and will take its slot.
     var isDropTarget = false
+    /// The count shows open as well as folded: Not in conch's, which says how many there are either way.
+    var alwaysCounts = false
+    /// What VoiceOver reads in place of the name and count.
+    var accessibilityName: String? = nil
     let onToggle: () -> Void
 
     @State private var hovering = false
@@ -1145,7 +1405,7 @@ private struct FolderHeader: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
-                if isCollapsed {
+                if isCollapsed || alwaysCounts {
                     Text("\(count)")
                         .font(ConchTypography.font(size: 10, weight: .medium))
                         .monospacedDigit()
@@ -1167,7 +1427,7 @@ private struct FolderHeader: View {
         )
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isCollapsed ? "\(name), \(count) sessions, collapsed" : name)
+        .accessibilityLabel(accessibilityName ?? (isCollapsed ? "\(name), \(count) sessions, collapsed" : name))
         .accessibilityAddTraits(.isHeader)
     }
 }
@@ -1176,6 +1436,7 @@ private struct FolderHeader: View {
 extension FolderHeader: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.name == b.name && a.count == b.count && a.isCollapsed == b.isCollapsed && a.isDropTarget == b.isDropTarget
+            && a.alwaysCounts == b.alwaysCounts && a.accessibilityName == b.accessibilityName
     }
 }
 
@@ -1221,6 +1482,10 @@ private struct DashboardRow: View {
     /// The label of the session whose process started this one (C15); nil for
     /// a session nobody listed started.
     var startedByLabel: String? = nil
+    /// Its Move to menu and VoiceOver actions (2026-11-12, `SidebarMove.moves`): the way to do a drag's work without
+    /// one. Empty for a row that moves with the session above it.
+    var moves: [SidebarMove] = []
+    var onMove: (SidebarMove) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -1342,6 +1607,11 @@ private struct DashboardRow: View {
                 // The quiet mark is a button inside this one. Its toggle is an action here too, so
                 // relabelling the row cannot take it from VoiceOver.
                 .accessibilityAction(named: Text(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak"), onToggleQuiet)
+                .accessibilityActions {
+                    ForEach(moves) { move in
+                        Button(move.accessibilityName) { onMove(move) }
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
@@ -1382,6 +1652,18 @@ private struct DashboardRow: View {
                 Button("Fork", action: onFork)
             }
             Button(voice.togglesToQuiet ? "Make Quiet" : "Let It Speak", action: onToggleQuiet)
+            let places = moves.filter { $0.kind != .up && $0.kind != .down }
+            if !places.isEmpty {
+                Menu("Move To") {
+                    ForEach(places) { move in
+                        if move.kind == .newGroup, places.count > 1 { Divider() }
+                        Button(move.title) { onMove(move) }
+                    }
+                }
+            }
+            ForEach(moves.filter { $0.kind == .up || $0.kind == .down }) { move in
+                Button(move.title) { onMove(move) }
+            }
             Button("Dismiss", action: onDismiss)
         }
         .onHover { hovering in
@@ -1620,7 +1902,7 @@ extension DashboardRow: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.row == b.row && a.age == b.age && a.isSelected == b.isSelected && a.isFollowing == b.isFollowing
             && a.isRenaming == b.isRenaming && a.rowMessage == b.rowMessage && a.everythingQuiet == b.everythingQuiet
-            && (a.onFork == nil) == (b.onFork == nil) && a.startedByLabel == b.startedByLabel
+            && (a.onFork == nil) == (b.onFork == nil) && a.startedByLabel == b.startedByLabel && a.moves == b.moves
     }
 }
 
@@ -3633,7 +3915,10 @@ extension PublishedState {
             // What sessions left running: the list draws it beside them (`StillRunningSection`).
             resources: resources,
             // The teams at work: the list groups each one's members under its header.
-            teams: teams
+            teams: teams,
+            // Not in conch, and Tyler's own groups and order: both drawn in the list.
+            elsewhere: elsewhere,
+            sidebarGroups: sidebarGroups
         )
     }
 }

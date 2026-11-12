@@ -98,6 +98,13 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// under its header. Empty from an older daemon, which has none.
     let teams: [TeamSummary]
 
+    /// The agents running on this Mac that conch has no row for (src/elsewhere.ts): the sidebar's Not in conch. Empty
+    /// from an older daemon and whenever there are none.
+    let elsewhere: [ElsewhereAgent]
+    /// Tyler's own sidebar groups and order (src/sidebar-groups.ts). Nil until he has arranged anything, and from an
+    /// older daemon: the sidebar then groups by folder alone.
+    let sidebarGroups: SidebarLayout?
+
     /// How many tickets are open, being fixed, and new since Settings › Failures was last shown: conch's own, which an
     /// agent's calls (`agents`) aren't. `alert` is the newest conch bug worth the window's banner (src/failure-triage.ts).
     struct FailureDigest: Decodable, Equatable, Sendable {
@@ -297,6 +304,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case failures
         case resources
         case teams
+        case elsewhere
+        case sidebarGroups
     }
 
     init(
@@ -331,7 +340,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         restore: RestoreReport? = nil,
         failures: FailureDigest? = nil,
         resources: PublishedResources? = nil,
-        teams: [TeamSummary] = []
+        teams: [TeamSummary] = [],
+        elsewhere: [ElsewhereAgent] = [],
+        sidebarGroups: SidebarLayout? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -366,6 +377,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.failures = failures
         self.resources = resources
         self.teams = teams
+        self.elsewhere = elsewhere
+        self.sidebarGroups = sidebarGroups
     }
 
     init(from decoder: Decoder) throws {
@@ -422,6 +435,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         resources = try? container.decodeIfPresent(PublishedResources.self, forKey: .resources)
         // One team this build can't read is left out, never the rest with it.
         teams = Self.decodeLossyArray(TeamSummary.self, from: container, forKey: .teams)
+        elsewhere = Self.decodeLossyArray(ElsewhereAgent.self, from: container, forKey: .elsewhere)
+        sidebarGroups = try? container.decodeIfPresent(SidebarLayout.self, forKey: .sidebarGroups)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -481,6 +496,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
             // The deliverables strip draws a tab for each.
             && browserTabs == other.browserTabs
             && browserProfiles == other.browserProfiles
+            // The sidebar's Not in conch, and Tyler's groups and order.
+            && elsewhere == other.elsewhere
+            && sidebarGroups == other.sidebarGroups
     }
 }
 

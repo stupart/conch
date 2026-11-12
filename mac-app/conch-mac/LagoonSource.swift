@@ -28,7 +28,8 @@ extension LagoonSnapshot.Source {
             dismissed: state.dismissed + state.dismissedRows.map(\.id),
             // The jar's count (2026-10-05): nil from a daemon too old to approve, sent as 0.
             seaGlass: state.seaGlass,
-            folderOrder: folderOrder
+            folderOrder: folderOrder,
+            layout: state.sidebarGroups ?? .empty
         )
     }
 }
