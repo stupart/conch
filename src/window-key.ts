@@ -3,7 +3,7 @@
  *
  * `claude --resume <id>` in a second terminal keeps the id, so two live windows
  * can share one. Tyler works that way: `~/morrow-site` and `~/morrow-swap`, both
- * on `4eb30ede`, writing one transcript on separate parentUuid branches —
+ * on `5e5e5e08`, writing one transcript on separate parentUuid branches —
  * "theyre both open and seem to have diverged with no problems".
  *
  * conch keys everything a person can address — status, held turns, pause,

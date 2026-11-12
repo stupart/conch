@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isWindowKey, parseWindowKey, windowKey, windowPidFromAncestry } from "../src/window-key.ts";
 import { findHookWindow, findSession, findTranscript, registrySnapshot, sessionLabel } from "../src/sessions.ts";
 
-const UUID = "4eb30ede-6401-40bc-b714-aa9b88e358c4";
+const UUID = "5e5e5e08-0008-4000-8000-000000000008";
 
 describe("window keys", () => {
   test("a lone session keeps the id it has always had", () => {

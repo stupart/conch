@@ -5,7 +5,7 @@ import Darwin
 
 /// A page an agent served on this Mac's own loopback address, and whether anything still serves it.
 ///
-/// Dev servers stop. A review filed as `http://localhost:3111` outlives the server behind it, and walking into it gave
+/// Dev servers stop. A review filed as `http://localhost:3000` outlives the server behind it, and walking into it gave
 /// "Couldn't load deliverable · Could not connect to the server", with "Open in Browser" offered as the way out, which
 /// can't help. So before one is brought forward, conch knocks: a TCP connect to the port, the way the browser would
 /// reach it. Nothing listening is refused at once on loopback, so the knock costs a few milliseconds, and a server that
@@ -19,7 +19,7 @@ public enum LocalServer {
         return url.port ?? (scheme == "https" ? 443 : 80)
     }
 
-    /// How a person reads the address: "localhost:3111".
+    /// How a person reads the address: "localhost:3000".
     public static func name(of url: URL) -> String {
         guard let port = port(of: url) else { return url.absoluteString }
         let host = url.host ?? "localhost"

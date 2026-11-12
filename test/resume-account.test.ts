@@ -7,13 +7,13 @@ import { defaultResumeLookup, resumeAccountFor, type ResumeLookup } from "../src
 import { terminalSessionCommand } from "../src/session-lifecycle.ts";
 
 /**
- * 2026-10-18: `conch start claude --resume 162f2800 --fork-session` from an agent in the Blueprint profile, with no
+ * 2026-10-18: `conch start claude --resume 5e5e5e09 --fork-session` from an agent in the Blueprint profile, with no
  * --account. The new Terminal's shell had no CLAUDE_CONFIG_DIR, so Claude Code started under Default, where that
  * conversation doesn't exist, and exited. The start now finds the profile that holds the conversation.
  */
-const ID = "162f2800-09b3-42b2-a462-850ad1a9a1e9";
+const ID = "5e5e5e09-0009-4000-8000-000000000009";
 const DEFAULT: ClaudeAccount = { id: "default", label: "Default", configDir: "/Users/alex/.claude" };
-const BLUEPRINT: ClaudeAccount = { id: "39b4dccc-1262-45cd-86aa-69038e482db6", label: "Blueprint", configDir: "/Users/alex/.config/conch/claude/39b4dccc" };
+const BLUEPRINT: ClaudeAccount = { id: "5e5e5e16-0016-4000-8000-000000000016", label: "Blueprint", configDir: "/Users/alex/.config/conch/claude/5e5e5e16" };
 
 function lookup(held: Record<string, number>, callerConfigDir?: string): ResumeLookup {
   return {

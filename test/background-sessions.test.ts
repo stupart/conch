@@ -10,7 +10,7 @@ import { injectText } from "../src/inject.ts";
 import { probeCommand } from "../src/probe.ts";
 import type { Config } from "../src/config.ts";
 
-const name = "conch-9a6849e9-3e94-4a76-8633-44c158565fb1";
+const name = "conch-5e5e5e15-0015-4000-8000-000000000015";
 test("host choices survive wire validation; unknown hosts are refused", () => {
   for (const host of ["terminal", "background"] as const) {
     expect(validateRuntimeControlMessage({ kind: "session-start", backend: "codex", host, resumeSessionId: "thread-1" }))

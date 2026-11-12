@@ -14,7 +14,7 @@ import { terminalSessionCommand } from "../src/session-lifecycle.ts";
  * folder and its sessions seen, and launches everything in Default, bringing each conversation across as it goes.
  */
 
-const ID = "162f2800-09b3-42b2-a462-850ad1a9a1e9";
+const ID = "5e5e5e09-0009-4000-8000-000000000009";
 const line = (n: number, text = `turn ${n}`) => JSON.stringify({ type: n % 2 ? "user" : "assistant", sessionId: ID, cwd: "/work/demo", uuid: `u${n}`, message: { content: text } }) + "\n";
 
 let root: string;
@@ -173,7 +173,7 @@ describe("a retired profile", () => {
 
   test("its conversations are listed once, as Default's, and an unscoped look finds the copy going on", () => {
     const blueprint = addClaudeAccount("Blueprint");
-    const other = "33333333-3333-4333-8333-333333333333";
+    const other = "77777777-7777-4777-8777-777777777777";
     const original = transcript(blueprint.configDir, line(1));
     transcript(blueprint.configDir, JSON.stringify({ type: "user", sessionId: other, cwd: "/work/demo", message: { content: "only there" } }) + "\n", other);
     const copy = transcript(join(root, "default"), line(1));
@@ -196,7 +196,7 @@ describe("a retired profile", () => {
 
 describe("which profile a resume starts in, with one retired", () => {
   const DEFAULT: ClaudeAccount = { id: "default", label: "Default", configDir: "/Users/alex/.claude" };
-  const BLUEPRINT: ClaudeAccount = { id: "39b4dccc", label: "Blueprint", configDir: "/Users/alex/.config/conch/claude/39b4dccc", retired: true };
+  const BLUEPRINT: ClaudeAccount = { id: "5e5e5e16", label: "Blueprint", configDir: "/Users/alex/.config/conch/claude/5e5e5e16", retired: true };
   const lookup = (held: Record<string, number>, callerConfigDir?: string): ResumeLookup => ({
     accounts: [DEFAULT, BLUEPRINT],
     ...(callerConfigDir ? { callerConfigDir } : {}),

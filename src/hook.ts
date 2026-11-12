@@ -44,7 +44,7 @@ interface HookPayload {
   prompt?: string;
 }
 
-/** A Codex turn id as its hooks and rollouts carry it (`01a16ae2-32a5-7261-848c-1986bafd1e96`): an id, never words. */
+/** A Codex turn id as its hooks and rollouts carry it (`5e5e5e23-0023-7000-8000-000000000023`): an id, never words. */
 export const CODEX_TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** What Claude Code's SessionStart hook says started the session. */
