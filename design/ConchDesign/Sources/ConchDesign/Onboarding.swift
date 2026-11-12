@@ -136,8 +136,8 @@ public struct OnboardingReadiness: Equatable, Sendable {
     public static func missingAsks(_ statuses: [ConchPermission: ConchPermissionStatus]) -> [ConchPermission] {
         setupAsks.filter { permission in
             switch statuses[permission] {
-            case .denied?, .notAsked?, .needsRelaunch?: true
-            case .granted?, .restricted?, .unknown?, nil: false
+            case .denied?, .notAsked?, .needsRelaunch?, .grantedToAnotherBuild?: true
+            case .granted?, .restricted?, .unknown?, .unanswered?, nil: false
             }
         }
     }

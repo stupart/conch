@@ -1113,6 +1113,7 @@ struct ConchSettingsPage: View {
             }
         }
         case .skills: ConchSkillsSettingsView()
+        case .workflows: ConchWorkflowsSettingsView()
         case .benchmarks: ConchBenchmarksSettingsView()
         case .browser: ConchBrowserSettingsView()
         case .logins: ConchLoginsSettingsView()

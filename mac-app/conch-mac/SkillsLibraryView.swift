@@ -15,6 +15,12 @@ import SwiftUI
 /// Everything is read from the daemon (src/skills-library.ts, src/skill-indexes.ts, src/benchmarks.ts). Add shows every
 /// file and where it lands before anything is written (the write pass's shape, B3); Try asks the daemon for a trial
 /// folder and a first message, then starts the session through the same `session-start` the New session sheet sends.
+///
+/// Using and managing a skill from where you read it (2026-11-11, Tyler: "making the rest of the app like skills,
+/// workflows, etc much more pleasurable to use"): the reader leads with what it does, Run in and Type into the open
+/// sessions that have it, each copy with its switch (Claude Code's `skillOverrides`, previewed as a diff first) or where
+/// it is switched instead, and the sessions that have it (ConchDesign's `SkillDetailPanel`). Move to Trash takes one of
+/// your own, after asking.
 
 // MARK: - The store
 
@@ -143,6 +149,18 @@ final class SkillsLibraryStore: ObservableObject {
         await send(request, timeout: Self.slowTimeout)
     }
 
+    /// The edit a copy's switch would make, before anything is written.
+    func togglePreview(_ location: SkillLocationInfo, enabled: Bool) async -> Result<SkillToggleReply, Failure> {
+        await send(.togglePreview(location, enabled: enabled))
+    }
+
+    /// The previewed edit, written; the list read again so the copy says what it is now.
+    func toggle(_ location: SkillLocationInfo, enabled: Bool, planHash: String) async -> Result<SkillToggleReply, Failure> {
+        let result: Result<SkillToggleReply, Failure> = await send(.toggle(location, enabled: enabled, planHash: planHash))
+        if case .success = result { await loadInstalled(refresh: true) }
+        return result
+    }
+
     /// Why a request didn't come back, in words, and what the section shows for it.
     struct Failure: Error, Equatable {
         enum Kind: Equatable { case unreachable, needsUpdate, refused }
@@ -183,6 +201,46 @@ func libraryOpen(_ store: StateStore, _ link: String, reveal: Bool = false, fail
     store.openLink(link, cwd: nil, rowId: nil, reveal: reveal, onFailure: failed)
 }
 
+/// Using something from the library in an open session (2026-11-11): the sessions as the library matches them, Run (sent
+/// as the palette sends a line), Type (put at the front of the session's reply, to add to), and showing the session
+/// either way, so the press is seen to land.
+@MainActor
+enum LibrarySessions {
+    /// The open sessions, top-level ones only: a subagent has nothing to type into.
+    static func all(_ store: StateStore) -> [LibrarySession] {
+        (store.state?.rows ?? []).filter { $0.parentSessionId == nil }.map { row in
+            let codex = AgentCommands.isCodex(row.backend)
+            return LibrarySession(
+                id: row.id, label: row.label, agent: codex ? "codex" : "claude",
+                accountId: codex ? row.codexAccountId : row.claudeAccountId,
+                folders: [row.cwd].compactMap { $0 } + (row.workDirs ?? []),
+                // Typing needs a pane the daemon can reach, as the palette's rows say, or a message route.
+                canType: row.revealable || row.messageRoute != nil
+            )
+        }
+    }
+
+    /// Sent now, as if typed and Return pressed; the daemon takes a slash line through `injectProviderCommand`.
+    static func run(_ use: LibraryUse, store: StateStore) {
+        store.send(.inject(sessionId: use.session.id, label: use.session.label, text: use.line))
+        show(use.session)
+    }
+
+    /// At the front of the session's reply, with what was already typed after it.
+    static func type(_ use: LibraryUse) {
+        let reply = ComposerDraftStore.shared.textBinding(for: use.session.id)
+        let draft = reply.wrappedValue
+        reply.wrappedValue = draft.isEmpty ? "\(use.line) " : "\(use.line) \(draft)"
+        show(use.session)
+    }
+
+    /// Settings gives way to the session.
+    static func show(_ session: LibrarySession) {
+        SettingsRouter.shared.close()
+        NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: session.id)
+    }
+}
+
 extension PaneSplit {
     /// Settings › Skills' and Benchmarks' list beside the reader: wide enough for a skill's name, description and the
     /// chips under it, and never so wide the SKILL.md beside it can't be read.
@@ -215,6 +273,8 @@ struct ConchSkillsSettingsView: View {
     @State private var pickedEntry: DiscoverSkillInfo.ID?
     @State private var adding: DiscoverSkillInfo?
     @State private var trying: SkillTryTarget?
+    /// A copy's switch, waiting on its preview and Apply.
+    @State private var toggling: SkillToggleTarget?
     /// The reader across the whole section, the list put away: the reader's ⤢, or a pick in a compact section.
     @State private var readerWide = false
     /// Too narrow for the list and the reader side by side (`LibraryLayout`).
@@ -259,6 +319,9 @@ struct ConchSkillsSettingsView: View {
         }
         .sheet(item: $trying) { target in
             SkillTrySheet(target: target, accounts: store.accounts, store: store) { trying = nil }
+        }
+        .sheet(item: $toggling) { target in
+            SkillToggleSheet(target: target, store: store) { toggling = nil }
         }
     }
 
@@ -404,14 +467,67 @@ struct ConchSkillsSettingsView: View {
 
     @ViewBuilder
     private func installedMenu(_ skill: InstalledSkillInfo) -> some View {
-        Button("Try…") { trying = .installed(skill) }
-        if let location = SkillsLibrary.primaryLocation(skill) {
-            Button("Reveal in Finder") { libraryOpen(stateStore, location.path, reveal: true) { linkFailure = $0 } }
-            Button("Copy Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(location.path, forType: .string)
+        let uses = LibraryUses.skill(skill, among: LibrarySessions.all(stateStore)).filter(\.session.canType)
+        if !uses.isEmpty {
+            Menu("Run In") {
+                ForEach(uses) { use in Button("Run \(use.line) in \(use.session.label)") { LibrarySessions.run(use, store: stateStore) } }
+            }
+            Menu("Type Into") {
+                ForEach(uses) { use in Button("Type \(use.line) into \(use.session.label)") { LibrarySessions.type(use) } }
             }
         }
+        Button("Try in a New Session…") { trying = .installed(skill) }
+        if let location = SkillsLibrary.primaryLocation(skill) {
+            Divider()
+            Button("Reveal in Finder") { libraryOpen(stateStore, location.path, reveal: true) { linkFailure = $0 } }
+            Button("Copy Path") { copy(location.path) }
+            if SkillCopies.canTrash(location) {
+                Button("Move to Trash…") { trash(location, of: skill) }
+            }
+        }
+    }
+
+    private func copy(_ path: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    /// One of your own copies to the Trash, after saying what goes and that it can be put back; then the list again.
+    private func trash(_ location: SkillLocationInfo, of skill: InstalledSkillInfo) {
+        guard SkillCopies.canTrash(location) else { return }
+        let target = SkillCopies.trashTarget(location)
+        let alert = NSAlert()
+        alert.messageText = "Move \(skill.name) to the Trash?"
+        alert.informativeText = "\((target as NSString).abbreviatingWithTildeInPath) goes to the Trash, where you can put it back. New sessions in \(SkillsLibrary.locationTitle(location)) won't have it; sessions already open keep it until they start again."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        NSWorkspace.shared.recycle([URL(fileURLWithPath: target)]) { _, error in
+            Task { @MainActor in
+                if let error {
+                    linkFailure = "Couldn't move it to the Trash: \(error.localizedDescription)"
+                    return
+                }
+                await store.loadInstalled(refresh: true)
+            }
+        }
+    }
+
+    /// What the reader's panel does, wired to this page.
+    private func actions(for skill: InstalledSkillInfo) -> SkillDetailActions {
+        SkillDetailActions(
+            run: { LibrarySessions.run($0, store: stateStore) },
+            type: { LibrarySessions.type($0) },
+            tryIt: { trying = .installed(skill) },
+            openSession: { LibrarySessions.show($0) },
+            read: { _ in },
+            toggle: { location, enabled in toggling = SkillToggleTarget(skill: skill, location: location, enabled: enabled) },
+            reveal: { location in libraryOpen(stateStore, location.path, reveal: true) { linkFailure = $0 } },
+            copyPath: { copy($0.path) },
+            trash: { trash($0, of: skill) },
+            openPlugins: { SettingsRouter.shared.select(.tools) },
+            openClaudeAI: { open("https://claude.ai/settings/capabilities") }
+        )
     }
 
     // MARK: Discover
@@ -482,7 +598,8 @@ struct ConchSkillsSettingsView: View {
         Group {
             if tab == .installed {
                 if let skill = store.skills.first(where: { $0.id == picked }) ?? (picked == nil ? firstShown : nil) {
-                    InstalledSkillReader(skill: skill, isWide: $readerWide) { trying = .installed(skill) }
+                    InstalledSkillReader(skill: skill, isWide: $readerWide, uses: LibraryUses.skill(skill, among: LibrarySessions.all(stateStore)),
+                                         actions: actions(for: skill))
                         .id(skill.id)
                 } else {
                     ReaderPlaceholder(text: "Pick a skill to read its SKILL.md here.")
@@ -533,7 +650,7 @@ enum SkillTryTarget: Identifiable {
 /// As tall as the pop-up and the segmented control beside and above it, and as round: AppKit draws both 24 points tall
 /// at a radius of about 6 (measured in the shots, 48 pixels at 2x). The field was 28 at 7, two points proud of the
 /// account menu at either edge.
-private struct LibrarySearchField: View {
+struct LibrarySearchField: View {
     @Binding var text: String
     let prompt: String
     var onSubmit: (() -> Void)?
@@ -610,7 +727,7 @@ private struct IndexChips: View {
 }
 
 /// A line of status in the list: a spinner when it is working, the attention colour when something failed.
-private struct LibraryStatus: View {
+struct LibraryStatus: View {
     var spinning = false
     let text: String
     var isProblem = false
@@ -626,7 +743,7 @@ private struct LibraryStatus: View {
     }
 }
 
-private struct ReaderPlaceholder: View {
+struct ReaderPlaceholder: View {
     let text: String
 
     var body: some View {
@@ -646,7 +763,7 @@ private struct ReaderPlaceholder: View {
 }
 
 /// The reader's line over what it shows: the name, where this copy is, and what can be done with it.
-private struct ReaderBar<Actions: View>: View {
+struct ReaderBar<Actions: View>: View {
     let title: String
     let subtitle: String
     @Binding var isWide: Bool
@@ -694,13 +811,13 @@ private struct ReaderBar<Actions: View>: View {
 }
 
 /// The reader's insets from its edges: the session bar's 14 for words, 8 for an icon button's box (`ReaderIconButton`).
-private enum ReaderInset {
+enum ReaderInset {
     static let words: CGFloat = 14
     static let button: CGFloat = ConchSpace.x2
 }
 
 /// The header's buttons' size and states (HeaderButton), for the reader's bar.
-private struct ReaderIconButton: View {
+struct ReaderIconButton: View {
     let symbol: String
     let help: String
     let action: () -> Void
@@ -722,12 +839,14 @@ private struct ReaderIconButton: View {
     }
 }
 
-/// One of Tyler's skills: the folder of the copy picked (the first switched on), as a folder deliverable shows, SKILL.md
-/// open. With copies in several places, a menu picks which one to read.
+/// One of Tyler's skills: what it does and how to use and manage it (`SkillDetailPanel`), over the folder of the copy
+/// picked (the first switched on), as a folder deliverable shows, SKILL.md open. With copies in several places, each
+/// copy's menu reads another.
 private struct InstalledSkillReader: View {
     let skill: InstalledSkillInfo
     @Binding var isWide: Bool
-    let onTry: () -> Void
+    let uses: [LibraryUse]
+    let actions: SkillDetailActions
     @State private var locationID: SkillLocationInfo.ID?
     @EnvironmentObject private var stateStore: StateStore
     @State private var linkFailure: String?
@@ -736,30 +855,24 @@ private struct InstalledSkillReader: View {
         skill.locations.first { $0.id == locationID } ?? SkillsLibrary.primaryLocation(skill)
     }
 
+    /// The panel's own height, up to this, then it scrolls: a skill in five places still leaves its SKILL.md room.
+    private static let panelCap: CGFloat = 300
+
     var body: some View {
         VStack(spacing: 0) {
             ReaderBar(title: skill.name, subtitle: location.map(subtitle) ?? "", isWide: $isWide) {
-                if skill.locations.count > 1 {
-                    Menu {
-                        ForEach(skill.locations) { candidate in
-                            Button(SkillsLibrary.locationTitle(candidate) + (candidate.enabled == false ? " (off)" : "")) { locationID = candidate.id }
-                        }
-                    } label: {
-                        Text("\(skill.locations.count) copies")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Read another copy")
-                }
-                Button("Try…", action: onTry)
-                    .controlSize(.small)
-                    .help("Start a session that shows what this skill does")
                 if let location {
-                    ReaderIconButton(symbol: "folder", help: "Reveal in Finder") {
+                    ReaderIconButton(symbol: "folder", help: "Reveal this copy in Finder") {
                         libraryOpen(stateStore, location.path, reveal: true) { linkFailure = $0 }
                     }
                 }
             }
+            ScrollView(.vertical) {
+                SkillDetailPanel(skill: skill, uses: uses, reading: location?.id, actions: readingActions)
+            }
+            .frame(maxHeight: Self.panelCap)
+            .fixedSize(horizontal: false, vertical: true)
+            Rectangle().fill(ConchPalette.divider).frame(height: 1)
             if let location {
                 // Commands share their folder with every other command, so their tree opens on their own file.
                 WorkspaceFilesView(root: location.folder, rowID: "", changed: ConchFileChanges(changed: [], relativeTo: ""),
@@ -768,6 +881,13 @@ private struct InstalledSkillReader: View {
             }
         }
         .overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }
+    }
+
+    /// The page's actions, with Read This Copy kept here, where the copy shown is.
+    private var readingActions: SkillDetailActions {
+        var actions = actions
+        actions.read = { locationID = $0.id }
+        return actions
     }
 
     private func subtitle(_ location: SkillLocationInfo) -> String {
@@ -968,6 +1088,106 @@ struct SkillAddSheet: View {
             case let .success(reply):
                 added = reply.added
                 message = "Added to \((reply.added as NSString).abbreviatingWithTildeInPath). Start a new session to use it."
+            case let .failure(error):
+                message = error.message
+            }
+            busy = false
+        }
+    }
+}
+
+// MARK: - A copy's switch
+
+/// A copy's switch: which skill, which copy, and which way.
+struct SkillToggleTarget: Identifiable {
+    let skill: InstalledSkillInfo
+    let location: SkillLocationInfo
+    let enabled: Bool
+    var id: String { "\(location.id)|\(enabled)" }
+}
+
+/// The switch's edit before it is made (the write pass's shape, B3): the settings file and the diff, which way it goes,
+/// and that it reaches new sessions only. Apply carries the preview's hash, so a file that moved since is refused; every
+/// refusal is the daemon's own words.
+struct SkillToggleSheet: View {
+    let target: SkillToggleTarget
+    @ObservedObject var store: SkillsLibraryStore
+    let onDone: () -> Void
+    @State private var preview: SkillToggleReply?
+    @State private var message: String?
+    @State private var busy = false
+    @State private var applied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(target.enabled ? "Turn on" : "Turn off") \(target.skill.name) in \(SkillsLibrary.locationTitle(target.location))")
+                .font(ConchTypography.font(size: 15, weight: .semibold))
+                .foregroundStyle(ConchPalette.textPrimary)
+            Text(target.enabled
+                 ? "Claude Code lists it again for new sessions there: the model may use it, and you can call it by name."
+                 : "Claude Code stops listing it for new sessions there: the model won't use it and its name won't call it. Its folder stays where it is.")
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            if let preview {
+                Text((preview.file as NSString).abbreviatingWithTildeInPath)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                ScrollView([.vertical, .horizontal]) {
+                    Text(preview.diff.isEmpty ? "No change: the file already says so." : preview.diff)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(minHeight: 100, maxHeight: 220)
+                .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+            } else if message == nil {
+                LibraryStatus(spinning: true, text: "Reading its settings file…")
+            }
+            Text("Applies to the next session; a running session is untouched.")
+                .font(ConchTypography.font(size: 10.5))
+                .foregroundStyle(ConchPalette.statusWaiting)
+            if let message {
+                Text(message)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(applied ? ConchPalette.textDim : ConchPalette.statusNeeds)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button(applied ? "Done" : "Cancel", role: .cancel, action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                Button(target.enabled ? "Turn On" : "Turn Off") { apply() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(preview == nil || preview?.diff.isEmpty == true || busy || applied)
+            }
+        }
+        .padding(16)
+        .frame(width: 560)
+        .background(ConchPalette.bg)
+        .task {
+            switch await store.togglePreview(target.location, enabled: target.enabled) {
+            case let .success(reply): preview = reply
+            case let .failure(error): message = error.message
+            }
+        }
+    }
+
+    private func apply() {
+        guard let preview else { return }
+        busy = true
+        Task { @MainActor in
+            switch await store.toggle(target.location, enabled: target.enabled, planHash: preview.planHash) {
+            case let .success(reply):
+                applied = true
+                message = "Written to \((reply.file as NSString).abbreviatingWithTildeInPath)"
+                    + (reply.backup.map { " (the old file is kept as \(($0 as NSString).lastPathComponent))" } ?? "") + "."
             case let .failure(error):
                 message = error.message
             }

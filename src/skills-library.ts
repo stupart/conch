@@ -8,7 +8,9 @@ import { readCodexAccounts, type CodexAccount } from "./codex-accounts.ts";
 import { CONTROL_FRAME_MAX_BYTES } from "./control-framing.ts";
 import { conchHome } from "./home.ts";
 import { workingFolderOverrides } from "./sessions.ts";
+import { applyFileEdit, planSkillOverride, type FileEditPlan } from "./config-write.ts";
 import { applySkillCopy, planSkillCopy, prepareTrialFolder, trialPrompt, validSkillFolderName } from "./skill-install.ts";
+import { readWorkflowRuns, readWorkflows, type WorkflowAccount, type WorkflowEntry, type WorkflowRun, type WorkflowSession, type WorkflowsRead } from "./workflows.ts";
 
 /**
  * The skills library (2026-10-28): every skill on this Mac, across every account and both agents, in one list. Tyler:
@@ -38,7 +40,10 @@ import { applySkillCopy, planSkillCopy, prepareTrialFolder, trialPrompt, validSk
  * (Codex's own skill-creator and claude.ai's) stay apart: the key is the origin's family, the plugin and the name
  * (`skillKey`). Each location carries a digest of its text, so an entry can say its copies differ.
  *
- * Read only. Nothing here enables, disables or removes anything; adding a skill is skill-install.ts.
+ * Read only, but for two writes: adding a skill is skill-install.ts, and a Claude skill of the person's own is switched
+ * on or off for new sessions through Claude Code's `skillOverrides` (`toggle`, 2026-11-11), planned and shown as a diff
+ * first, as the plugin and server switches are (config-write.ts). Workflows, Claude Code's saved multi-agent scripts,
+ * are read beside them (workflows.ts).
  */
 
 export type SkillAgent = "claude" | "codex";
@@ -368,9 +373,27 @@ function commandFound(path: string, location: Omit<SkillLocation, "kind" | "path
   };
 }
 
+/**
+ * A project's `skillOverrides`, from its `.claude/settings.json` and then its `.claude/settings.local.json` (the later
+ * wins, as Claude Code layers them): whether each of its Claude skills is on for the next session there. The Library's
+ * switch writes the local file (2026-11-11), so a project's skill turned off reads back as off.
+ */
+export function projectSkillOverrides(folder: string): Map<string, string> {
+  const overrides = new Map<string, string>();
+  for (const file of ["settings.json", "settings.local.json"]) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(folder, ".claude", file), "utf8"));
+      const values = record(parsed) && record(parsed.skillOverrides) ? parsed.skillOverrides : {};
+      for (const [name, value] of Object.entries(values)) if (typeof value === "string") overrides.set(name, value);
+    } catch {}
+  }
+  return overrides;
+}
+
 /** A folder's skills for every account of each agent: `.claude/skills` and `.claude/commands`, `.agents/skills`. */
 function projectSkills(folder: string): Found[] {
   const found: Found[] = [];
+  const overrides = projectSkillOverrides(folder);
   const scan = (agent: SkillAgent, root: string) => {
     for (const entry of safeEntries(root)) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -382,7 +405,8 @@ function projectSkills(folder: string): Found[] {
         name: metadata.name,
         ...(metadata.description ? { description: metadata.description } : {}),
         location: {
-          agent, origin: "project", kind: "skill", path, projectPath: folder, enabled: null,
+          agent, origin: "project", kind: "skill", path, projectPath: folder,
+          enabled: agent === "claude" && overrides.has(metadata.name) ? overrides.get(metadata.name) !== "off" : null,
           ...optional("invocation", invocationFor(agent, metadata.name, { userInvocable: metadata.userInvocable })),
           digest: digestOf(path),
         },
@@ -451,7 +475,7 @@ export function nestedSkillFolders(root: string, depth = NESTED_DEPTH): string[]
 }
 
 /** Folders that exist, each once by its real path, a session's folder and its repository's top. */
-function projectRoots(folders: readonly string[]): string[] {
+export function projectRoots(folders: readonly string[]): string[] {
   const roots = new Set<string>();
   for (const folder of folders) {
     if (roots.size >= PROJECT_FOLDERS_MAX) break;
@@ -639,7 +663,7 @@ export function markInstalled(entries: readonly DiscoverSkill[], installed: read
 
 // MARK: - The wire
 
-export const SKILLS_LIBRARY_ACTIONS = ["installed", "discover", "open", "add-preview", "add", "trial"] as const;
+export const SKILLS_LIBRARY_ACTIONS = ["installed", "discover", "open", "add-preview", "add", "trial", "toggle-preview", "toggle", "workflows"] as const;
 export type SkillsLibraryAction = (typeof SKILLS_LIBRARY_ACTIONS)[number];
 
 export interface SkillsLibraryRequest {
@@ -659,8 +683,11 @@ export interface SkillsLibraryRequest {
   /** `add-preview`, `add`, `trial`: whose account. A project's or `~/.agents`' skill tried has none. */
   agent?: SkillAgent;
   accountId?: string;
-  /** `add`: the preview's `planHash`, so a folder that changed since is refused. */
+  /** `add`: the preview's `planHash`, so a folder that changed since is refused. `toggle`: the preview's, so a settings
+   * file that moved since is refused. */
   planHash?: string;
+  /** `toggle-preview`, `toggle`: on or off for new sessions. */
+  enabled?: boolean;
 }
 
 export interface SkillAddPreview extends SkillCopyPlanWire {
@@ -688,7 +715,11 @@ export type SkillsLibraryReply =
   | { kind: "skills-library"; action: "open"; entry: DiscoverSkill; folder: string }
   | { kind: "skills-library"; action: "add-preview"; preview: SkillAddPreview }
   | { kind: "skills-library"; action: "add"; added: string; agent: SkillAgent; accountId: string; name: string }
-  | { kind: "skills-library"; action: "trial"; cwd: string; prompt: string; agent: SkillAgent; accountId?: string; name: string };
+  | { kind: "skills-library"; action: "trial"; cwd: string; prompt: string; agent: SkillAgent; accountId?: string; name: string }
+  | { kind: "skills-library"; action: "toggle-preview" | "toggle"; name: string; enabled: boolean; file: string; diff: string;
+    planHash: string; applied: boolean; backup?: string }
+  | { kind: "skills-library"; action: "workflows"; accounts: WorkflowAccount[]; workflows: WorkflowEntry[]; total: number;
+    next?: number; runs: WorkflowRun[]; problems: string[]; readAt: number };
 
 const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f]/;
 const printable = (value: unknown, max: number): value is string =>
@@ -704,6 +735,9 @@ export function skillsLibraryRequestError(value: Record<string, unknown>): strin
     "add-preview": ["entryId", "agent", "accountId"],
     add: ["entryId", "agent", "accountId", "planHash"],
     trial: ["entryId", "path", "agent", "accountId"],
+    "toggle-preview": ["path", "agent", "accountId", "enabled"],
+    toggle: ["path", "agent", "accountId", "enabled", "planHash"],
+    workflows: ["offset", "refresh"],
   };
   const action = value.action as SkillsLibraryAction;
   for (const key of Object.keys(value)) {
@@ -723,6 +757,11 @@ export function skillsLibraryRequestError(value: Record<string, unknown>): strin
     return "Choose a skill and the account to add it to";
   }
   if (action === "add" && value.planHash === undefined) return "add carries the preview's planHash";
+  if (value.enabled !== undefined && typeof value.enabled !== "boolean") return "enabled must be true or false";
+  if ((action === "toggle-preview" || action === "toggle") && (value.path === undefined || value.agent === undefined || value.enabled === undefined)) {
+    return "Choose the skill, and whether it is on";
+  }
+  if (action === "toggle" && value.planHash === undefined) return "toggle carries the preview's planHash";
   if (action === "trial") {
     if ((value.entryId === undefined) === (value.path === undefined)) return "trial names either a skill from an index or an installed skill's file";
     if (value.entryId !== undefined && value.agent === undefined) return "Choose the agent to try it in";
@@ -773,6 +812,10 @@ export function isSkillsLibraryReply(value: unknown): value is SkillsLibraryRepl
     case "add-preview": return record(value.preview) && printable(value.preview.destination, 4_096) && Array.isArray(value.preview.files);
     case "add": return printable(value.added, 4_096);
     case "trial": return printable(value.cwd, 4_096) && printable(value.prompt, 2_000);
+    case "toggle-preview": case "toggle":
+      return printable(value.file, 4_096) && typeof value.diff === "string" && typeof value.applied === "boolean";
+    case "workflows":
+      return Array.isArray(value.accounts) && Array.isArray(value.workflows) && Array.isArray(value.runs) && Number.isSafeInteger(value.total);
     default: return false;
   }
 }
@@ -782,11 +825,35 @@ export function isSkillsLibraryReply(value: unknown): value is SkillsLibraryRepl
 export interface SkillsLibraryDependencies {
   homes(): SkillsLibraryHomes;
   discover: DiscoverProvider;
+  /** The live sessions, for their workflow runs. */
+  sessions?(): WorkflowSession[];
+  /** One account's plugins, for theirs (the capability read when absent). */
+  plugins?(account: ClaudeAccount): Array<{ pluginId: string; installPath: string; enabled: boolean | null }>;
   now?(): number;
+}
+
+/** One Claude account's plugins, where they are installed and whether they are on, as the capability read has them. */
+function installedPlugins(account: ClaudeAccount): Array<{ pluginId: string; installPath: string; enabled: boolean | null }> {
+  return accountCapabilities("claude", account).entities.flatMap((entity) =>
+    entity.kind === "plugin" && entity.plugin.installPath
+      ? [{ pluginId: entity.plugin.pluginId, installPath: entity.plugin.installPath, enabled: entity.plugin.enabledForNextSession }]
+      : []);
+}
+
+/** What the reader's switch may switch: a Claude skill of the person's own, in an account or a project. */
+export function toggleRefusal(location: SkillLocation): string | undefined {
+  if (location.agent !== "claude") return "Codex keeps this switch in its config.toml ([[skills.config]]), which conch doesn't edit yet.";
+  if (location.kind !== "skill") return "A command has no switch of its own in Claude Code: rename or remove its file instead.";
+  if (location.origin === "plugin") return "It comes with its plugin: switch the plugin in Settings › Plugins & MCP.";
+  if (location.origin === "claude.ai") return "It is synced from claude.ai: turn it off there, under Settings › Capabilities.";
+  if (location.origin !== "user" && location.origin !== "project") return "Whoever manages this Mac decides whether it is on.";
+  return undefined;
 }
 
 /** A read the next pages of a listing come from, so a page never comes from a different read than the one before it. */
 const INSTALLED_FRESH_MS = 5_000;
+/** How long the saved workflows' read stands, while Settings › Workflows asks again for a run's progress. */
+const WORKFLOWS_FRESH_MS = 30_000;
 
 /**
  * The daemon's skills library: one inventory read per listing (pages after the first come from it), the indexes through
@@ -796,6 +863,7 @@ const INSTALLED_FRESH_MS = 5_000;
 export function createSkillsLibrary(dependencies: SkillsLibraryDependencies) {
   const now = dependencies.now ?? Date.now;
   let last: { read: InstalledSkillsRead; at: number } | undefined;
+  let lastWorkflows: { read: WorkflowsRead; at: number } | undefined;
 
   /** The last read, unless `fresh` (or there is none). */
   const installed = (fresh: boolean): InstalledSkillsRead => {
@@ -828,8 +896,68 @@ export function createSkillsLibrary(dependencies: SkillsLibraryDependencies) {
     };
   };
 
+  /** An installed skill's location, as a fresh read lists it: the only files a request may name. */
+  const locate = (request: SkillsLibraryRequest): { skill: InstalledSkill; location: SkillLocation } => {
+    for (const skill of installed(true).skills) {
+      const location = skill.locations.find((candidate) => candidate.path === request.path
+        && (request.agent === undefined || candidate.agent === request.agent)
+        && (candidate.accountId === undefined || request.accountId === undefined || candidate.accountId === request.accountId));
+      if (location) return { skill, location };
+    }
+    throw new Error("That skill isn't where it was; refresh the list.");
+  };
+
+  /** The switch's edit: the account's settings for its own skill, the project's local settings for a project's. */
+  const toggleEdit = (request: SkillsLibraryRequest): { skill: InstalledSkill; plan: FileEditPlan } => {
+    const { skill, location } = locate(request);
+    const refusal = toggleRefusal(location);
+    if (refusal) throw new Error(refusal);
+    const file = location.origin === "project"
+      ? join(location.projectPath!, ".claude", "settings.local.json")
+      : join(account("claude", location.accountId ?? request.accountId ?? "default").configDir, "settings.json");
+    return { skill, plan: planSkillOverride(file, skill.name, request.enabled!) };
+  };
+
   async function handle(request: SkillsLibraryRequest): Promise<SkillsLibraryReply> {
     switch (request.action) {
+      case "toggle-preview": {
+        const { skill, plan } = toggleEdit(request);
+        return { kind: "skills-library", action: "toggle-preview", name: skill.name, enabled: request.enabled!, file: plan.file,
+          diff: plan.diff, planHash: plan.beforeHash, applied: false };
+      }
+      case "toggle": {
+        const { skill, plan } = toggleEdit(request);
+        if (plan.beforeHash !== request.planHash) throw new Error(`${plan.file} changed since the preview; look at it again.`);
+        const applied = applyFileEdit(plan);
+        last = undefined;
+        return { kind: "skills-library", action: "toggle", name: skill.name, enabled: request.enabled!, file: plan.file,
+          diff: plan.diff, planHash: plan.beforeHash, applied: true, ...(applied.backup ? { backup: applied.backup } : {}) };
+      }
+      case "workflows": {
+        // The saved workflows are read again when asked to, or half a minute on (the page asks every few seconds while a
+        // run is going); the runs every time.
+        if (request.refresh || !lastWorkflows || now() - lastWorkflows.at >= WORKFLOWS_FRESH_MS) {
+          const homes = dependencies.homes();
+          lastWorkflows = {
+            read: readWorkflows({
+              claudeAccounts: homes.claudeAccounts,
+              projectFolders: homes.projectFolders,
+              plugins: dependencies.plugins ?? installedPlugins,
+            }, now),
+            at: now(),
+          };
+        }
+        const read = lastWorkflows.read;
+        // The runs on the first page only, and the page's workflows in what the frame has left.
+        const runs = request.offset ? [] : readWorkflowRuns(dependencies.sessions?.() ?? [], now());
+        // Never more than a third of a frame: the oldest finished runs give way first.
+        while (runs.length && Buffer.byteLength(JSON.stringify(runs)) > 24 * 1024) runs.pop();
+        const page = pageOf(read.workflows, request.offset ?? 0, PAGE_BUDGET - Buffer.byteLength(JSON.stringify(runs)) - 4 * 1024);
+        return {
+          kind: "skills-library", action: "workflows", accounts: read.accounts, workflows: page.items, total: read.workflows.length,
+          ...(page.next === undefined ? {} : { next: page.next }), runs, problems: read.problems.slice(0, 20), readAt: read.readAt,
+        };
+      }
       case "installed": {
         // A listing's first page reads the disk again, unless a read is only seconds old; its later pages come from it.
         const stale = !last || now() - last.at >= INSTALLED_FRESH_MS;
@@ -880,16 +1008,7 @@ export function createSkillsLibrary(dependencies: SkillsLibraryDependencies) {
             ...(request.accountId ? { accountId: request.accountId } : {}), name,
           };
         }
-        const read = installed(true);
-        let found: { skill: InstalledSkill; location: SkillLocation } | undefined;
-        for (const skill of read.skills) {
-          const location = skill.locations.find((candidate) => candidate.path === request.path
-            && (request.agent === undefined || candidate.agent === request.agent)
-            && (candidate.accountId === undefined || request.accountId === undefined || candidate.accountId === request.accountId));
-          if (location) { found = { skill, location }; break; }
-        }
-        if (!found) throw new Error("That skill isn't where it was; refresh the list.");
-        const { skill, location } = found;
+        const { skill, location } = locate(request);
         const accountId = location.accountId ?? request.accountId;
         if (accountId && !location.accountId) account(location.agent, accountId);
         const folderName = validSkillFolderName(skill.name) ? skill.name : "skill";
@@ -902,7 +1021,7 @@ export function createSkillsLibrary(dependencies: SkillsLibraryDependencies) {
     }
   }
 
-  return { handle, forget: () => { last = undefined; } };
+  return { handle, forget: () => { last = undefined; lastWorkflows = undefined; } };
 }
 
 // MARK: - The CLI (`conch skills`)

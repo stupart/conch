@@ -11,8 +11,12 @@ import CoreGraphics
 ///
 /// Skills and Benchmarks (2026-10-28) sit beside Plugins & MCP: every skill across the accounts, the public indexes' to
 /// add and try, and the benchmark catalog (SkillsLibrary.swift). The header's sparkles opens Skills.
+///
+/// Workflows (2026-11-11) sit beside Skills: Claude Code's saved multi-agent scripts and the runs in open sessions
+/// (LibraryUse.swift, src/workflows.ts). Tyler: "making the rest of the app like skills, workflows, etc much more
+/// pleasurable to use."
 public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
-    case providers, environments, tools, skills, benchmarks, browser, logins, general, phone, permissions, setup
+    case providers, environments, tools, skills, workflows, benchmarks, browser, logins, general, phone, permissions, setup
     /// What went wrong, as tickets, and Fix (2026-10-28, FailureTickets.swift). Last: it is where conch looks after
     /// itself, after Setup, which is where it was set up.
     case failures
@@ -25,6 +29,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .environments: "Environments"
         case .tools: "Plugins & MCP"
         case .skills: "Skills"
+        case .workflows: "Workflows"
         case .benchmarks: "Benchmarks"
         case .browser: "Browser"
         case .logins: "Logins"
@@ -43,6 +48,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         case .environments: "desktopcomputer"
         case .tools: "puzzlepiece.extension"
         case .skills: "sparkles"
+        case .workflows: "flowchart"
         case .benchmarks: "chart.bar.xaxis"
         case .browser: "globe"
         case .logins: "person.badge.key"
@@ -54,10 +60,10 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The section runs the whole width beside the list, a reader of its own at its right (Skills, Benchmarks), rather than
+    /// The section runs the whole width beside the list, a reader of its own at its right (Skills, Workflows, Benchmarks), rather than
     /// stopping at `SettingsLayout.column`: the column's margin would squeeze its list and every scroll view in its reader.
     public var runsFullWidth: Bool {
-        self == .skills || self == .benchmarks
+        self == .skills || self == .workflows || self == .benchmarks
     }
 
     /// The section viewed last, kept in UserDefaults under the key the separate window used, so the one you had open there
