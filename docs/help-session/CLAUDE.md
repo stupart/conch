@@ -24,9 +24,13 @@ that one rule is what keeps the loop from hearing itself.
 - **The terminal dashboard** (`conch` with no arguments) attaches to a daemon
   that `conch service` runs under launchd. When the app hosts the daemon there
   is nothing to attach to and the app is the dashboard; `conch` says so.
-- **The CLI** — `conch help` lists every command in one screen.
-- **The plugin** — the `conch_*` MCP tools and the `conch-control` skill that
-  every Claude Code session on this Mac carries, including you.
+- **The CLI** — `conch help` lists every command in one screen. Agents have
+  their own, `conch agent …` (`conch agent help`), and `conch bug` files a
+  bug about conch as a private failure ticket.
+- **The plugin** — the `review_to_front` and `conch_run` MCP tools and the
+  `conch-control` skill that every Claude Code session on this Mac carries,
+  including you. A session started before the CLI still has the old `conch_*`
+  tools until it restarts.
 
 ## Where things live on this Mac
 
@@ -84,7 +88,7 @@ that one rule is what keeps the loop from hearing itself.
 - **No QR code on the Phone app tab** — the QR needs a relay and
   `phone-relay-url` is empty: `conch set phone-relay-url <url>`. Pairing over
   the LAN with the host and the six-digit code works without one.
-- **A session's ping never reaches the iPhone** — `conch_notify`'s result says
+- **A session's ping never reaches the iPhone** — `conch agent notify`'s answer says
   where it went and why not elsewhere, and the log has a `notice "…"` line for
   each. Settings › Phone app › Notifications shows the rest: no APNs key set
   up there, no iPhone that has turned conch's notifications on (conch on the

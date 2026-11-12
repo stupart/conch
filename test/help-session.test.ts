@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { APP_ERRORS_PATH } from "../src/app-errors.ts";
+import { AGENT_COMMANDS } from "../src/agent-instructions.ts";
 import {
   HELP_SESSION_LABEL,
   ensureHelpSession,
@@ -76,8 +77,17 @@ describe("help session CLAUDE.md", () => {
 
   test("every conch_* tool it names is an MCP tool", () => {
     const tools = new Set([...doc.matchAll(/conch_[a-z_]+/g)].map((m) => m[0]));
-    expect(tools.size).toBeGreaterThanOrEqual(8);
+    // 2026-11-11: the MCP lists two tools, and the rest are `conch agent` commands (the next test).
+    expect(tools).toContain("conch_run");
     for (const tool of tools) expect(mcp).toContain(`name: "${tool}"`);
+  });
+
+  test("every `conch agent <command>` it names is one conch has", () => {
+    const named = new Set([...doc.matchAll(/`conch agent ([a-z-]+(?: [a-z]+)?)/g)].map((m) => m[1]!));
+    expect(named.size).toBeGreaterThanOrEqual(20);
+    const commands = ["help", ...AGENT_COMMANDS.map((command) => command.name)];
+    // A command, or a group of them (`conch agent browser …`).
+    for (const name of named) expect(commands.some((command) => command === name || command.split(" ")[0] === name)).toBe(true);
   });
 
   test("the files and settings it points at are the ones conch uses", () => {

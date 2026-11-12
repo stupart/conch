@@ -247,6 +247,13 @@ export async function* streamLines(stream: ReadableStream<Uint8Array>): AsyncIte
 /** The environment a fresh server is started with: which server handed over, and the session that server serves. */
 export const HANDOFF_FROM_ENV = "CONCH_MCP_HANDOFF_FROM";
 export const HANDOFF_PARENT_ENV = "CONCH_MCP_HANDOFF_PARENT";
+/**
+ * The tools the server that handed over listed, comma-separated, so the fresh one lists those the session had and no
+ * more (mcp.ts `listedMcpTools`). 2026-11-11: most tools moved to `conch agent`; a session started before the move keeps
+ * them until it restarts, and one started after doesn't get them back from a hand-off. Absent (a server older than
+ * this), the session had every tool.
+ */
+export const HANDOFF_LISTED_ENV = "CONCH_MCP_HANDOFF_LISTED";
 
 /**
  * The session's pid, for a server started by a hand-off: the server that handed over names its own parent, and it is

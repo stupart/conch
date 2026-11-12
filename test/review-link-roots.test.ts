@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAgentNote, saveAgentNote, takeAgentNote, userPromptContext } from "../src/agent-notes.ts";
-import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
+import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import { validateSocketTurnEvent } from "../src/control-server.ts";
 import { hookSessionFolders, stopReview } from "../src/hook.ts";
 import { repositoryRoots, reviewLinkScope, rootsHolding, transcriptFolder } from "../src/review-roots.ts";
@@ -298,14 +298,16 @@ describe("what agents are told", () => {
 
   test("the always-on text says what a link is, what a folder does, which line counts, and what a refusal does", () => {
     expect(told).toContain("A link is an http(s) URL, or an absolute path to a file or a folder (shown as its file tree) under this session’s folders");
-    expect(told).toContain("where it started, where it is now, its git repository, `conch_working_folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T)");
+    expect(told).toContain("where it started, where it is now, its git repository, `conch agent folders`, or a temp folder (/tmp, or macOS’s per-user /var/folders/…/T)");
     // And what a temp folder means now: a copy that outlives it.
     expect(told).toContain("which conch copies when it files the link, so a cleaned temp folder can’t take it away");
     expect(told).toContain("only the last counts, so link a folder for several things");
     expect(told).toContain("A refused link is dropped and the summary kept; conch tells the user and you why.");
     // Every session carries it: short, and no longer "use your cwd". 2026-10-05: 380 to 410 words, for what counts as
     // something to publish (a plan, a diff or PR) and "as you go, not only at the end", which "a meaningful result" hid.
-    expect(told.split(/\s+/).length).toBeLessThan(410);
+    // 2026-11-11: 480, for the CLI: each command is two words longer than the tool it was (`conch agent folders` for
+    // `conch_working_folders`), and the text says where the rest is and how to file a bug, in place of 26 tool schemas.
+    expect(told.split(/\s+/).length).toBeLessThan(480);
     expect(renderAgentsMd()).toContain(told);
   });
 
@@ -316,7 +318,7 @@ describe("what agents are told", () => {
     expect(skill).toContain("Only the last such\n  line in a reply counts");
     expect(skill).toContain("the user sees which link and why where the deliverable would be");
     expect(skill).toContain("**outside this session's folders and the temp folders** (the refusal lists them)");
-    expect(AGENT_INSTRUCTIONS.tools.conch_working_folders).toContain("your deliverable links may sit under them");
+    expect(AGENT_COMMANDS.find((command) => command.name === "folders")!.help).toContain("your deliverable links may sit under them");
   });
 });
 

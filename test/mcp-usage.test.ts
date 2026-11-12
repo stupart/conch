@@ -344,6 +344,27 @@ describe("the recorder", () => {
   });
 });
 
+// 2026-11-11: `conch agent` commands are logged as the tools they run, marked `via`, and counted apart in the summary.
+describe("calls through conch agent", () => {
+  test("a line keeps how it came, and the summary counts the commands per tool and in all", () => {
+    const at = Date.parse("2026-11-11T12:00:00Z");
+    expect(mcpCallRecord({ ts: at, tool: "browser_click", ms: 12.4, outcome: "ok", arguments: { target: "e1" }, via: "cli" })).toEqual({
+      ts: at, tool: "browser_click", ms: 12, outcome: "ok", args: ["target"], via: "cli",
+    });
+    expect(mcpCallRecord({ ts: at, tool: "browser_click", ms: 1, outcome: "ok" })).not.toHaveProperty("via");
+    const summary = summariseMcpCalls([
+      { ts: at, tool: "browser_click", ms: 10, outcome: "ok", via: "cli" },
+      { ts: at, tool: "browser_click", ms: 20, outcome: "ok", via: "run" },
+      { ts: at, tool: "browser_click", ms: 30, outcome: "ok" },
+      { ts: at, tool: "review_to_front", ms: 30, outcome: "ok" },
+    ], { since: at - 1, until: at + 1, path: "/x/mcp-usage.jsonl" });
+    expect(summary.cli).toBe(2);
+    expect(summary.tools.find((tool) => tool.tool === "browser_click")).toMatchObject({ calls: 3, cli: 2 });
+    expect(summary.tools.find((tool) => tool.tool === "review_to_front")).toMatchObject({ calls: 1, cli: 0 });
+    expect(formatMcpUsage(summary)[1]).toStartWith("4 calls (2 through conch agent) · ");
+  });
+});
+
 describe("conch mcp-usage", () => {
   const now = Date.parse("2026-10-19T12:00:00Z");
   const day = 86_400_000;

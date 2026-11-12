@@ -206,6 +206,7 @@ import {
 } from "./session-settings.ts";
 import { appendConchError, APP_ERRORS_PATH } from "./app-errors.ts";
 import { conchCheckout, FailureDesk, FIX_CHECK_INTERVAL_MS, ghBranchPr, tmuxSessionAlive } from "./failure-tickets.ts";
+import { BugReportDesk } from "./bug-report.ts";
 import { mcpUsagePath } from "./mcp-usage.ts";
 import {
   attachTerminalSession,
@@ -2183,6 +2184,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
   // Every 5 s for new records; a fixing ticket's PR and session every 5 minutes (`CONCH_FAILURE_CHECK_MS` for the e2e).
   failureDesk.start(5_000, Number(process.env.CONCH_FAILURE_CHECK_MS) || FIX_CHECK_INTERVAL_MS);
+  /**
+   * `conch bug` (bug-report.ts): a report is a record like any failure's, written and filed at once so its answer can
+   * say the ticket's number. 2026-11-11, Tyler: "Also tool for them to submit bugs if possible."
+   */
+  const bugReports = new BugReportDesk({
+    record: (input) => void appendConchError(input, lastPublishedPanelState),
+    poll: () => void failureDesk.poll(),
+    ticket: (key) => failureDesk.tickets().find((ticket) => ticket.id === key),
+  });
   // Cut four: the voice loop owns wake → speak → listen → deliver. Built after
   // every daemon helper it is handed; the closures above reach it lazily.
   /** Background agents parked waiting on you, brought back for a reply (parked-jobs.ts). */
@@ -4503,6 +4513,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     onReviewPreview: (message) => windowPreviews.answer(message),
     failureTickets: failureDesk,
     notices: handleNoticeRequest,
+    bugReports: (request) => {
+      const reply = bugReports.file(request);
+      log(`bug report from ${request.from}: ${reply.kind === "bug-filed" ? `${reply.outcome} #${reply.ticket}` : reply.error}`);
+      if (reply.kind === "bug-filed") void renderSessionPanel();
+      return reply;
+    },
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,
