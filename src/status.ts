@@ -30,6 +30,7 @@ import {
   reviewReady,
 } from "./panel.ts";
 import { conchHome } from "./home.ts";
+import { fileVersion } from "./file-version.ts";
 import { LogDamper } from "./runaway.ts";
 import { toClipboard } from "./inject.ts";
 import { buildClipboardEscape, type MouseEvent } from "./theater-mouse.ts";
@@ -118,6 +119,11 @@ export function publishSessionsFile(
   state: PublishedState,
   path: string = SESSIONS_FILE,
 ): void {
+  writeSessionsText(JSON.stringify(state) + "\n", path);
+}
+
+/** True when the file now holds `text`. */
+function writeSessionsText(text: string, path: string): boolean {
   const directory = dirname(path);
   const temp = join(
     directory,
@@ -126,12 +132,14 @@ export function publishSessionsFile(
   let fd: number | undefined;
   try {
     fd = openSync(temp, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify(state) + "\n", "utf8");
+    writeFileSync(fd, text, "utf8");
     closeSync(fd);
     fd = undefined;
     renameSync(temp, path);
+    return true;
   } catch {
     // External state is advisory; a missing/unwritable /tmp must not break conch.
+    return false;
   } finally {
     if (fd !== undefined) {
       try {
@@ -141,6 +149,73 @@ export function publishSessionsFile(
     try {
       unlinkSync(temp);
     } catch {}
+  }
+}
+
+/**
+ * What a person would notice moving in a published state, as one string: the rows (each one's name, status, whether
+ * it needs them, its voice), manual mode and the queue, what the voice is doing, who holds the audio, and the
+ * outcomes of sends. A change here is published at once; anything else (a conversation growing, an activity line)
+ * waits for the throttle (daemon.ts `publishedStateWriter`).
+ */
+export function noticeableState(state: PublishedState | null): string {
+  if (!state) return "";
+  return JSON.stringify([
+    state.mode,
+    state.live.state,
+    state.live.label,
+    state.rows.map((row) => [row.id, row.label, row.status, row.needsResponse, row.live, row.paused, row.muted]),
+    state.deliveries ?? [],
+    state.audioControl ?? null,
+  ]);
+}
+
+/**
+ * How long the sessions file may go unwritten while nothing in it changes. The Mac app counts a snapshot older than
+ * 45 s as a daemon that may be gone and asks the socket (`StateStore.snapshotFreshness`); written at least this often,
+ * its `ts` never gets there, as the 20 s panel timer's rewrite used to see to.
+ */
+export const SESSIONS_FILE_HEARTBEAT_MS = 15_000;
+
+/**
+ * The sessions file, written only when it would say something new.
+ *
+ * Every render rewrote it, changed or not: the live file is 262–346 KB, rewritten 48–83 times a minute on this Mac,
+ * and in `conch evals`' scripted load 243 times a minute (96 KB each, 23 MB a minute), 2026-11-11, with the Mac app
+ * reading it four times a second. A snapshot that differs from the last one written only in its `ts` is not written,
+ * unless `SESSIONS_FILE_HEARTBEAT_MS` has gone by or the file on disk is no longer the one written (removed,
+ * replaced). The `ts` is set aside the way the phone bridge sets it aside before skipping a frame
+ * (phone-bridge.ts `normalisedFrame`): the first one in the text, the snapshot's own.
+ */
+export class SessionsFilePublisher {
+  #comparable: string | null = null;
+  #written: { ino: number; size: number; mtimeMs: number; at: number } | null = null;
+
+  constructor(
+    private readonly path: string = SESSIONS_FILE,
+    private readonly heartbeatMs: number = SESSIONS_FILE_HEARTBEAT_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** True when the file was written. */
+  publish(state: PublishedState): boolean {
+    const text = JSON.stringify(state) + "\n";
+    const comparable = text.replace(/"ts":\s*\d+/, '"ts":0');
+    const at = this.now();
+    const written = this.#written;
+    if (comparable === this.#comparable && written && at - written.at < this.heartbeatMs) {
+      const onDisk = fileVersion(this.path);
+      if (onDisk && onDisk.ino === written.ino && onDisk.size === written.size && onDisk.mtimeMs === written.mtimeMs) return false;
+    }
+    if (!writeSessionsText(text, this.path)) {
+      this.#comparable = null;
+      this.#written = null;
+      return false;
+    }
+    const version = fileVersion(this.path);
+    this.#comparable = comparable;
+    this.#written = version ? { ...version, at } : null;
+    return true;
   }
 }
 

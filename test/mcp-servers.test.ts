@@ -163,7 +163,7 @@ describe("which sessions can't get the current tools", () => {
 
   test("the daemon publishes it on the sessions file, refreshed once a minute", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    expect(daemon).toContain("publishSessionsFile(withToolsStale(state, toolsStale));");
+    expect(daemon).toContain("sessionsFile.publish(withToolsStale(state, toolsStale));");
     expect(daemon).toContain("const toolsStaleTimer = setInterval(lookForStaleTools, 60_000);");
     // One look at a time (runaway guards): a look whose `ps` hung never stacks another behind it.
     expect(daemon).toContain("if (toolsStaleLook) return;");

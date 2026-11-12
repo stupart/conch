@@ -288,7 +288,8 @@ import {
   openTheaterReview,
   LEGACY_REVIEWS_FILE,
   publishDictation,
-  publishSessionsFile,
+  SessionsFilePublisher,
+  noticeableState,
   REVIEWS_FILE,
   renderPanel,
   resizeRenderer,
@@ -1888,6 +1889,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     transcriptRender.request();
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
+  const sessionsFile = new SessionsFilePublisher();
   let lastPanelModel: PanelModel | null = null;
   /**
    * What each live session's transcript tail said at the last render, and the version of the file it was read from:
@@ -2550,7 +2552,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
       const state = { ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()), mcpToolset: MCP_TOOLSET };
-      publishSessionsFile(withToolsStale(state, toolsStale));
+      // Not written when it would say what the file already says (`SessionsFilePublisher`).
+      sessionsFile.publish(withToolsStale(state, toolsStale));
     }
   }
 
@@ -2685,11 +2688,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   toolsStaleTimer.unref?.();
   setTimeout(lookForStaleTools, 15_000).unref?.();
 
+  /**
+   * The published state goes out at most twice a second, and at once when something a person would see moves
+   * (`noticeableState`: a row's status or name, a row opening or closing, manual mode, the voice starting or stopping, a
+   * send's outcome). It went out up to ten times a second, as fast as renders came: four a second while a session
+   * worked, 243 sessions-file writes a minute in `conch evals`' scripted load (2026-11-11), for a Mac app that reads
+   * the file four times a second and a phone that redraws on every frame. What a burst coalesces is a conversation
+   * growing and a working row's activity line; the latest of them is what goes out.
+   */
+  let lastNoticeable = "";
   const publishedStateWriter = createPublishThrottle(() => {
     breadcrumb("published state: writing the sessions file");
+    lastNoticeable = noticeableState(lastPublishedPanelState);
     writeSessionsFile();
     breadcrumb("published state: sending it to the phone");
     phoneApplication?.publish();
+  }, {
+    intervalMs: 500,
+    urgent: () => noticeableState(lastPublishedPanelState) !== lastNoticeable,
   });
 
   /**
