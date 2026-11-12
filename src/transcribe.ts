@@ -50,6 +50,11 @@ export interface TranscribePcmOptions {
   warmTimeoutMs?: number;
   coldTimeoutMs?: number;
   warn?: WatchdogWarning;
+  /**
+   * One capture's earlier pieces, by position, for its live previews only
+   * (`transcribePcm`). The final transcription hears every piece afresh.
+   */
+  pieceCache?: Map<string, string>;
 }
 
 const HALLUCINATION_BLOCKLIST = new Set([
@@ -491,8 +496,17 @@ export async function transcribePcm(
   if (pieces.length === 1) return transcribePiece(cfg, pcm, onEngine, options);
   const texts: string[] = [];
   let error: string | undefined;
-  for (const piece of pieces) {
-    const result = await transcribePiece(cfg, piece, onEngine, options);
+  for (const [index, piece] of pieces.entries()) {
+    // A live preview of a long capture reuses the pieces it already heard:
+    // every cut is chosen from audio that no longer changes as the capture
+    // grows, so only the last piece is new. Without this each preview, every
+    // 0.7s, sent the whole capture again — a minute of dictation, the whole
+    // minute — and the final transcription queued behind it (2026-11-11).
+    const key = `${piece.byteOffset - pcm.byteOffset}:${piece.byteLength}`;
+    const last = index === pieces.length - 1;
+    const cached = last ? undefined : options.pieceCache?.get(key);
+    const result = cached !== undefined ? { text: cached } : await transcribePiece(cfg, piece, onEngine, options);
+    if (!last && !result.error && options.pieceCache) options.pieceCache.set(key, result.text);
     if (result.text) texts.push(result.text);
     error ??= result.error;
   }

@@ -495,7 +495,7 @@ export function createDictationSession(
         options.traceSequence?.() ?? context.sequence,
         context,
         hooks,
-        (pcm) => transcriptionGate.tryRunPartial(() => transcribe(cfg, pcm, undefined, { coldFallback: false })),
+        (pcm, pieceCache) => transcriptionGate.tryRunPartial(() => transcribe(cfg, pcm, undefined, { coldFallback: false, pieceCache })),
         () => {
           if (afterSpeechIdleWindowSecs !== undefined) {
             idleWindowSecs = afterSpeechIdleWindowSecs;
@@ -921,7 +921,7 @@ function armContinuousRecorder(
   diagnosticSequence: number,
   context: { sequence: number; generation: number },
   hooks: ListenHooks,
-  transcribePartial: (pcm: Uint8Array) => Promise<{ text: string }> | undefined,
+  transcribePartial: (pcm: Uint8Array, pieceCache: Map<string, string>) => Promise<{ text: string }> | undefined,
   onSpeechStarted: () => void,
   onPartial: (text: string) => void,
 ): RecorderHandle {
@@ -932,6 +932,8 @@ function armContinuousRecorder(
   let observedRawBytes = 0;
   let partialBusy = false;
   let lastPartialAt = 0;
+  // This capture's earlier pieces, heard once by its previews (transcribePcm).
+  const partialPieces = new Map<string, string>();
   let stopReason: string | undefined;
   hooks.onState?.("armed");
 
@@ -967,7 +969,7 @@ function armContinuousRecorder(
       && !partialBusy
       && now - lastPartialAt >= PARTIAL_TRANSCRIPTION_INTERVAL_MS
     ) {
-      const partial = transcribePartial(readPcm(raw));
+      const partial = transcribePartial(readPcm(raw), partialPieces);
       if (!partial) return;
       partialBusy = true;
       lastPartialAt = now;

@@ -505,4 +505,40 @@ describe("long captures", () => {
     expect(calls).toBe(2);
     expect(result).toEqual({ text: "first half" });
   });
+
+  test("a live preview of a long capture sends only its newest piece; the final hears them all", async () => {
+    // 2026-11-11: a capture is a whole utterance now, so a minute of dictation
+    // is one capture, and each 0.7s preview used to send all of it again.
+    const sent: number[] = [];
+    const client = {
+      transcribeWarm: async (_cfg: Config, wav: Uint8Array) => {
+        sent.push(Math.round((wav.byteLength - 44) / 32_000));
+        return { status: "ok" as const, body: { text: `piece ${sent.length}` } };
+      },
+    } as unknown as WhisperServerClient;
+    const pieceCache = new Map<string, string>();
+    const grow = (seconds: number) => {
+      const pcm = new Uint8Array(16_000 * 2 * seconds);
+      const view = new DataView(pcm.buffer);
+      // Speech with a pause at 19s and at 39s, the same audio however long the capture has run.
+      for (let sample = 0; sample < 16_000 * seconds; sample++) {
+        const t = sample / 16_000;
+        const quiet = (t >= 19 && t < 19.5) || (t >= 39 && t < 39.5);
+        view.setInt16(sample * 2, quiet ? 0 : Math.round(8_000 * Math.sin(sample / 7)), true);
+      }
+      return pcm;
+    };
+
+    await transcribePcm(transcriptionConfig(), grow(60), undefined, { client, coldFallback: false, pieceCache });
+    expect(sent).toHaveLength(3);
+    sent.length = 0;
+    const later = await transcribePcm(transcriptionConfig(), grow(65), undefined, { client, coldFallback: false, pieceCache });
+    // The two pieces cut at 19s and 39s are reused; only the growing tail is sent.
+    expect(sent).toEqual([26]);
+    expect(later.text).toBe("piece 1 piece 2 piece 1");
+
+    sent.length = 0;
+    await transcribePcm(transcriptionConfig(), grow(65), undefined, { client, coldFallback: false });
+    expect(sent).toHaveLength(3);
+  });
 });
