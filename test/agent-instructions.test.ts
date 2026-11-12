@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AGENT_COMMANDS,
+  AGENT_HELP_MAX,
   AGENT_INSTRUCTIONS,
+  movedToolDescription,
+  renderAgentHelp,
   renderAgentsMd,
   renderSkillMd,
   CLAUDE_CODE_INSTRUCTIONS_CUT,
@@ -12,7 +16,7 @@ import {
   type AgentInstructions,
 } from "../src/agent-instructions.ts";
 import { renderHelpSessionClaudeMd } from "../src/help-session.ts";
-import { buildMcpTools, initializeResult, MCP_TOOLS } from "../src/mcp.ts";
+import { buildMcpTools, initializeResult, MCP_LISTED_TOOLS, MCP_TOOLS } from "../src/mcp.ts";
 
 /**
  * What conch tells agents has one source. The AGENTS.md, the skill, the help
@@ -51,15 +55,18 @@ describe("one source for the agent-facing instructions", () => {
     expect(initializeResult(undefined, marked).instructions).toBe("MARK-SERVER-INSTRUCTIONS");
 
     const tools = buildMcpTools(marked);
-    expect(tools.map((tool) => tool.name)).toEqual(Object.keys(marked.tools) as typeof tools[number]["name"][]);
+    expect(tools.map((tool) => tool.name)).toEqual(Object.keys(marked.tools));
     for (const tool of tools) {
-      expect(tool.description).toBe(marked.tools[tool.name]);
+      expect(tool.description).toBe((marked.tools as Record<string, string>)[tool.name]);
       expect(help).toContain(`MARK-${tool.name}`);
     }
   });
 
   test("what ships is the source's own rendering", () => {
-    for (const tool of MCP_TOOLS) expect(tool.description).toBe(AGENT_INSTRUCTIONS.tools[tool.name]);
+    // A listed tool says what it is; a moved one says where it went, from the command it is now.
+    const listed = AGENT_INSTRUCTIONS.tools as Record<string, string>;
+    for (const tool of MCP_TOOLS) expect(tool.description).toBe(listed[tool.name] ?? movedToolDescription(tool.name));
+    expect(MCP_LISTED_TOOLS.map((tool) => tool.name)).toEqual(Object.keys(AGENT_INSTRUCTIONS.tools));
     expect(initializeResult({ protocolVersion: "2025-06-18" }).instructions).toBe(AGENT_INSTRUCTIONS.serverInstructions);
     expect(read("plugin/plugins/conch/AGENTS.md")).toBe(renderAgentsMd());
     expect(read("plugin/plugins/conch/skills/conch-control/SKILL.md")).toBe(renderSkillMd());
@@ -94,15 +101,18 @@ describe("one source for the agent-facing instructions", () => {
    * wrote 686 Playwright screenshot scripts, 112 with conch_capture in their tool list. Claude in Chrome's instructions
    * give a one-line `select:` preload that agents copy; conch's now do too, with Claude Code's own names for the tools.
    */
-  test("the server's instructions give Claude Code one ToolSearch line for conch's page tools, and say conch_capture over a script", () => {
+  // 2026-11-11: the page tools are shell commands now, with nothing to load; only publishing is a deferred tool.
+  test("the server's instructions give Claude Code one ToolSearch line for publishing, and say conch agent capture over a script", () => {
     const told = AGENT_INSTRUCTIONS.serverInstructions;
     const select = /query "select:([^"]+)"/.exec(told)?.[1];
     expect(select?.split(",")).toEqual(TOOLSEARCH_PRELOAD.map((tool) => `mcp__plugin_conch_conch__${tool}`));
-    for (const tool of TOOLSEARCH_PRELOAD) expect(MCP_TOOLS.some((one) => one.name === tool)).toBe(true);
-    expect(TOOLSEARCH_PRELOAD).toContain("conch_capture");
+    for (const tool of TOOLSEARCH_PRELOAD) expect(MCP_LISTED_TOOLS.some((one) => one.name === tool)).toBe(true);
+    expect(TOOLSEARCH_PRELOAD).toEqual(["review_to_front"]);
     expect(told).toContain("in one ToolSearch call");
-    expect(told).toContain("use conch_capture rather than writing a Playwright screenshot script");
-    expect(told).toContain("To fork a session, conch_fork.");
+    expect(told).toContain("Everything else conch does is a command in your shell: `conch agent help` lists them.");
+    expect(told).toContain("use `conch agent capture <url>` rather than writing a Playwright screenshot script");
+    expect(told).toContain("To fork a session, `conch agent fork`.");
+    expect(told).toContain("When conch itself gets something wrong, `conch bug`.");
   });
 
   // 2026-10-18 review: Codex put the instructions in front of each tool's own description, so its 25 tools read alike.
@@ -183,24 +193,47 @@ describe("one source for the agent-facing instructions", () => {
   test("the always-on text names the Workdesk and its items, and says how to show work there", () => {
     const told = AGENT_INSTRUCTIONS.alwaysOn;
     expect(told).toContain("a Workdesk of typed items beside the conversation: deliverables, browser tabs, files, shell, terminal");
-    expect(told).toContain("Show your work there: results with `review_to_front`, pages with `browser_open`.");
-    expect(told).toContain("Browse for the user with conch’s `browser_*` tools so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them.");
-    expect(told).toContain("At a sign-in, ask them to sign in in the tab with `browser_ask`; never type passwords.");
-    expect(told).toContain("Show an Atlas page you read or wrote that matters to the user with `atlas_show`.");
+    expect(told).toContain("Show your work there: results with `review_to_front`, pages with `conch agent browser open`.");
+    expect(told).toContain("Browse for the user with `conch agent browser …` so they can watch in the Workdesk; other browser tools are fine when they ask or the task needs them.");
+    expect(told).toContain("At a sign-in, ask them to sign in in the tab with `conch agent browser ask`; never type passwords.");
+    expect(told).toContain("Show an Atlas page that matters to the user with `conch agent atlas`.");
     const skill = renderSkillMd();
     expect(skill).toContain("## The Workdesk");
     expect(skill).toContain("**Signing in is the user's.**");
-    expect(skill).toContain("stop and ask in the tab itself: `browser_ask {tab?,\n    reason}`");
+    expect(skill).toContain("stop and ask in the tab itself: `conch agent browser\n    ask <reason> [--tab T]`");
     expect(skill).toContain("Passkeys don't work in conch's browser yet");
     expect(skill).toContain("**Pause agents.**");
-    expect(skill).toContain("- **Show an Atlas page** — `atlas_show {path, markdown, summary?}`");
+    expect(skill).toContain("- **Show an Atlas page** — `conch agent atlas <path> --file <markdown file>");
     expect(skill).toContain('key:\n  "atlas:<path>"}`');
     expect(skill).toContain("conch never fetches Atlas");
   });
 
+  // 2026-11-11, Tyler: "I would also like to add a cli … and then the mcp can be more minimal? Also tool for them to submit
+  // bugs if possible." Every session is told where the rest is, what to do in a sandbox, and how to file a bug.
+  test("every session is told the rest is conch agent, conch_run is for a shell that can't reach conch, and conch bug files a bug", () => {
+    const told = AGENT_INSTRUCTIONS.alwaysOn;
+    expect(told).toContain("Everything else is a command in your shell: `conch agent help` lists them; if your shell can’t reach conch (a sandbox), the `conch_run` tool runs the same words.");
+    expect(told).toContain("When conch itself gets something wrong, `conch bug` files a private ticket for the user.");
+    expect(AGENT_INSTRUCTIONS.tools.conch_run).toContain("exactly as `conch agent <command>` runs in your shell");
+    expect(AGENT_INSTRUCTIONS.tools.conch_run).toContain("for when your shell can't reach conch (a sandbox refuses its socket)");
+    expect(AGENT_INSTRUCTIONS.serverInstructions.length).toBeLessThanOrEqual(SERVER_INSTRUCTIONS_MAX);
+    // The help session lists both MCP tools and every command.
+    const help = renderHelpSessionClaudeMd();
+    for (const command of AGENT_COMMANDS) expect(help).toContain(`- \`conch agent ${command.name}\`: ${command.summary}.`);
+    expect(help).toContain("- `review_to_front`: ");
+    expect(help).toContain("- `conch_run`: ");
+    expect(renderAgentHelp().length).toBeLessThanOrEqual(AGENT_HELP_MAX);
+    // The skill says how the CLI knows who you are, and what a shell started before it still has.
+    const skill = renderSkillMd();
+    expect(skill).toContain("## conch's CLI");
+    expect(skill).toContain("it walks up from the command to the session process that\n  started it");
+    expect(skill).toContain("- **File a bug about conch** — `conch bug <title> --happened TEXT --expected TEXT");
+    expect(skill).toContain("never a GitHub issue or anything public");
+  });
+
   test("the skill's description says when to load it: something to look at, or the other sessions", () => {
     expect(AGENT_INSTRUCTIONS.skillDescription).toStartWith("Publish what the user should look at (a page, image, file, folder, build or app state) with review_to_front");
-    expect(AGENT_INSTRUCTIONS.skillDescription).toContain("see or steer their other Claude Code and Codex sessions when asked");
+    expect(AGENT_INSTRUCTIONS.skillDescription).toContain("see or steer their other Claude Code and Codex sessions with `conch agent` when asked");
     // Claude Code lists every skill's description in every session.
     expect(AGENT_INSTRUCTIONS.skillDescription.length).toBeLessThan(300);
   });

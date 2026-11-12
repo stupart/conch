@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -126,6 +127,24 @@ export function buildMcpJson(
   };
 }
 
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The plugin's `bin/conch`, naming the conch that installed it: `conch agent …` from a session's shell (agent-cli.ts)
+ * then reaches the same conch its MCP server runs, even where the session's PATH has none. 2026-11-11: most of conch's
+ * tools moved from the MCP to that CLI.
+ */
+export function buildConchLauncher(absBun: string, absCli: string, compiled = false): string {
+  const invocation = buildMcpInvocation(absBun, absCli, compiled);
+  // The MCP server's invocation, less its `mcp`: the same conch, run as the CLI.
+  const argv = [invocation.command, ...invocation.args.slice(0, -1)].map(shellQuote).join(" ");
+  return `#!/bin/sh
+# Written by \`conch install-plugin\` (src/plugin-install.ts); rewritten at each install. conch's CLI for the sessions
+# this plugin is loaded in (\`conch agent …\`, \`conch bug\`): the conch that installed the plugin.
+exec ${argv} "$@"
+`;
+}
+
 export function buildInstallCommands(dist: string): PluginCommands {
   return {
     claude: [
@@ -177,6 +196,9 @@ async function writeGeneratedPluginFiles(
   // An install gives both the same absolute invocation.
   await writeFileWithParents(join(pluginRoot, ".mcp.json"), mcpJson);
   await writeFileWithParents(join(pluginRoot, ".codex-mcp.json"), mcpJson);
+  const launcher = join(pluginRoot, "bin", "conch");
+  await writeFileWithParents(launcher, buildConchLauncher(absBun, absCli, compiled));
+  chmodSync(launcher, 0o755);
   // Both from the one instruction source (agent-instructions.ts).
   await writeFileWithParents(join(pluginRoot, "AGENTS.md"), renderAgentsMd());
   await writeFileWithParents(

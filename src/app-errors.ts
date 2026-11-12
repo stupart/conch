@@ -8,10 +8,11 @@ const MAX_APP_ERRORS_BYTES = 8 * 1024 * 1024;
 
 /**
  * Who wrote a record. `hook` is a Claude Code hook process that couldn't hand its event to a daemon whose socket was
- * there (hook.ts): short-lived, with no log of its own, it writes here directly. The socket's `app-error` still takes
- * only `ios` and `mac`.
+ * there (hook.ts): short-lived, with no log of its own, it writes here directly. `bug` is a report filed with
+ * `conch bug` (bug-report.ts): the daemon writes it, or the CLI itself when the daemon isn't running. The socket's
+ * `app-error` still takes only `ios` and `mac`.
  */
-export type ConchErrorSource = "ios" | "mac" | "daemon" | "hook";
+export type ConchErrorSource = "ios" | "mac" | "daemon" | "hook" | "bug";
 
 export interface ConchErrorInput {
   source: ConchErrorSource;

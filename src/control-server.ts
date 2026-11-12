@@ -1,5 +1,6 @@
 import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
 import { decodeNoticeRequest, type NoticeRequest } from "./notice-wire.ts";
+import { decodeBugReportRequest, type BugReportReply, type BugReportRequest } from "./bug-report.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1363,6 +1364,11 @@ export interface ControlServerOptions {
    */
   notices?(request: NoticeRequest): Promise<unknown>;
   /**
+   * A bug about conch filed with `conch bug` (bug-report.ts), filed as a failure ticket and answered with its number.
+   * Absent: the request is answered as unavailable.
+   */
+  bugReports?(request: BugReportRequest): BugReportReply;
+  /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
    */
@@ -1572,6 +1578,21 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "notice-error", error: "That was too large to send." })); }
           sock.end(frame);
+          return;
+        }
+        // A bug about conch (bug-report.ts), from `conch bug` in an agent's shell or the owner's terminal, or an agent's
+        // `conch_run`: who filed it is already said (`from`), as a notice's is. The Mac's alone, never a phone's
+        // (phone-bridge.ts `MAC_APP_ONLY_DECODERS`): a ticket holds every session's words, and a phone files none.
+        const bug = decodeBugReportRequest(body);
+        if (bug) {
+          let reply: BugReportReply;
+          if (!bug.ok) reply = { kind: "bug-error", error: `refused: ${bug.error}`, refused: true };
+          else if (!options.bugReports) reply = { kind: "bug-error", error: "this conch can't file bugs; update it" };
+          else {
+            try { reply = options.bugReports(bug.value); }
+            catch (error) { reply = { kind: "bug-error", error: `failed: ${error instanceof Error ? error.message : String(error)}` }; }
+          }
+          sock.end(encodeControlFrame(JSON.stringify(reply)));
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

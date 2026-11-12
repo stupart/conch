@@ -238,6 +238,8 @@ export function occurrenceFromMcpRecord(line: string): FailureOccurrence | undef
       ...(typeof record.backend === "string" ? { backend: record.backend } : {}),
       ...(typeof record.ms === "number" ? { ms: record.ms } : {}),
       ...(Array.isArray(record.args) ? { args: record.args } : {}),
+      // 2026-11-11: a `conch agent` command (cli) or one through `conch_run` (run), rather than the MCP tool itself.
+      ...(typeof record.via === "string" ? { via: record.via } : {}),
     },
     source: "mcp-usage",
   };
@@ -419,6 +421,10 @@ export function fixBrief(ticket: FailureTicket, paths: BriefPaths, now = Date.no
     `What went wrong: ${ticket.origin} · ${ticket.operation}: ${ticket.title}`,
     `Seen ${ticket.count} ${ticket.count === 1 ? "time" : "times"}${sessions ? ` in ${sessions} ${sessions === 1 ? "session" : "sessions"}` : ""}, first ${when(ticket.firstSeen)}, last ${when(ticket.lastSeen)}.`,
     ...(ticket.reopened && ticket.fix?.pr ? [`It came back after ${ticket.fix.pr.url} was merged: that fix didn't hold.`] : []),
+    // 2026-11-11: a bug filed by hand (bug-report.ts) is what someone saw, not what conch recorded: reproduce it first.
+    ...(ticket.origin === "bug"
+      ? ["This is a bug report filed with `conch bug` by an agent or the user: what they saw happen and what they expected are in the state below, with any evidence. Reproduce it before you fix it."]
+      : []),
     "",
     "The latest occurrence, from conch's private failure records (it can hold session names, folder paths and the user's words):",
     `- when: ${when(example.at)} (${local(example.at)} local)`,
