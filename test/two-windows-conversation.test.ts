@@ -191,7 +191,8 @@ describe("the registry's per-window field", () => {
     write(39889, `session_${BRIDGE_A}`);
     write(21210, null);
     write(11111, undefined);
-    const snap = await registrySnapshot(claudeDir, { configDir: join(claudeDir, "conch-config") });
+    // All three are live: the pids are made up, so whether the Mac happens to be running one must not decide it.
+    const snap = await registrySnapshot(claudeDir, { configDir: join(claudeDir, "conch-config"), isPidAlive: () => true });
     const byKey = Object.fromEntries(snap!.infos.map((info) => [info.sessionId, info.bridgeSessionId]));
     expect(byKey).toEqual({
       [`${SESSION}#39889`]: `session_${BRIDGE_A}`,

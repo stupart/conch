@@ -18,19 +18,24 @@ export function encodeControlFrame(line: string): Buffer {
   return frame;
 }
 
-/** Keep bytes until the delimiter: a socket read is not a Unicode boundary. */
+/**
+ * Keep bytes until the delimiter: a socket read is not a Unicode boundary. `maxBytes` is for a reply known to run longer
+ * than a control frame, as a session's capabilities do (`PHONE_READ_REPLY_MAX_BYTES`); every request stays at 64 KiB.
+ */
 export class ControlFrameReader {
   private chunks: Buffer[] = [];
   private size = 0;
   private complete = false;
+
+  constructor(private readonly maxBytes = CONTROL_FRAME_MAX_BYTES) {}
 
   push(chunk: Uint8Array): string | undefined {
     if (this.complete) return;
     const newline = chunk.indexOf(10);
     const bytes = newline < 0 ? chunk : chunk.subarray(0, newline + 1);
     this.size += bytes.byteLength;
-    if (this.size > CONTROL_FRAME_MAX_BYTES || (this.size === CONTROL_FRAME_MAX_BYTES && newline < 0)) {
-      throw new ControlFrameError("frame-too-large", "control frame exceeds 64 KiB including its newline");
+    if (this.size > this.maxBytes || (this.size === this.maxBytes && newline < 0)) {
+      throw new ControlFrameError("frame-too-large", `control frame exceeds ${this.maxBytes / 1024} KiB including its newline`);
     }
     this.chunks.push(Buffer.from(bytes));
     if (newline < 0) return;
