@@ -8,7 +8,8 @@ import SwiftUI
 /// and SwiftUI walks it all again to find that nothing changed. The Mac's sidebar kept its whole session list under
 /// one, and the deliverables strip its tabs (2026-11-11): offscreen on the app's own window over Tyler's sessions file, a
 /// session's turn ending or starting cost ~115 ms of main thread, ~50 with the two timelines held still. This clock keeps
-/// the time in state, moved on by a task, so the frame clock never reaches what it draws (PeriodicClockTests).
+/// the time in state, moved on by a task, so the frame clock never reaches what it draws (PeriodicClockTests). Its own
+/// tick lays what it holds out once more, which a timeline's did not: one pass every ten seconds, against every frame.
 public struct PeriodicClock<Content: View>: View {
     private let period: TimeInterval
     private let content: (Date) -> Content
