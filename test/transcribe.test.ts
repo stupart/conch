@@ -7,11 +7,13 @@ import {
   filterWhisperTranscript,
   isLikelyWhisperHallucination,
   serverSegments,
+  splitAtPauses,
   transcribePcm,
   transcribeWavSegments,
   WhisperServerClient,
 } from "../src/transcribe.ts";
 import type { Config } from "../src/config.ts";
+import { transcriptionHardware } from "../src/whisper-args.ts";
 import type { ColdTranscriptionProcess } from "../src/transcribe.ts";
 
 function constantPcm(sample: number, seconds = 1): Uint8Array {
@@ -155,6 +157,9 @@ describe("cold transcription recovery", () => {
     expect(commands[0]![0]).toBe("fake-whisper-cli");
     // The text path keeps its timestamps off.
     expect(commands[0]).toContain("-nt");
+    // The vocabulary prompt rides the cold path too, without the -mc 0 that would drop it.
+    expect(commands[0]![commands[0]!.indexOf("--prompt") + 1]).toBe("Dictating to Claude Code and Codex about conch.");
+    expect(commands[0]).not.toContain("-mc");
     const inputIndex = commands[0]!.indexOf("-f");
     expect(inputIndex).toBeGreaterThan(0);
     expect(existsSync(commands[0]![inputIndex + 1]!)).toBeFalse();
@@ -396,12 +401,26 @@ describe("timed transcription", () => {
       expect(commands).toHaveLength(1);
       expect(commands[0]).not.toContain("-nt");
       expect(commands[0]![commands[0]!.indexOf("-f") + 1]).toBe(wav.path);
-      // A CLI that failed with nothing to show says so.
+      // A CLI that failed with nothing to show says so — after one more try on
+      // the CPU when the first was on Metal (seashell 3ad4765).
+      const failedCommands: string[][] = [];
       const failed = await transcribeWavSegments(transcriptionConfig(), wav.path, {
         client: await readyClient(new Response("warm down", { status: 503 })),
-        spawnCold: () => ({ stdout: stream(""), exited: Promise.resolve(1), kill() {} }),
+        spawnCold: (command) => {
+          failedCommands.push(command);
+          return { stdout: stream(""), exited: Promise.resolve(1), kill() {} };
+        },
+        warn() {},
       });
       expect(failed).toEqual({ segments: [], error: "Transcription failed" });
+      if (transcriptionHardware().appleSilicon) {
+        expect(failedCommands).toHaveLength(2);
+        expect(failedCommands[0]).not.toContain("-ng");
+        expect(failedCommands[1]).toContain("-ng");
+      } else {
+        expect(failedCommands).toHaveLength(1);
+        expect(failedCommands[0]).toContain("-ng");
+      }
     } finally { wav.done(); }
     expect(await transcribeWavSegments(transcriptionConfig(), "/nonexistent/narration.wav")).toEqual({
       segments: [], error: "File not found: /nonexistent/narration.wav",
@@ -458,5 +477,83 @@ describe("Whisper self-repetition", () => {
     const real = "the select outline shows up when i click it and then it shows up again";
     expect(filterWhisperTranscript(real, heard())).toBe(real);
     expect(filterWhisperTranscript(clause, heard())).toBe(clause);
+  });
+});
+
+describe("long captures", () => {
+  function speechWithPause(seconds: number, pauseAt: number, pauseSecs = 0.6): Uint8Array {
+    const pcm = new Uint8Array(16_000 * 2 * seconds);
+    const view = new DataView(pcm.buffer);
+    for (let sample = 0; sample < 16_000 * seconds; sample++) {
+      const t = sample / 16_000;
+      const quiet = t >= pauseAt && t < pauseAt + pauseSecs;
+      view.setInt16(sample * 2, quiet ? 0 : Math.round(8_000 * Math.sin(sample / 7)), true);
+    }
+    return pcm;
+  }
+
+  test("a capture inside one whisper window stays whole", () => {
+    expect(splitAtPauses(constantPcm(2_000, 28))).toHaveLength(1);
+  });
+
+  test("a long capture is cut at its pause, each piece inside one window", () => {
+    const pcm = speechWithPause(40, 19);
+    const pieces = splitAtPauses(pcm);
+    expect(pieces).toHaveLength(2);
+    const firstSecs = pieces[0]!.byteLength / 32_000;
+    expect(firstSecs).toBeGreaterThan(19);
+    expect(firstSecs).toBeLessThan(19.6);
+    expect(pieces.reduce((sum, piece) => sum + piece.byteLength, 0)).toBe(pcm.byteLength);
+  });
+
+  test("a failed piece keeps the words the other pieces heard", async () => {
+    let calls = 0;
+    const client = {
+      transcribeWarm: async () => {
+        calls++;
+        return calls === 1
+          ? { status: "ok" as const, body: { text: "first half" } }
+          : { status: "failed" as const };
+      },
+    } as unknown as WhisperServerClient;
+    const result = await transcribePcm(transcriptionConfig(), speechWithPause(40, 19), undefined, { client, coldFallback: false });
+    expect(calls).toBe(2);
+    expect(result).toEqual({ text: "first half" });
+  });
+
+  test("a live preview of a long capture sends only its newest piece; the final hears them all", async () => {
+    // 2026-11-11: a capture is a whole utterance now, so a minute of dictation
+    // is one capture, and each 0.7s preview used to send all of it again.
+    const sent: number[] = [];
+    const client = {
+      transcribeWarm: async (_cfg: Config, wav: Uint8Array) => {
+        sent.push(Math.round((wav.byteLength - 44) / 32_000));
+        return { status: "ok" as const, body: { text: `piece ${sent.length}` } };
+      },
+    } as unknown as WhisperServerClient;
+    const pieceCache = new Map<string, string>();
+    const grow = (seconds: number) => {
+      const pcm = new Uint8Array(16_000 * 2 * seconds);
+      const view = new DataView(pcm.buffer);
+      // Speech with a pause at 19s and at 39s, the same audio however long the capture has run.
+      for (let sample = 0; sample < 16_000 * seconds; sample++) {
+        const t = sample / 16_000;
+        const quiet = (t >= 19 && t < 19.5) || (t >= 39 && t < 39.5);
+        view.setInt16(sample * 2, quiet ? 0 : Math.round(8_000 * Math.sin(sample / 7)), true);
+      }
+      return pcm;
+    };
+
+    await transcribePcm(transcriptionConfig(), grow(60), undefined, { client, coldFallback: false, pieceCache });
+    expect(sent).toHaveLength(3);
+    sent.length = 0;
+    const later = await transcribePcm(transcriptionConfig(), grow(65), undefined, { client, coldFallback: false, pieceCache });
+    // The two pieces cut at 19s and 39s are reused; only the growing tail is sent.
+    expect(sent).toEqual([26]);
+    expect(later.text).toBe("piece 1 piece 2 piece 1");
+
+    sent.length = 0;
+    await transcribePcm(transcriptionConfig(), grow(65), undefined, { client, coldFallback: false });
+    expect(sent).toHaveLength(3);
   });
 });

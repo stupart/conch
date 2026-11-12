@@ -506,7 +506,7 @@ describe("6. files", () => {
 });
 
 describe("7. a dead daemon's sox is reaped", () => {
-  const ARGV = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 }, "/tmp/conch-normal-1-2.raw", 2).join(" ");
+  const ARGV = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-normal-1-2.raw", 2).join(" ");
   const identityFor = (pid: number) => ({ pid, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/sox", ttyDevice: null });
   const recordAt = (record: object): string => {
     const path = join(mkdtempSync(join(tmpdir(), "conch-a17-sox-")), "sox-recorders.json");
@@ -542,8 +542,11 @@ describe("7. a dead daemon's sox is reaped", () => {
   test("only conch's own capture argv qualifies", () => {
     expect(isConchSox(ARGV)).toBe(true);
     expect(isConchSox("/opt/homebrew/bin/" + ARGV)).toBe(true);
-    expect(isConchSox(soxCaptureArgs({ micGainDb: 6, endSilenceSecs: 3.5, endThresholdPct: 2 }, "/tmp/conch-diag-1-2/normal.raw", 2).join(" "))).toBe(true);
+    expect(isConchSox(soxCaptureArgs({ micGainDb: 6, endSilenceSecs: 3.5 }, "/tmp/conch-diag-1-2/normal.raw", 2).join(" "))).toBe(true);
     expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/other.raw silence -l 1 0.15 2% 1 3.5 2%")).toBe(false);
+    // A daemon from before the pre-roll may have left its recorder behind.
+    expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/conch-normal-1-2.raw silence -l 1 0.15 2% 1 3.5 2%")).toBe(true);
+    expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/conch-normal-1-2.raw gain 6 silence -l 1 0.15 2% 1 3.5 2%")).toBe(true);
     expect(isConchSox("sox song.mp3 out.wav")).toBe(false);
     expect(isConchSox("whisper-server --port 8642")).toBe(false);
   });

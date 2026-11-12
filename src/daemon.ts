@@ -265,6 +265,8 @@ import {
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
+import { setSessionVocabulary } from "./vocabulary.ts";
+import { whisperComputeArgs, whisperCrashed, whisperVadArgs } from "./whisper-args.ts";
 import {
   LOG_FILE,
   prepareLogFile,
@@ -2643,6 +2645,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
 
   function reconcileSessionSnapshot(snap: Awaited<ReturnType<typeof registrySnapshot>>): void {
     const registryLive = snap?.infos ?? [];
+    // Open projects' names are words dictation should spell as written.
+    if (snap?.complete) setSessionVocabulary(registryLive);
     for (const session of registryLive) {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
@@ -4479,6 +4483,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   }
 
   const whisperBinaryAvailable = existsSync(cfg.whisperServerBin);
+  let whisperServerOnCpu = false;
   whisperServerClient.resetHealth();
   whisperSupervisor = new ServerSupervisor<WhisperRecoveryReason>({
     enabled: Boolean(cfg.whisperPort),
@@ -4499,18 +4504,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         [
           cfg.whisperServerBin,
           "-m", cfg.whisperModel,
-          "-vm", cfg.vadModel,
-          "--vad",
-          "--vad-speech-pad-ms", "300",
+          // The same VAD, threads and device as the cold CLI (whisper-args.ts).
+          ...whisperVadArgs(cfg.vadModel),
           "--host", "127.0.0.1",
           "--port", String(cfg.whisperPort),
           "-l", "en",
-          "-t", "6",
+          ...whisperComputeArgs({ cpu: whisperServerOnCpu }),
         ],
         { stdout: "ignore", stderr: "ignore" },
       );
       // So the next daemon can tell this server from a stranger on the port (D3).
       recordSpawnedWhisper(child.pid, cfg.whisperPort);
+      // A warm server that crashes on Metal comes back on the CPU (seashell
+      // 3ad4765), rather than crashing the same way until the breaker trips.
+      void child.exited.then(() => {
+        if (whisperServerOnCpu || !whisperCrashed(child)) return;
+        whisperServerOnCpu = true;
+        log(`whisper-server crashed (${child.signalCode ?? `exit ${child.exitCode}`}) — running it on the CPU until conch restarts`);
+      });
       return child;
     },
     resetReadiness: () => whisperServerClient.resetHealth(),

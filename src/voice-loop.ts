@@ -308,9 +308,27 @@ export function listenHooks(
   } = { setState, setTranscriptPrefix, setMicLevel },
   /** Called the first time the recorder actually arms — the honest "you can talk now". */
   onArmed?: () => void,
-): ListenHooks {
+): ListenHooks & { settle(): void } {
   const refreshTranscriptPrefix = (): void => {
     if (transcriptPrefix) status.setTranscriptPrefix(transcriptPrefix());
+  };
+  // The words of a capture that has ended but is still being transcribed: its
+  // last live partial, kept on screen until its transcript joins the committed
+  // prefix (`settle`). The next recorder arms before that, and clearing the
+  // partial there made the sentence just said vanish from the composer until
+  // the speaker talked again — beside "Transcribing…", the look of a mic that
+  // had stopped (2026-11-11, Tyler: "it doesn't end and start transcribing").
+  let current = "";
+  let ending = "";
+  let shown: ConchState = "listening";
+  const show = (state: ConchState, partial: string): void => {
+    shown = state;
+    status.setState(state, label, ending && partial ? `${ending} ${partial}` : ending || partial);
+  };
+  const ended = (): void => {
+    if (!current) return;
+    ending = ending ? `${ending} ${current}` : current;
+    current = "";
   };
   // A newly-created conversation may adopt an already-open barge recorder, in
   // which case no initial "armed" transition fires. Reset eagerly so that path
@@ -322,19 +340,32 @@ export function listenHooks(
       // preserves the prefix, so theater never paints a stale one in between.
       refreshTranscriptPrefix();
       if (state === "armed") {
+        // A recorder arms when the one before it has ended.
+        ended();
         onArmed?.();
-        status.setState("listening", label);
+        show("listening", "");
       }
-      else if (state === "capturing") status.setState("recording", label);
-      else status.setState("transcribing", label);
+      else if (state === "capturing") show("recording", "");
+      else {
+        ended();
+        show("transcribing", "");
+      }
     },
     onPartial: (text) => {
       // Footer remains the current capture only; theater separately reads the
       // authoritative committed prefix installed immediately afterward.
-      status.setState("recording", label, text);
+      current = text;
+      show("recording", text);
       refreshTranscriptPrefix();
     },
     onLevel: (level) => status.setMicLevel?.(level),
+    settle: () => {
+      if (!ending) return;
+      ending = "";
+      // The prefix first: in the same tick, the apps see one change, not a gap.
+      refreshTranscriptPrefix();
+      show(shown, current);
+    },
   };
 }
 
@@ -3904,6 +3935,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             text: controllerEvent.text,
             ...(controllerEvent.diagnosticId ? { diagnosticId: controllerEvent.diagnosticId } : {}),
           });
+          // Its words are in the committed prefix now (or were a command): the
+          // partial that stood in for them can go.
+          dictationHooks.settle();
           const trace = effects.find((effect) => effect.type === "trace");
           if (trace?.type === "trace") {
             log(`heard: ${spokenPreview(controllerEvent.text)} -> ${trace.intent}${reducer.snapshot.buffer.length ? " (holding)" : ""}`);
@@ -3940,6 +3974,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           applyEffects(effects, { timeoutOwnsBarrier: true });
           continue;
         } else if (controllerEvent.kind === "error") {
+          dictationHooks.settle();
           emitRecorderTrace(controllerEvent.diagnosticId, {
             intent: `${controllerEvent.stage}-error`,
             bufferCountAfterReduction: reducer.snapshot.buffer.length,
