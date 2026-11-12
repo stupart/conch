@@ -274,7 +274,7 @@ ${mode}
 │ macOS will ask for microphone access the first time something speaks. Allow it.
 │ If you miss the prompt, run \`conch doctor\`.
 │
-│ WHERE TO LOOK — \`conch\` (the terminal dashboard, also what to use over ssh)
+│ WHERE TO LOOK — \`conch\` says where the dashboard is; \`conch sessions\` lists every session, also over ssh
 │ IF IT'S QUIET — \`conch doctor\`
 │
 │ ${footer}
@@ -507,9 +507,10 @@ export async function downloadModel(
  * but launchd gives us no terminal at all, which satisfies that constraint
  * more completely than tmux did.
  *
- * With no TTY the daemon selects the headless renderer and draws nothing. To
- * watch it, run `conch` in a terminal or open the Mac app: both are viewers
- * that attach over the socket, which is what they were always meant to be.
+ * With no TTY the daemon selects the headless renderer and draws nothing. The
+ * Mac app attaches to it over the socket; `conch` in a terminal says so, and
+ * where its log is, since there is no terminal dashboard to attach to
+ * (dashboard-attach.ts, 2026-11-11).
  */
 export function serviceRestartCommands(tmux: string | null, uid: number): string[][] {
   return [
