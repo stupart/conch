@@ -1,5 +1,5 @@
 import { join, dirname } from "node:path";
-import { existsSync, mkdirSync, chmodSync, unlinkSync, rmSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { conchHome } from "./home.ts";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
@@ -511,12 +511,6 @@ export async function downloadModel(
  * watch it, run `conch` in a terminal or open the Mac app: both are viewers
  * that attach over the socket, which is what they were always meant to be.
  */
-export function renderSupervisorScript(_tmux: string, _daemonCmd: string): string {
-  // Retained only so an older installed copy can still be recognised and
-  // replaced; nothing generates a supervisor script any more.
-  return "#!/bin/zsh\n# obsolete — conch is supervised by launchd directly\n";
-}
-
 export function serviceRestartCommands(tmux: string | null, uid: number): string[][] {
   return [
     // Clear a session left by an older tmux-hosted install, so its daemon

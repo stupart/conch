@@ -137,7 +137,6 @@ describe("the app carries uv", () => {
     expect(install).toContain('UV_HELPER="$INSTALLED_APP_PATH/Contents/Helpers/uv"');
     expect(install).toContain('codesign --verify --strict --verbose=2 "$UV_HELPER"');
     expect(read("scripts/build-release.sh")).toContain('codesign --verify --strict "$APP_SRC/Contents/Helpers/uv"');
-    expect(read("scripts/release-app.sh")).toContain('codesign --verify --strict --verbose=2 "$APP/Contents/Helpers/uv"');
   });
 });
 

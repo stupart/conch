@@ -274,15 +274,6 @@ final class SpeechController: NSObject, ObservableObject {
         }
     }()
 
-    /// True when the phone has nothing better than the compact voice installed.
-    ///
-    /// Worth surfacing rather than silently sounding bad: the better voices are
-    /// a free download, but they live in Settings under Accessibility where
-    /// nobody would think to look for them.
-    var usingCompactVoice: Bool {
-        (Self.bestVoice?.quality ?? .default) == .default
-    }
-
     /// Markdown is written to be read, not spoken. Strip what would be recited
     /// as punctuation soup — the Mac's TTS does the same before it speaks.
     static func speakable(_ markdown: String) -> String {

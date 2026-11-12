@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { CONCH_STORE_PARTS, conchStoreRoot } from "./conch-store.ts";
+import { CONCH_STORE_PARTS } from "./conch-store.ts";
 import { conchHome } from "./home.ts";
 
 /**
@@ -16,8 +16,8 @@ import { conchHome } from "./home.ts";
  *
  * The Mac app checks the folder the daemon names against the same path (ConchDesign `PageCapture.folder`).
  */
-export const CAPTURE_FOLDER_PARTS = [...CONCH_STORE_PARTS, "captures"] as const;
+const CAPTURE_FOLDER_PARTS = [...CONCH_STORE_PARTS, "captures"] as const;
 
 export function captureFolderPath(home: string = conchHome()): string {
-  return join(conchStoreRoot(home), "captures");
+  return join(home, ...CAPTURE_FOLDER_PARTS);
 }

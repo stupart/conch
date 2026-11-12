@@ -302,8 +302,3 @@ public struct AgentUpdatesCard<Marks: AgentUpdateMarks>: View {
 public protocol AgentUpdateMarks {
     func mark(_ backend: String) -> Image?
 }
-
-public struct NoAgentUpdateMarks: AgentUpdateMarks {
-    public init() {}
-    public func mark(_ backend: String) -> Image? { nil }
-}

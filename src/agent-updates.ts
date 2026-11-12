@@ -377,7 +377,6 @@ export class AgentUpdater {
   private updating = new Set<SessionBackend>();
   private queue: Promise<unknown> = Promise.resolve();
   private checkTimer: unknown = null;
-  private sweepTimer: unknown = null;
 
   constructor(private readonly deps: AgentUpdaterDeps) {
     this.state = readAgentUpdatesState(deps.statePath);
@@ -387,7 +386,7 @@ export class AgentUpdater {
     if (this.deps.refused()) return;
     if (this.checkTimer !== null) return;
     this.scheduleCheck(true);
-    this.sweepTimer = this.deps.setTimer(() => this.periodicSweep(), SWEEP_EVERY_MS);
+    this.deps.setTimer(() => this.periodicSweep(), SWEEP_EVERY_MS);
     // A folder still held from before a restart: if everything on it went while the daemon was down, it can go now.
     void this.serialize(() => this.sweep());
   }
@@ -403,7 +402,7 @@ export class AgentUpdater {
 
   private periodicSweep(): void {
     void this.serialize(() => this.sweep()).finally(() => {
-      this.sweepTimer = this.deps.setTimer(() => this.periodicSweep(), SWEEP_EVERY_MS);
+      this.deps.setTimer(() => this.periodicSweep(), SWEEP_EVERY_MS);
     });
   }
 

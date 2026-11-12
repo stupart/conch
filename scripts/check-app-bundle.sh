@@ -8,8 +8,8 @@
 #
 # The second argument is the daemon the build prefers (Info.plist
 # ConchDaemonSource): `bundled` for anything shipped, `checkout` for the dev
-# install (scripts/build-app.sh). Run by build-app.sh, build-release.sh and
-# release-app.sh; every failure names the file and exits 1.
+# install (scripts/build-app.sh). Run by build-app.sh and build-release.sh;
+# every failure names the file and exits 1.
 set -euo pipefail
 
 APP="${1:?usage: scripts/check-app-bundle.sh <conch.app> <bundled|checkout>}"

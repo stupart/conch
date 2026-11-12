@@ -390,9 +390,6 @@ describe("the build wires it in, and every shipping script checks it", () => {
     // The CLI is compiled before the app that embeds it, and packed beside it.
     expect(release.indexOf('bun build --compile --target="$target"')).toBeLessThan(release.indexOf("xcodebuild -project"));
     expect(release).toContain('tar -C "$DIST" -czf "$DIST/conch-macos-$arch.tar.gz" conch conch.app');
-    const cask = read("scripts/release-app.sh");
-    expect(cask).toContain('ARCHS="$ARCH" ONLY_ACTIVE_ARCH=NO CONCH_DAEMON_SOURCE=bundled build');
-    expect(cask).toContain('scripts/check-app-bundle.sh "$APP" bundled');
   });
 
   test("the bundle check covers every helper: present, Developer ID, Hardened Runtime, the app's architectures, the entitlements, the version", () => {

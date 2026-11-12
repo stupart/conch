@@ -191,7 +191,7 @@ anchors; pixel-level scroll preservation remains a PR 7b UI test.
   and no tool id to match a live tool row by; ancestry still incomplete after the parent was
   indexed; a real rename-and-replace leaving the epoch untouched; an exited worker never
   replaced.
-- `bun scripts/check-records-identity-mutations.ts`: exit 0. Five mutations — blocks back to
+- `bun scripts/check-records-identity-mutations.ts` (a one-off proof, removed 2026-11-11): exit 0. Five mutations — blocks back to
   one item each, the tool id dropped, the provider's parent id not written, the replacement
   epoch bump disabled, the exited worker held onto — each had baseline exit 0, mutant exit 1
   and restored exit 0, with each file verified byte-for-byte against its original checksum.

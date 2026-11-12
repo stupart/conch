@@ -33,11 +33,6 @@ export interface BrowserOpenRequest {
   profile?: string;
 }
 
-/** What the daemon answers. Anything but `browser-opened` sends the link to the default browser instead. */
-export type BrowserOpenReply =
-  | { kind: "browser-opened"; tabId: string; sessionId: string }
-  | { kind: "browser-error"; error: string };
-
 const MAX_URL_LENGTH = 32 * 1024;
 const MAX_PROFILE_LENGTH = 128;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;

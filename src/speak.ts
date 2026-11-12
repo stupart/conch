@@ -22,7 +22,7 @@ import {
 import type { Config } from "./config.ts";
 import { recordTelemetry, round } from "./telemetry.ts";
 import { splitSentences } from "./snippet.ts";
-import { TtsHealthMachine, type TtsHealthSnapshot } from "./tts-health.ts";
+import { TtsHealthMachine } from "./tts-health.ts";
 import {
   TtsWorkerInferenceError,
   TtsWorkerTimeoutError,
@@ -116,10 +116,6 @@ let voiceCacheKey = "";
 let availableVoices: Set<string> | null = null;
 let knownGoodVoice = "";
 let tmpCounter = 0;
-
-export function getTtsHealth(): TtsHealthSnapshot {
-  return ttsHealth.snapshot();
-}
 
 function bisect(text: string): [string, string] | null {
   const trimmed = text.trim();
