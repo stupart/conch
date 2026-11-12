@@ -58,6 +58,8 @@ public enum SidebarRowText {
             case question
             /// What a working agent is doing right now (`SidebarActivity`). Drawn faintest: it is news, not a request.
             case activity
+            /// How many things it started are still running (2026-11-11, `StillRunning.rowLine`): "3 still running".
+            case stillRunning
             /// Which session started this one.
             case startedBy
         }
@@ -86,10 +88,14 @@ public enum SidebarRowText {
     ///
     /// Below the question, so a blocked row says what it is blocked on; above the starter, because a started session
     /// already sits indented under its starter, and the tooltip and VoiceOver still name it.
-    public static func secondLine(message: String?, blockedOn: String?, activity: String?, startedBy: String?) -> SecondLine? {
+    ///
+    /// 2026-11-11: what it left running (`stillRunning`, src/resource-ledger.ts) comes after what it is doing and before
+    /// its starter: an idle session holding three dev servers says so, a working one says what it is doing.
+    public static func secondLine(message: String?, blockedOn: String?, activity: String?, stillRunning: Int? = nil, startedBy: String?) -> SecondLine? {
         if let message = present(message) { return SecondLine(text: message, kind: .message) }
         if let blockedOn = present(blockedOn) { return SecondLine(text: blockedOn, kind: .question) }
         if let activity = SidebarActivity.clean(activity) { return SecondLine(text: activity, kind: .activity) }
+        if let running = StillRunning.rowLine(stillRunning) { return SecondLine(text: running, kind: .stillRunning) }
         return present(startedBy).map { SecondLine(text: "started by \($0)", kind: .startedBy) }
     }
 
@@ -109,10 +115,12 @@ public enum SidebarRowText {
         agent: String,
         voice: SessionVoice.Mark?,
         startedBy: String?,
-        activity: String? = nil
+        activity: String? = nil,
+        stillRunning: Int? = nil
     ) -> String {
         var parts = [name, state]
         if let activity = SidebarActivity.clean(activity) { parts.append(activity) }
+        if let running = StillRunning.rowLine(stillRunning) { parts.append(running) }
         parts.append(agent)
         if let voice { parts.append(voice.meaning) }
         if let startedBy = present(startedBy) { parts.append("started by \(startedBy)") }
@@ -195,6 +203,7 @@ public struct SidebarSecondLine: View {
         case .message: return AnyShapeStyle(ConchColor.attention.opacity(0.9))
         case .question, .startedBy: return AnyShapeStyle(ConchColor.textSecondary)
         case .activity: return AnyShapeStyle(ConchColor.textTertiary)
+        case .stillRunning: return AnyShapeStyle(ConchColor.textTertiary)
         }
     }
 }

@@ -2660,6 +2660,8 @@ try render("reply-bar-swoop", width: 1860) {
 // First-run setup (OnboardingGallery.swift).
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
+// What sessions left running (StillRunningGallery.swift).
+try renderStillRunning()
 
 // MARK: - Infinite scroll
 

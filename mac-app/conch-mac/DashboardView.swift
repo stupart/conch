@@ -625,9 +625,18 @@ private struct SessionLedger: View {
         return state.rows.map(\.id) + state.dismissedRows.map { "dismissed:\($0.id)" }
     }
 
+    /// Stop, Keep or Ask later on something a session left running: the daemon's to do, over the socket. The app sends
+    /// no pid, which is how the daemon knows the word is Tyler's. A stop waits for it (`colima stop` can take minutes).
+    static let decideResource: @Sendable (String, ResourceAction) async -> String? = { id, action in
+        switch await ConchSocketClient().request(ResourceDecideRequest(id: id, action: action), timeout: action == .stop ? 200 : 5) {
+        case .reply(let data): return StillRunning.replyError(data)
+        case .connectFailed, .timeout: return StillRunning.replyError(nil)
+        }
+    }
+
     var body: some View {
         Group {
-            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty {
+            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty || !(state.resources?.items.isEmpty ?? true) {
                 ScrollViewReader { proxy in
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
@@ -744,6 +753,16 @@ private struct SessionLedger: View {
                                           .id(row.id)
                                         }
                                     }
+                                }
+
+                                // What sessions left running, whose, and Tyler's word on it (src/resource-ledger.ts,
+                                // ConchDesign/StillRunning.swift). Tyler, 2026-11-11: "maybe we need like a resource ledger
+                                // as part of conch so things are linked to the sessions that made them or are using them and
+                                // we can have less loose ends for things that are meaning to run temporarily." Beside the
+                                // sessions, above the dismissed ones; nothing when nothing runs. conch stops nothing itself.
+                                if let resources = state.resources, !resources.items.isEmpty {
+                                    StillRunningSection(resources: resources, now: timeline.date, decide: Self.decideResource)
+                                        .id("still-running")
                                 }
 
                                 if !state.dismissedRows.isEmpty {
@@ -1173,6 +1192,8 @@ private struct DashboardRow: View {
             message: rowMessage,
             blockedOn: row.status == .needs ? row.detail : nil,
             activity: activity,
+            // What it left running (src/resource-ledger.ts): "3 still running", once it isn't working.
+            stillRunning: row.stillRunning,
             startedBy: startedByLabel
         )
     }
@@ -1186,7 +1207,8 @@ private struct DashboardRow: View {
             agent: AgentBadge.name(for: row.backend),
             voice: voice.mark,
             startedBy: startedByLabel,
-            activity: activity
+            activity: activity,
+            stillRunning: row.stillRunning
         )
     }
 
