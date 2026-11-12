@@ -151,8 +151,7 @@ describe("Open Settings goes to the permission's own list, through the store's o
     // the canvas's `CanvasCapture` until 2026-11-11).
     expect(perform.slice(perform.indexOf("case .reopen:"))).toContain("ScreenRecordingGrant.reopen(store) { [weak self] in");
     const reopen = member(permissionsCode, "static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {");
-    expect(reopen).toContain("guard let store else { return failed() }\n        store.relaunchForNewBuild()");
-    expect(reopen).toContain("if store.relaunchFailure != nil { failed() }");
+    expect(reopen).toContain("guard let store else { return failed() }\n        store.relaunchForNewBuild(failed: failed)");
   });
 });
 
@@ -340,8 +339,9 @@ describe("Reopen conch hands the daemon over before the new conch looks for one"
     expect(relaunch).toContain("guard let error else { NSApp.terminate(nil); return }");
     expect(relaunch).toContain("if handedOver { daemon?.start() }");
     expect(relaunch).toContain("failed?()");
-    // The canvas, the permission rows and the stale-build line all reopen through it.
-    expect(code(read("mac-app/conch-mac/CanvasSend.swift"))).toContain("store.relaunchForNewBuild(failed: failed)");
+    // The permission rows (through `ScreenRecordingGrant`, the canvas's until it went with the overlays) and the
+    // stale-build line both reopen through it.
+    expect(code(read("mac-app/conch-mac/Permissions.swift"))).toContain("store.relaunchForNewBuild(failed: failed)");
     expect(code(read("mac-app/conch-mac/Notices.swift"))).toContain('Button("Relaunch") { store.relaunchForNewBuild() }');
   });
 });
