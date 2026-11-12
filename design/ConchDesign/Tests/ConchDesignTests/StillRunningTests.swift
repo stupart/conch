@@ -16,11 +16,11 @@ final class StillRunningTests: XCTestCase {
 
     private var fixture: PublishedResources {
         PublishedResources(sampledAt: ms, asking: 3, items: [
-            ResourceItem(id: "p43091", kind: "server", title: "vite :5297", command: "node node_modules/.bin/vite --port 5297",
+            ResourceItem(id: "p4101", kind: "server", title: "vite :5173", command: "node node_modules/.bin/vite --port 5173",
                          cwd: "/Users/dev/site", owner: .init(label: "Landing page", live: false, how: "environment", endedAt: ms - 2 * 1_440 * minute),
                          startedAt: ms - 2 * 1_440 * minute - 30 * minute, cpu: 0.1, memory: 258 * 1_048_576,
                          lifetime: .init(kind: "session", inferred: true), state: "asking", reason: "its session ended"),
-            ResourceItem(id: "p94214", kind: "server", title: "python http.server :5260", command: "python -m http.server 5260",
+            ResourceItem(id: "p4102", kind: "server", title: "python http.server :8000", command: "python -m http.server 8000",
                          owner: .init(label: "Landing page", live: false, how: "environment", endedAt: ms - 26 * 60 * minute),
                          startedAt: ms - 27 * 60 * minute, cpu: 0, memory: 15 * 1_048_576, state: "asking", reason: "its session ended"),
             ResourceItem(id: "p6100", kind: "watcher", title: "tsc -w -p .", command: "tsc -w -p .",
@@ -30,12 +30,12 @@ final class StillRunningTests: XCTestCase {
             ResourceItem(id: "vm-ci", kind: "vm", title: "colima ci", command: "limactl hostagent colima-ci",
                          owner: .init(sessionId: "s1", label: "Build farm", live: true, how: "environment"),
                          startedAt: ms - 45 * minute, cpu: 133.2, memory: 12 * 1_073_741_824, state: "running"),
-            ResourceItem(id: "p63965", kind: "server", title: "next :3193 :3194", command: "next dev",
+            ResourceItem(id: "p4103", kind: "server", title: "next :3000 :3001", command: "next dev",
                          owner: .init(sessionId: "s1", label: "Build farm", live: true, how: "tree"),
                          startedAt: ms - 9 * minute, cpu: 88.5, memory: 1.4 * 1_073_741_824, state: "running"),
-            ResourceItem(id: "sim-9acc7dd3", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim",
+            ResourceItem(id: "sim-1a2b3c4d", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim",
                          startedAt: ms - 28 * 60 * minute, cpu: 1.1, memory: 3.1 * 1_073_741_824, state: "unowned", reason: "no session started it"),
-            ResourceItem(id: "p34378", kind: "browser", title: "headless Chrome :9333", command: "Google Chrome --remote-debugging-port=9333",
+            ResourceItem(id: "p4104", kind: "browser", title: "headless Chrome :9223", command: "Google Chrome --remote-debugging-port=9223",
                          startedAt: ms - 34 * 60 * minute, cpu: 0, memory: 794 * 1_048_576, state: "unowned", reason: "running before conch was watching",
                          preexisting: true),
         ])
@@ -105,9 +105,9 @@ final class StillRunningTests: XCTestCase {
     }
 
     func testTheRequestAndTheReply() throws {
-        let body = try JSONEncoder().encode(ResourceDecideRequest(id: "p43091", action: .later))
+        let body = try JSONEncoder().encode(ResourceDecideRequest(id: "p4101", action: .later))
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
-        XCTAssertEqual(decoded, ["kind": "resource-decide", "id": "p43091", "action": "later"])
+        XCTAssertEqual(decoded, ["kind": "resource-decide", "id": "p4101", "action": "later"])
         XCTAssertNil(StillRunning.replyError(Data(#"{"kind":"resource-done","id":"p1","action":"stop","title":"x","message":"m"}"#.utf8)))
         XCTAssertEqual(StillRunning.replyError(Data(#"{"kind":"resource-error","error":"nothing running is p1"}"#.utf8)), "nothing running is p1")
         XCTAssertEqual(StillRunning.replyError(nil), "Could not reach the conch daemon.")

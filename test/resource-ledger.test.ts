@@ -259,16 +259,16 @@ describe("whose it is", () => {
   test("unowned: a server or headless browser nothing ties to a session; a bare orphan of no one's is not listed", () => {
     const ledger = new ResourceLedger();
     const server = proc("next-server (v16.1.6)", 1, { startedAt: T0 - 60 * MIN });
-    const chrome = proc("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9333 about:blank", 1);
+    const chrome = proc("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9223 about:blank", 1);
     const helper = proc("/Applications/Google Chrome.app/Contents/Frameworks/Helper --type=renderer", chrome.pid, { rss: 300 * 1024 ** 2 });
     const stray = proc("sleep 99999", 1);
     const table = [server, chrome, helper, stray];
-    const listeners = new Map([[server.pid, [3001]], [chrome.pid, [9333]]]);
+    const listeners = new Map([[server.pid, [3001]], [chrome.pid, [9223]]]);
     for (const at of [T0, T0 + MIN]) look(ledger, table, [], at, { listeners });
     const items = ledger.published(T0 + MIN).items;
     expect(items.map((item) => [item.title, item.state, item.preexisting ?? false])).toEqual([
       ["next :3001", "unowned", true],
-      ["headless Chrome :9333", "unowned", false],
+      ["headless Chrome :9223", "unowned", false],
     ]);
     expect(items[1]!.memory).toBe(310 * 1024 ** 2); // the browser and its helpers
   });
@@ -395,6 +395,24 @@ describe("declared lifetimes and Tyler's word", () => {
     for (let at = 2; at < 6; at += 1) look(restarted, orphan, [], T0 + at * MIN, { listeners });
     expect(restarted.published(T0 + 6 * MIN).items[0]).toMatchObject({ owner: { label: "landing page", how: "tree" }, state: "kept" });
     expect(decodeLedgerMemory({ v: 2 })).toEqual(decodeLedgerMemory(undefined));
+  });
+});
+
+describe("stopping", () => {
+  test("shows as stopping until it is gone, or for three minutes; a failed stop says why, owned or not", () => {
+    const ledger = new ResourceLedger();
+    const server = proc("next-server (v16.1.6)", 1);
+    const listeners = new Map([[server.pid, [3002]]]);
+    for (const at of [T0, T0 + MIN]) look(ledger, [server], [], at, { listeners });
+    const entry = ledger.find(`p${server.pid}`)!;
+    ledger.markStopping(entry, T0 + MIN);
+    expect(ledger.stateOf(entry, T0 + 2 * MIN).state).toBe("stopping");
+    expect(ledger.stateOf(entry, T0 + 5 * MIN).state).toBe("unowned");
+    ledger.stopFailed(entry, "it is no longer running as the process conch recorded", T0 + 5 * MIN);
+    expect(ledger.stateOf(entry, T0 + 5 * MIN)).toEqual({ state: "unowned", reason: "couldn't stop it: it is no longer running as the process conch recorded" });
+    // Gone at the next look: nothing left to say.
+    look(ledger, [], [], T0 + 6 * MIN, { listeners });
+    expect(ledger.published(T0 + 6 * MIN).items).toEqual([]);
   });
 });
 
