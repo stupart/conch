@@ -171,7 +171,8 @@ test("the Mac app reads the ack, then waits for session-delivered before taking 
   const store = read("mac-app/conch-mac/StateStore.swift");
   const helper = member(store, "private static func refocusWhenDelivered() -> SteeredDelivery? {");
   const front = helper.indexOf("guard NSApp.isActive else { return nil }");
-  const back = helper.indexOf("return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })");
+  // 2026-11-11: the steer it held the floating input with went with the old overlays; the hand-back stays.
+  const back = helper.indexOf("return SteeredDelivery(whenDelivered: { await StateStore.refocusAfterDelivery() })");
   expect(front).toBeGreaterThan(-1);
   expect(back).toBeGreaterThan(front);
 

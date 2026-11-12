@@ -719,7 +719,7 @@ describe("the Mac app's conch-staged observer (source guards)", () => {
     expect(report).toContain("sendScreenReport(report, of: surface)");
     // conch's own window following a pick, and coming back to the front, are the other reports.
     const content = read("mac-app/conch-mac/ContentView.swift");
-    expect(content).toContain('FloatingPanels.picked(id)\n            // conch\'s own window now shows this session: the screen context\'s conch-staged observer.\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
+    expect(content).toContain('// conch\'s own window now shows this session: the screen context\'s conch-staged observer.\n        .onChange(of: workspace.viewing) { _, id in\n            guard let id else { return }\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
     expect(between(content, "publisher(for: NSApplication.didBecomeActiveNotification)", ".onChange(of: rowIDs)"))
       .toContain('guard let id = workspace.viewing else { return }\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
   });
@@ -799,27 +799,11 @@ describe("the Mac app's front-window observer (source guards)", () => {
     expect(store).toContain("frontWindow = FrontWindowObserver { [weak self] surface, app in");
   });
 
-  test("while the panel fills the screen the app behind it is not said, and it is read again the moment it stops", () => {
-    // The gate holds every reading while covered (`ScreenReportGate.covered`, ScreenObservingTests); the store sets it
-    // from the panel, and uncovered reads the app in front at once rather than on the next poll.
-    const covered = store.slice(store.indexOf("func screenCovered(_ covered: Bool) {"), store.indexOf("/// Take an artifact"));
-    expect(covered).toContain("guard covered != screenGate.covered else { return }\n        screenGate.covered = covered\n        if !covered { frontWindow?.readNow() }");
-    expect(code).toContain("func readNow() {\n        read(after: .zero)\n    }");
-    const panels = read("mac-app/conch-mac/FloatingPanels.swift");
-    expect(panels).toContain("store?.screenCovered(isFullScreen && fog.isVisible)");
-    // Every way it can stop covering: docking back, collapsing straight from full screen, and being hidden from the menu.
-    const toggle = panels.slice(panels.indexOf("func toggleFullScreen() {"), panels.indexOf("func showInPanel() {"));
-    expect(toggle).toMatch(/showBlur\(\)\n        coverChanged\(\)\n    \}/);
-    const collapse = panels.slice(panels.indexOf("private func setCollapsed(_ collapsed: Bool) {"), panels.indexOf("func toggleFullScreen() {"));
-    expect(collapse).toContain("isFullScreen = false\n                coverChanged()");
-    const shown = panels.slice(panels.indexOf("private func showWhatIsOn() {"), panels.indexOf("private func coverChanged() {"));
-    // Hidden by the menu, or with the overlays switched off.
-    expect(shown).toContain("show(fog, overlays && defaults.bool(forKey: ConchStatusItem.showConversationKey))\n        coverChanged()");
-    expect(panels).toContain("self.store = store");
-  });
+  // The floating panel that could cover the screen went with the overlays on 2026-11-11, and with it the store's
+  // screenCovered and the gate's covered: nothing conch draws hides the app in front any more.
 
   test("a report counts as said once the daemon answers it, and a daemon that has seen nothing is told again", () => {
-    const send = store.slice(store.indexOf("private func sendScreenReport("), store.indexOf("func screenCovered("));
+    const send = store.slice(store.indexOf("private func sendScreenReport("), store.indexOf("/// Take an artifact"));
     // Unsaid only when nothing came back (restarting, too slow). A refusal (`screen-error`: a URL past its limit, no
     // screen context) is an answer: said again it is refused again, every three seconds, for as long as it shows.
     expect(send).toContain("if case .reply = await socketClient.request(report) { return }\n            self?.screenGate.unsaid(surface)");

@@ -6,19 +6,9 @@ import SwiftUI
 extension Notification.Name {
     /// A session chosen in the menu bar menu. ContentView selects it, as a click on its row does.
     static let selectSessionFromStatusItem = Notification.Name("com.conch.mac.select-session-from-status-item")
-    /// What the panel would have shown, with the overlays off: ContentView selects the session and puts that version in
-    /// its deliverable pane, beside the conversation (`ConchStatusItem.openInWindow`). Its object is a `WindowOpen`.
+    /// A deliverable opened from outside conch's window: ContentView selects the session and puts that version in its
+    /// deliverable pane, beside the conversation (`ConchStatusItem.openInWindow`). Its object is a `WindowOpen`.
     static let openInWindowFromStatusItem = Notification.Name("com.conch.mac.open-in-window-from-status-item")
-}
-
-/// Debug ▸ Overlays (experimental): every surface conch puts on screens outside its own window, behind one switch that is
-/// off by default (`ConchOverlays`). They come and go as it is switched (`ConchStatusItem.overlaysChanged`).
-struct OverlaysMenuToggle: View {
-    @AppStorage(ConchOverlays.key) private var isOn = ConchOverlays.byDefault
-
-    var body: some View {
-        Toggle("Overlays (experimental)", isOn: $isOn)
-    }
 }
 
 /// The conch mark in the menu bar (M2): an NSStatusItem whose mark shows the voice's state (`ConchMark`, a template
@@ -32,71 +22,13 @@ struct OverlaysMenuToggle: View {
 /// Talk and Quiet or stopping speech from the menu bar leaves you where you were.
 @MainActor
 final class ConchStatusItem: NSObject, NSMenuDelegate {
-    static let showControlBarKey = "conch.showControlBar"
-    static let showConversationKey = "conch.showConversation"
-    /// The conversation panel's reply line; off, the panel only shows the words. On, leaving conch takes the input with
-    /// you into it (ComposerDock).
-    static let showReplyLineKey = "conch.showReplyLine"
-    /// With Panel Off, under Reply Line: leaving conch with the panel off or folded still takes the input with you, as the
-    /// reply line alone in the panel's corner. On until turned off (`ComposerPlacement`).
-    static let replyLineAloneKey = "conch.replyLineAlone"
-    /// A first open from the Ready pill or the menu has turned the conversation panel on (`open`): once, so a panel
-    /// turned off after that stays off.
-    static let panelTurnedOnByOpenKey = "conch.conversationTurnedOnByOpen"
-
     private static var installed: ConchStatusItem?
 
     static func install(store: StateStore) {
         guard installed == nil else { return }
         installed = ConchStatusItem(store: store)
-        // The natural voices' calm line, for the window's notices and the control bar.
+        // The natural voices' calm line, for the window's notices.
         NaturalVoicesNoticeStore.shared.install(store: store)
-        // The overlays only while their switch is on (`ConchOverlays`, off by default): while it is off none of them
-        // installs, registers a key or puts a window on screen. Switched while conch runs, they come or go then.
-        if overlaysOn { installOverlays(store: store) }
-        installed?.watchOverlays()
-    }
-
-    /// The overlays' switch as it stands (Debug ▸ Overlays (experimental)).
-    nonisolated static var overlaysOn: Bool { ConchOverlays.enabled(stored: UserDefaults.standard.object(forKey: ConchOverlays.key)) }
-
-    /// The panels while the overlays are on; nil while they are off, whether or not they were installed earlier this launch.
-    static var panels: FloatingPanels? { overlaysOn ? FloatingPanels.installed : nil }
-
-    /// Everything conch puts on screens outside its own window, in the order each needs the one before. Each installs once;
-    /// installed already, each is left as it is.
-    private static func installOverlays(store: StateStore) {
-        // After the status item, which registers the defaults that show and hide the panels.
-        FloatingPanels.install(store: store)
-        // After the panels, whose staged item it follows.
-        CanvasController.shared.install(store: store)
-        // After the panels and the canvas: the input rides over both when it leaves conch's window.
-        ComposerDock.shared.install(store: store)
-        // After the panels: a tip the tour left by the pill shows again until it's used.
-        TourCoach.shared.install(store: store)
-    }
-
-    /// The overlays as they were last put: what a change of the switch is measured against.
-    private var overlaysShown = false
-    private var overlaysObserver: NSObjectProtocol?
-
-    private func watchOverlays() {
-        overlaysShown = Self.overlaysOn
-        overlaysObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.overlaysChanged() }
-        }
-    }
-
-    /// The switch flipped while conch runs. On: installed now if they never were this launch, and each comes back. Off:
-    /// each goes now. The panels hide and the input comes home by themselves, since they watch the same defaults
-    /// (`FloatingPanels.showWhatIsOn`, `ComposerDock.update`); the canvas and the tour are told.
-    private func overlaysChanged() {
-        let on = Self.overlaysOn
-        guard on != overlaysShown else { return }
-        overlaysShown = on
-        if on { Self.installOverlays(store: store) }
-        CanvasController.shared.overlaysSwitched(on: on)
-        TourCoach.shared.overlaysSwitched(on: on)
     }
 
     private let store: StateStore
@@ -109,13 +41,6 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         self.store = store
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        // The control bar is on until someone turns it off; the conversation opens when asked.
-        UserDefaults.standard.register(defaults: [
-            Self.showControlBarKey: true,
-            Self.showConversationKey: false,
-            Self.showReplyLineKey: true,
-            Self.replyLineAloneKey: true,
-        ])
         item.autosaveName = "conch"
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -140,8 +65,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         state?.rows.filter { ReadyForYou.isReady(working: $0.status == .working, held: $0.held.map { ($0.viewedAt, $0.approvedAt) }) } ?? []
     }
 
-    /// Every session that isn't working and still holds a deliverable, looked at or not: what the Ready pill and the
-    /// panel's Previous and Next can walk to (`ReviewQueue.held`).
+    /// Every session that isn't working and still holds a deliverable, looked at or not (`ReviewQueue.held`).
     nonisolated static func heldRows(_ state: PublishedState?) -> [SessionRow] {
         state?.rows.filter { $0.review != nil && $0.status != .working } ?? []
     }
@@ -150,18 +74,12 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         state?.rows.filter { $0.status == .working } ?? []
     }
 
-    /// The control bar's second line while it would only repeat Talk or Quiet: how many sessions are at work, or nothing.
-    nonisolated static func news(_ state: PublishedState?) -> String? {
-        let working = workingRows(state).filter { $0.parentSessionId == nil }.count
-        return working > 0 ? "\(working) working" : nil
-    }
-
     nonisolated static func voiceState(_ state: PublishedState?) -> VoiceState {
         guard let state else { return .talk }
         return VoiceState.resolve(live: state.live.state, paused: state.mode.paused, readyCount: readyRows(state).count)
     }
 
-    /// The state's mark, which macOS inks for the bar in every state: the voice's colours are the control bar's.
+    /// The state's mark, which macOS inks for the bar in every state.
     private func show(_ voice: VoiceState) {
         guard let button = item.button else { return }
         button.image = ConchMark.statusImage(for: voice)
@@ -175,26 +93,15 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         let state = store.state
         let voice = Self.voiceState(state)
-        let defaults = UserDefaults.standard
         menu.removeAllItems()
-        // FloatingPanels watches these defaults and shows or hides its panels, and the conversation's reply line, as they change.
         let input = StatusMenu.Input(
             voice: voice,
             quiet: state?.mode.paused ?? false,
             exchangeActive: state?.live.isExchangeActive == true,
-            controlBar: defaults.bool(forKey: Self.showControlBarKey),
-            conversation: defaults.bool(forKey: Self.showConversationKey),
-            collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey),
-            replyLine: defaults.bool(forKey: Self.showReplyLineKey),
-            replyLineAlone: defaults.bool(forKey: Self.replyLineAloneKey),
-            drawing: CanvasController.shared.armed,
             ready: Self.readyRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             working: Self.workingRows(state).map { StatusMenu.Session(id: $0.id, label: $0.label) },
             // Setup put away with steps left: a reminder at the top until it's done.
             setupLeft: OnboardingController.shared.menuReminder(),
-            // Off, the overlays' own items (Control Bar, Conversation Panel, Reply Line, With Panel Off, Draw on Screen)
-            // aren't there.
-            overlays: Self.overlaysOn,
             readAloud: !(state?.mode.speechOff ?? false)
         )
         for row in StatusMenu.rows(input) {
@@ -219,7 +126,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return header
     }
 
-    /// What the voice is about, under its state: in the menu header and on the control bar.
+    /// What the voice is about, under its state, in the menu header.
     nonisolated static func detail(_ state: PublishedState?, _ voice: VoiceState, message: String?) -> String {
         if let message { return message }
         if voice == .ready {
@@ -229,16 +136,12 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return state?.live.label ?? ""
     }
 
-    /// One of `StatusMenu`'s items as an NSMenuItem: its command, its tick (a dash for on but not showing), its key, and
+    /// One of `StatusMenu`'s items as an NSMenuItem: its command, its tick, its key, and
     /// its dot. An alternate takes the place of the item before it while ⌥ is held.
     private func entry(_ item: StatusMenu.Item) -> NSMenuItem {
         let entry = NSMenuItem(title: item.title, action: action(item.command), keyEquivalent: item.key)
         entry.target = self
-        entry.state = switch item.mark {
-        case .off: .off
-        case .on: .on
-        case .mixed: .mixed
-        }
+        entry.state = item.mark == .on ? .on : .off
         entry.keyEquivalentModifierMask = NSEvent.ModifierFlags(item.modifiers.map { modifier -> NSEvent.ModifierFlags in
             switch modifier {
             case .control: .control
@@ -277,11 +180,6 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         case .talk: #selector(talk)
         case .quiet: #selector(quietMode)
         case .stop: #selector(stopSpeaking)
-        case .controlBar: #selector(toggleControlBar)
-        case .conversation: #selector(toggleConversation)
-        case .replyLine: #selector(toggleReplyLine)
-        case .replyLineAlone: #selector(toggleReplyLineAlone)
-        case .draw: #selector(toggleCanvas)
         case .openItem: #selector(openItem(_:))
         case .openSession: #selector(openSession(_:))
         case .openConch: #selector(openConch)
@@ -293,7 +191,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     /// Each group's mark in the colour the sidebar draws the same state in: ready's green, working's
     /// blue, both filled. They were template images in the menu's own ink, so working read as nothing
-    /// happening and ready no louder than it; the conversation panel's switcher copies these marks.
+    /// happening and ready no louder than it.
     private static func dot(_ dot: StatusMenu.Dot) -> NSImage? {
         let tint = NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -319,39 +217,18 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     // The dashboard's spacebar: stops the speech or listening that is running.
     @objc private func stopSpeaking() { store.send(.stop()) }
 
-    @objc private func toggleControlBar() { toggle(Self.showControlBarKey) }
-    @objc private func toggleCanvas() { CanvasController.shared.toggle() }
-    @objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }
-    @objc private func toggleReplyLineAlone() { toggle(Self.replyLineAloneKey) }
-    @objc private func toggleConversation() {
-        // Turned on from the menu, the conversation opens full size, not as its collapsed handle; folded to its handle,
-        // choosing it opens it rather than hiding a panel nobody could see (`StatusMenu.conversationToggle`).
-        let defaults = UserDefaults.standard
-        let next = StatusMenu.conversationToggle(
-            on: defaults.bool(forKey: Self.showConversationKey),
-            collapsed: defaults.bool(forKey: FloatingPanels.conversationCollapsedKey)
-        )
-        defaults.set(next.collapsed, forKey: FloatingPanels.conversationCollapsedKey)
-        defaults.set(next.on, forKey: Self.showConversationKey)
-    }
-
-    private func toggle(_ key: String) {
-        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
-    }
-
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         Self.openSession(id)
     }
 
-    /// A Ready for you row: its session's next ready item, opened the way the Ready pill opens one (`open`). With the
-    /// overlays off there is no pill or panel, and it opens in conch's window.
+    /// A Ready for you row: its session's next ready item, opened by the one opening rule (`open`).
     @objc private func openItem(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
-        ReviewQueue.shared.open(session: id, store: store, panels: Self.panels)
+        ReviewQueue.shared.open(session: id, store: store)
     }
 
-    /// conch's window on a session: chosen in the menu, or the Ready pill's scene.
+    /// conch's window on a session: chosen in the menu, or a scene that falls through to conch.
     static func openSession(_ id: SessionRow.ID) {
         bringConchForward()
         // ponytail: if the window has to be rebuilt first, this selection is lost; conch still opens.
@@ -373,61 +250,22 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         OnboardingController.shared.finishSettingUp()
     }
 
-    /// Where an open came from: the Ready pill and the menu's Ready for you rows open from outside the conversation
-    /// panel, its Previous, Next and switcher from inside it.
-    enum OpenFrom {
-        case pill, menu, panel
-    }
-
-    /// The one opening rule, for the pill, the menu's rows and the panel alike. They each did their own: the pill opened
-    /// the work in its own app, the panel's Previous and Next in the panel, the menu conch's window, and the pill over a
-    /// full-screen panel did both at once.
+    /// The one opening rule, for the menu's Ready for you rows. What conch's own window draws in its deliverable pane
+    /// (`SessionRow.windowContent`) opens there, beside the conversation (`openInWindow`), and so does a review only conch
+    /// can show as it was published (marks, a folder's tree); everything else is brought forward in its own app (`stage`).
     ///
-    /// While the panel is on, anything it can draw (`SessionRow.panelContent`) opens in it, full screen. So does a
-    /// review with marks from anywhere, turning the panel on if it has to: marks are drawn only where conch shows the
-    /// work. From inside the panel, a pick with nothing to open is the session's words there. Everything else opens in
-    /// its own app (`stage`), the panel docking first so it isn't left over what comes forward. And the first open from
-    /// the pill or the menu turns the panel on, docked and open, and it stays on: it was off by default, so nothing
-    /// Tyler's setup did could put work on the screen conch draws in.
-    ///
-    /// With the overlays off (`panels` nil) there is no panel: what it would have shown, marks and a folder included,
-    /// opens in conch's window instead (`openInWindow`), and the rest is staged as before (`ConchOverlays.destination`).
-    static func open(_ row: SessionRow, from origin: OpenFrom, store: StateStore, panels: FloatingPanels?) async -> Bool {
-        let defaults = UserDefaults.standard
-        let panels = overlaysOn ? panels : nil
-        if let panels, origin != .panel, !defaults.bool(forKey: panelTurnedOnByOpenKey) {
-            defaults.set(true, forKey: panelTurnedOnByOpenKey)
-            panels.bringOut()
-        }
-        let content = row.panelContent
+    /// 2026-11-11: the conversation panel this used to choose between is gone with the rest of the old overlays, so the
+    /// rule is what it already was with them switched off.
+    static func open(_ row: SessionRow, store: StateStore) async -> Bool {
         let marked = !(row.review?.marks.isEmpty ?? true)
-        // What `stage` reads to choose, read the same way.
-        let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
-        let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
-        // Marks, a folder's tree, or a Figma file's embed: conch shows each as it was published, so they open in the panel
-        // from anywhere, never handed to Figma (2026-11-11, "Make figma show in the deliverables area instead of
+        // Marks, a folder's tree, or a Figma file's embed: conch shows each as it was published, so they open in conch's
+        // window from anywhere, never handed to Figma (2026-11-11, "Make figma show in the deliverables area instead of
         // automatically sending me to figma").
-        let conchOnly = ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link)
-        let words = origin == .panel
-            && ReviewScene.panelShowsWords(hasReview: row.review != nil, kind: kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) })
-        let destination = ConchOverlays.destination(overlays: panels != nil, panelDraws: content != nil,
-                                                    panelOn: defaults.bool(forKey: showConversationKey), conchOnly: conchOnly, words: words)
-        switch destination {
-        case .panel:
-            guard let panels else { break }
-            panels.bringOut()
-            panels.showInPanel()
-            // The screen context hears what the panel put on screen, as `stage` tells it what a scene did: the session,
-            // and the deliverable when that is what shows.
-            store.reportShowing(.conch(sessionId: row.id, view: "panel"), staged: ConchScreenStaged(sessionId: row.id, reviewId: content?.id, link: content?.link))
-            return true
-        case .window:
+        let link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
+        if row.windowContent != nil || ReviewScene.opensOnlyInConch(deliverable: row.review?.kind, marked: marked, link: link) {
             openInWindow(row, store: store)
             return true
-        case .stage:
-            break
         }
-        panels?.dockForScene()
         return await stage(row, store: store)
     }
 
@@ -437,9 +275,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         let reviewId: ReviewItem.ID?
     }
 
-    /// The one door for "open it in the panel" with the overlays off: conch's window, forward, on the session, its
-    /// deliverable pane beside the conversation on this version (`row.review`), as a click on the deliverable's card in the
-    /// conversation opens it. The screen context hears it as the main window's.
+    /// conch's window, forward, on the session, its deliverable pane beside the conversation on this version
+    /// (`row.review`), as a click on the deliverable's card in the conversation opens it. The screen context hears it as
+    /// the main window's.
     static func openInWindow(_ row: SessionRow, store: StateStore) {
         let review = ReviewItem(row: row)
         bringConchForward()
@@ -449,7 +287,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     }
 
     /// What this session's review is about, brought forward in its own app, in `ReviewScene`'s order for the scene the
-    /// review asked for (none is auto): what `open` does with anything the panel doesn't show. A scene that fails falls
+    /// review asked for (none is auto): what `open` does with anything conch's window doesn't show. A scene that fails falls
     /// through to the next, down to conch's window on the session. True once it was handed off; nothing is raised later.
     static func stage(_ row: SessionRow, store: StateStore) async -> Bool {
         let window = ReviewNotifications.shared.reviewWindow
@@ -506,8 +344,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         }
     }
 
-    /// The one place the status item takes focus, for Open conch, choosing a session, and the Ready pill's conch scene: conch's
-    /// window in front, or built again when it was closed. Settings comes forward the same way (`SettingsRouter`).
+    /// The one place the status item takes focus, for Open conch, choosing a session, and a scene that falls through to
+    /// conch: conch's window in front, or built again when it was closed. Settings comes forward the same way
+    /// (`SettingsRouter`).
     static func bringConchForward() {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = ReviewNotifications.shared.reviewWindow else {
@@ -566,5 +405,91 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
             NSLog("conch: the menu bar item is hidden (no room beside the notch, or the menu bar is hidden); conch stays in the Dock")
             if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         }
+    }
+}
+
+/// What is held, opened from the menu's Ready for you rows: one queue, so every open agrees on what has been looked at.
+/// 2026-11-11: the Ready pill's walk and the panel's Previous, Next and switcher went with the old overlays; what is left
+/// is opening a session's next ready item.
+@MainActor
+final class ReviewQueue {
+    static let shared = ReviewQueue()
+
+    /// The versions handed off this launch: counted looked at before the daemon's answer catches up.
+    private var opened: Set<ReviewItem.ID> = []
+    /// The open being staged. Opens run one at a time.
+    private var staging: Task<Void, Never>?
+
+    /// Every deliverable a session that isn't working still holds, not only its newest, looked at or not. Each by its
+    /// exact version (`ReviewItem.id`: what the daemon minted when it was filed), never by a place in the queue.
+    static func held(_ state: PublishedState?) -> [ReviewItem] {
+        ConchStatusItem.heldRows(state).flatMap { row in row.held.map { ReviewItem(row: row, review: $0) } }
+    }
+
+    /// What is ready: the held ones nobody has looked at yet (`ReadyForYou`), oldest filed first.
+    func ready(in held: [ReviewItem], state: PublishedState?) -> [ReviewItem] {
+        let seen = seen(in: held, state: state)
+        let order = ReviewScene.order(held.map { (key: $0.id, at: $0.reviewedAt ?? 0) })
+        return order.compactMap { key in held.first { $0.id == key && !seen.contains(key) } }
+    }
+
+    /// What has been looked at, or approved: whatever the daemon remembers, on any device, plus whatever this app has just
+    /// handed off. The local half is optimistic, and it is the whole story against a daemon too old to remember, which is
+    /// what `features.viewedState` distinguishes.
+    private func seen(in held: [ReviewItem], state: PublishedState?) -> Set<ReviewItem.ID> {
+        guard state?.features?.viewedState != nil else { return opened }
+        return opened.union(held.filter { !ReadyForYou.isWaiting(viewedAt: $0.viewedAt, approvedAt: $0.approvedAt) }.map(\.id))
+    }
+
+    /// A session's next item nobody has looked at, oldest filed first, else its newest; opened by the one opening rule
+    /// (`ConchStatusItem.open`), and counted opened only once handed off. Never the mic or speech.
+    func open(session id: SessionRow.ID, store: StateStore) {
+        let held = Self.held(store.state).filter { $0.rowID == id }
+        guard let item = ready(in: held, state: store.state).first ?? held.last else { return }
+        let previous = staging
+        staging = Task { @MainActor in
+            await previous?.value
+            guard let found = Self.find(item.id, in: store.state) else { return }
+            guard await ConchStatusItem.open(found, store: store) else { return }
+            opened.insert(item.id)
+            // So the phone, the terminal and the next launch agree with this app.
+            if store.state?.features?.viewedState != nil {
+                store.markReviewViewed(sessionId: found.id, review: item.id)
+            }
+        }
+    }
+
+    /// A held review by its exact version, as its session's row holding it.
+    private static func find(_ key: ReviewItem.ID, in state: PublishedState?) -> SessionRow? {
+        for row in ConchStatusItem.heldRows(state) {
+            if let review = row.held.first(where: { ReviewItem(row: row, review: $0).id == key }) { return row.holding(review) }
+        }
+        return nil
+    }
+}
+
+extension SessionRow {
+    /// Every deliverable the session still holds, oldest first; from a daemon too old to send them all, its newest. An
+    /// empty list is that too: a ready row must never drop out of the queue its `review` put it in.
+    var held: [ReviewInfo] {
+        if let reviews, !reviews.isEmpty { return reviews }
+        return review.map { [$0] } ?? []
+    }
+
+    /// This row with `review` as its newest, so `ConchStatusItem.stage`, which brings a row's `review` forward, brings
+    /// an older held one.
+    func holding(_ review: ReviewInfo) -> SessionRow {
+        var row = self
+        row.review = review
+        return row
+    }
+
+    /// Its newest deliverable, when conch's window draws it itself in its deliverable pane (`ReviewScene.panelShowsContent`:
+    /// the renderers the conversation panel shared with that pane); read as `ConchStatusItem.stage` reads a scene.
+    var windowContent: ReviewItem? {
+        guard let review, let item = ReviewItem(row: self) else { return nil }
+        let kind = ReviewScene.Kind(rawValue: review.sceneKind ?? "") ?? .auto
+        let link = item.link.map { LinkTarget.url(for: $0, cwd: cwd) }
+        return ReviewScene.panelShowsContent(kind: kind, deliverable: review.kind, link: link, fileExists: { FileManager.default.fileExists(atPath: $0) }) ? item : nil
     }
 }

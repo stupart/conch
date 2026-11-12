@@ -1717,11 +1717,11 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 }
 
 /// The inline parse, for the rows that are one flow of text in a bubble or a line — your turn, a pending send, a
-/// thought, a question — where a block-per-view document would claim the full width. It is the overlay's renderer,
-/// so those rows and the fog agree. An agent's reply and a document go through `MarkdownView` instead.
+/// thought, a question — where a block-per-view document would claim the full width (`ConversationMarkdown`). An
+/// agent's reply and a document go through `MarkdownView` instead.
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
-        ConversationFog.inlineMarkdown(source)
+        ConversationMarkdown.inlineMarkdown(source)
     }
 }
 

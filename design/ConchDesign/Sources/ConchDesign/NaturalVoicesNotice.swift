@@ -40,7 +40,8 @@ public struct NaturalVoicesNotice: Equatable, Sendable {
     public let tone: Tone
     /// The line.
     public let text: String
-    /// The control bar's second line, which has room for about twenty-five characters.
+    /// The line in about twenty-five characters. It was the control bar's second line, until that went with the old
+    /// overlays (2026-11-11); nothing draws it now.
     public let short: String
     public let action: Action?
     /// What a dismissal remembers. Nil for lines that go by themselves.
@@ -146,16 +147,6 @@ public enum NaturalVoicesNotices {
     public static func nextChange(_ memory: NaturalVoicesNoticeMemory, now: Double) -> Double? {
         guard let until = memory.backUntil, until > now else { return nil }
         return until
-    }
-
-    /// The control bar's second line (its `news`), beside how many sessions are working: a line that needs you, or
-    /// the voices coming back, before the count; the quiet healing line only when there is no count to show.
-    public static func barNews(working: String?, notice: NaturalVoicesNotice?) -> String? {
-        guard let notice else { return working }
-        switch notice.tone {
-        case .needsYou, .back: return notice.short
-        case .healing: return working ?? notice.short
-        }
     }
 
     // MARK: The words

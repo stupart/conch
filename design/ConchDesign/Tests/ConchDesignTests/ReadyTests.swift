@@ -4,7 +4,7 @@ import XCTest
 @testable import ConchDesign
 
 /// How you get into the deconstructed UI and what "ready" means: the rule every surface counts by, the green that marks
-/// it, the Ready pill and the menu that open it, and the knock on a local page before it is shown.
+/// it, the menu that opens it, and the knock on a local page before it is shown.
 final class ReadyTests: XCTestCase {
     private let schemes: [ColorScheme] = [.light, .dark]
 
@@ -43,23 +43,14 @@ final class ReadyTests: XCTestCase {
 
     // MARK: The green
 
-    private func composited(_ token: ConchColorToken, over ground: ConchRGBA, _ scheme: ColorScheme) -> ConchRGBA {
-        let fill = token.rgba(scheme)
-        func mix(_ fore: Double, _ back: Double) -> UInt32 { UInt32(((fore * fill.alpha + back * (1 - fill.alpha)) * 255).rounded()) }
-        return ConchRGBA(mix(fill.red, ground.red) << 16 | mix(fill.green, ground.green) << 8 | mix(fill.blue, ground.blue))
-    }
-
-    /// A mark, so 3:1, on every ground the sidebar, the stage and the fog give it: #30B35A measured 2.41 on the light
-    /// ground and 2.72 on white.
+    /// A mark, so 3:1, on every ground the sidebar and the stage give it: #30B35A measured 2.41 on the light ground and
+    /// 2.72 on white.
     func testReadyClearsThreeToOneOnEveryGround() {
         for scheme in schemes {
             for ground in ConchColor.grounds {
                 let ratio = ConchColor.ready.rgba(scheme).contrast(on: ground.rgba(scheme))
                 XCTAssertGreaterThanOrEqual(ratio, 3, "ready on \(ground.name) in \(scheme) is \(String(format: "%.2f", ratio)):1")
             }
-            // The switcher draws it on its own glass over the fog; the control bar's orb on its glass over the page.
-            let switcher = composited(ConchColor.overlayGlassStrong, over: ConchColor.fog.rgba(scheme), scheme)
-            XCTAssertGreaterThanOrEqual(ConchColor.ready.rgba(scheme).contrast(on: switcher), 3, "ready on the switcher in \(scheme)")
         }
         // The light value is the one the Mac's waiting mark already carries, and the green it replaces failed.
         XCTAssertEqual(ConchColor.ready.light, ConchRGBA(0x279B4C))
@@ -90,72 +81,19 @@ final class ReadyTests: XCTestCase {
         XCTAssertLessThan(ConchColor.onVoice.light.contrast(on: orange), 3, "white, as it was")
     }
 
-    /// Working's dot in the menu and the switcher is filled, as the sidebar draws working; the hollow ring is the
-    /// sidebar's paused sub-agent.
-    func testWorkingIsAFilledDotInTheMenuAndTheSwitcher() {
+    /// Working's dot in the menu is filled, as the sidebar draws working; the hollow ring is the sidebar's paused
+    /// sub-agent.
+    func testWorkingIsAFilledDotInTheMenu() {
         XCTAssertEqual(StatusMenu.Dot.working.symbol, "circle.fill")
         XCTAssertEqual(StatusMenu.Dot.ready.symbol, "circle.fill")
         XCTAssertEqual(StatusMenu.Dot.working.colour.name, ConchColor.active.name)
         XCTAssertEqual(StatusMenu.Dot.ready.colour.name, ConchColor.ready.name)
-        XCTAssertEqual(FogSession.markSymbol(.working), "circle.fill")
-        XCTAssertEqual(FogSession.markSymbol(.ready), "circle.fill")
-    }
-
-    // MARK: The Ready pill
-
-    /// "<next session> · Ready · 1 of 3", and the tooltip opens it: never "3 sessions / Ready for you".
-    @MainActor
-    func testThePillNamesTheNextSessionAndWhereItIs() {
-        let ready = ControlBar.Ready(label: "Prime page wireframe", position: 1, count: 3)
-        XCTAssertEqual(ready.line, "Ready · 1 of 3")
-        XCTAssertEqual(ready.help, "Open Prime page wireframe · 1 of 3")
-        let bar = ControlBar(state: .ready, detail: "3 sessions", mode: .constant(.talk), ready: ready, onTap: {})
-        XCTAssertEqual(bar.lines.title, "Prime page wireframe")
-        XCTAssertEqual(bar.lines.subtitle, "Ready · 1 of 3")
-        // One alone says nothing about a count; what the agent asked you to check follows the tooltip's first line.
-        let one = ControlBar.Ready(label: "Morrow brand page", position: 1, count: 1, inspect: "The button sits above the fold")
-        XCTAssertEqual(one.line, "Ready")
-        XCTAssertEqual(one.help, "Open Morrow brand page\nThe button sits above the fold")
-        // Speaking over it, the bar says what it is speaking about, and that something is still ready.
-        let speaking = ControlBar(state: .speaking, detail: "Blueprint monorepo", mode: .constant(.talk), ready: ready, onTap: {})
-        XCTAssertEqual(speaking.lines.title, "Blueprint monorepo")
-        XCTAssertEqual(speaking.lines.subtitle, "Speaking · 3 ready")
-    }
-
-    /// Talk and Quiet no longer repeat the switch beside them: the second line is news, or nothing.
-    @MainActor
-    func testTalkAndQuietNeverRepeatTheSwitch() {
-        for state in [VoiceState.talk, .quiet] {
-            let quiet = ControlBar(state: state, detail: "Blueprint monorepo", mode: .constant(state == .quiet ? .quiet : .talk))
-            XCTAssertEqual(quiet.lines.title, "Blueprint monorepo")
-            XCTAssertNil(quiet.lines.subtitle, "\(state)")
-            let news = ControlBar(state: state, detail: "Blueprint monorepo", mode: .constant(.talk), news: "2 working")
-            XCTAssertEqual(news.lines.subtitle, "2 working")
-        }
-    }
-
-    /// The listening ring sits in the capsule's round end with room all round; at a 36 pt orb it came within a point.
-    func testTheListeningRingClearsTheCapsule() {
-        XCTAssertGreaterThanOrEqual(ControlBar.ringClearance, 3)
-        // Centred in the end: the orb's middle is as far from the end as from the top.
-        XCTAssertEqual(PillMetrics.inset + ControlBar.orbLead + ControlBar.orbSize / 2, PillMetrics.height / 2, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(ControlBar.orbLead, 0)
-    }
-
-    /// The orb comes in out of a touch smaller; under Reduce Motion it only fades.
-    func testTheOrbFadesAloneUnderReduceMotion() {
-        XCTAssertEqual(ControlBar.orbEntryScale(reduceMotion: true), 1)
-        XCTAssertLessThan(ControlBar.orbEntryScale(reduceMotion: false), 1)
-        XCTAssertGreaterThan(ControlBar.orbEntryScale(reduceMotion: false), 0.5)
     }
 
     // MARK: The menu
 
-    private func input(conversation: Bool = true, collapsed: Bool = false, ready: [StatusMenu.Session] = [], working: [StatusMenu.Session] = []) -> StatusMenu.Input {
-        StatusMenu.Input(
-            voice: .ready, quiet: false, exchangeActive: false, controlBar: true, conversation: conversation,
-            collapsed: collapsed, replyLine: true, drawing: false, ready: ready, working: working, overlays: true
-        )
+    private func input(ready: [StatusMenu.Session] = [], working: [StatusMenu.Session] = []) -> StatusMenu.Input {
+        StatusMenu.Input(voice: .ready, quiet: false, exchangeActive: false, ready: ready, working: working)
     }
 
     private func items(_ rows: [StatusMenu.Row]) -> [StatusMenu.Item] {
@@ -165,46 +103,36 @@ final class ReadyTests: XCTestCase {
         }
     }
 
-    /// Title case, the surfaces by their names with a tick, the pen by what it does; no "Show", which is the
-    /// screen recording's word.
-    func testTheMenuNamesEachSurfaceOnceInTitleCase() {
+    /// Title case; no "Show", which is the screen recording's word. Since the overlays went (2026-11-11) the menu has
+    /// none of their items (Control Bar, Conversation Panel, Reply Line, With Panel Off, Draw on Screen), whatever is
+    /// ready or working, and no two separators meet where they were.
+    func testTheMenuIsTitleCaseWithNoOverlayItems() {
         let titles = items(StatusMenu.rows(input())).map(\.title)
-        // With Panel Off is Reply Line's own setting, a step in under it (ComposerPlacementTests).
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen", "Open conch", "Settings…"])
+        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Open conch", "Settings…"])
         XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
+        let ready = [StatusMenu.Session(id: "r", label: "Ready one")], working = [StatusMenu.Session(id: "w", label: "Working one")]
+        for (ready, working) in [([], []), (ready, []), ([], working), (ready, working)] as [([StatusMenu.Session], [StatusMenu.Session])] {
+            let rows = StatusMenu.rows(input(ready: ready, working: working))
+            for (row, next) in zip(rows, rows.dropFirst()) { XCTAssertFalse(row == .separator && next == .separator, "two separators meet") }
+            for title in ["Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen"] {
+                XCTAssertFalse(items(rows).contains { $0.title == title }, title)
+            }
+        }
         // Settings…, last, with the window's own ⌘, beside it: it opens the window on its Settings page.
         let settings = items(StatusMenu.rows(input())).last
         XCTAssertEqual(settings?.command, .settings)
         XCTAssertEqual(settings?.key, ",")
         XCTAssertEqual(settings?.modifiers, [.command])
-        let draw = items(StatusMenu.rows(input())).first { $0.command == .draw }
-        XCTAssertEqual(draw?.key, "p")
-        XCTAssertEqual(draw?.modifiers, [.control, .option, .command])
         var listening = input()
         listening.voice = .listening
         XCTAssertTrue(items(StatusMenu.rows(listening)).contains { $0.title == "Stop Listening" })
     }
 
-    /// Folded to its handle, the panel is neither ticked nor off: a dash, and choosing it opens the panel rather than
-    /// hiding one nobody could see.
-    func testAFoldedPanelIsHonestInTheMenu() {
-        func mark(_ on: Bool, _ collapsed: Bool) -> StatusMenu.Mark? {
-            items(StatusMenu.rows(input(conversation: on, collapsed: collapsed))).first { $0.command == .conversation }?.mark
-        }
-        XCTAssertEqual(mark(true, false), .on)
-        XCTAssertEqual(mark(true, true), .mixed)
-        XCTAssertEqual(mark(false, false), .off)
-        XCTAssertEqual(mark(false, true), .off)
-        XCTAssertTrue(StatusMenu.conversationToggle(on: true, collapsed: true) == (true, false), "folded: open it")
-        XCTAssertTrue(StatusMenu.conversationToggle(on: true, collapsed: false) == (false, false), "open: hide it")
-        XCTAssertTrue(StatusMenu.conversationToggle(on: false, collapsed: true) == (true, false), "off: on, and open")
-    }
-
-    /// A ready row opens its item, as the pill does; conch's window on it is the ⌥ alternate right after it. Working
+    /// A ready row opens its item; conch's window on it is the ⌥ alternate right after it. Working
     /// rows still open conch on the session.
     func testReadyRowsOpenTheItemAndOptionOpensConch() {
         let rows = StatusMenu.rows(input(
-            ready: [.init(id: "r1", label: "Prime page wireframe"), .init(id: "r2", label: "Morrow")],
+            ready: [.init(id: "r1", label: "About page wireframe"), .init(id: "r2", label: "Morrow")],
             working: [.init(id: "w1", label: "Parser")]
         ))
         let ready = rows.firstIndex(of: .section("Ready for you"))
@@ -215,7 +143,7 @@ final class ReadyTests: XCTestCase {
         let first = list.firstIndex { $0.command == .openItem(session: "r1") }
         XCTAssertNotNil(first)
         if let first {
-            XCTAssertEqual(list[first].title, "Prime page wireframe")
+            XCTAssertEqual(list[first].title, "About page wireframe")
             XCTAssertEqual(list[first].dot, .ready)
             XCTAssertFalse(list[first].alternate)
             let alternate = list[first + 1]
@@ -292,9 +220,7 @@ final class ReadyTests: XCTestCase {
     /// Read replies aloud, one click from the menu bar, ticked while it's on (2026-10-09).
     func testTheMenuOffersReadRepliesAloudTickedWhileOn() {
         func mark(_ on: Bool) -> StatusMenu.Mark? {
-            let input = StatusMenu.Input(voice: .ready, quiet: true, exchangeActive: false, controlBar: false, conversation: false,
-                                         collapsed: false, replyLine: false, drawing: false, ready: [], working: [], overlays: false,
-                                         readAloud: on)
+            let input = StatusMenu.Input(voice: .ready, quiet: true, exchangeActive: false, ready: [], working: [], readAloud: on)
             for row in StatusMenu.rows(input) { if case let .item(item) = row, item.command == .readAloud { return item.mark } }
             return nil
         }

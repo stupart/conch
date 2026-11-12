@@ -29,15 +29,15 @@ describe("the Mac composer", () => {
     const list = between(mac, "SlashTypeaheadList(", "onChoose: choose");
     expect(list).toContain("matches: typeahead.matches,");
     expect(list).toContain("selected: typeahead.selected,");
-    // The floating input's glass has wider corners than the window's card.
-    expect(list).toContain("surface: chrome == .panel ? .glass : .card,");
+    // The window's card: the floating input, whose glass had wider corners, went with the overlays on 2026-11-11.
+    expect(list).toContain("surface: .card,");
     expect(mac).toContain("AgentCommands.all(for: backend, capabilities: commandRead?.session == sessionID ? commandRead?.capabilities : nil)");
     expect(mac).toContain("typeahead.update(draft: draft, caret: caret)");
   });
 
   test("only where a command can be typed: a session's own reachable pane with a terminal, and no dictation", () => {
     expect(mac).toContain("commandCapabilities: row.parentSessionId == nil && row.revealable && row.noTerminal == nil");
-    expect(mac).toContain("commandCapabilities != nil && !rendersStatically && dictation == nil && messageUnavailableReason == nil");
+    expect(between(mac, "private var typeaheadEnabled: Bool {", "}")).toContain("commandCapabilities != nil && dictation == nil && messageUnavailableReason == nil");
   });
 
   test("the keys: arrows move, Tab and Return choose, Esc closes, and Return sends only a line already whole", () => {

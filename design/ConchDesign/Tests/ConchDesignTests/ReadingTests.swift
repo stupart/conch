@@ -9,9 +9,8 @@ import AppKit
 ///
 /// Before these: prose ran the Mac column's whole 664 pt, a median 95 characters a line at 15 pt; a list sat as far from
 /// the paragraph before it as its items sat from each other; a heading after a list, a code block or a table had 10.5 pt
-/// above it and 18 below; inline code was set at the body's size in SF Mono; the transcript's "+3" was the brand cyan at
-/// 1.94:1; and in the panel a paragraph break inside a turn (a whole blank line of 17 pt, 27 pt) was wider than the 14
-/// between two turns.
+/// above it and 18 below; inline code was set at the body's size in SF Mono; and the transcript's "+3" was the brand cyan
+/// at 1.94:1.
 final class ReadingMeasureTests: XCTestCase {
     /// Ordinary agent prose, three paragraphs of it.
     static let prose = [
@@ -164,52 +163,6 @@ final class ReadingContrastTests: XCTestCase {
                 }
             }
         }
-    }
-}
-
-/// The panel's turns: a message's own paragraphs closer than the next message, and its lines given room.
-final class PanelRhythmTests: XCTestCase {
-    /// The room a paragraph break takes inside a turn, drawn, against the gap between turns.
-    @MainActor
-    func testAParagraphBreakIsNarrowerThanTheGapBetweenTurns() {
-        for (latest, font) in [(false, ConchType.conversationPast), (true, ConchType.conversationNow)] {
-            let size = ConversationFog.size(latest: latest, fullScreen: false)
-            let leading = size * (latest ? ConversationFog.newestLeading : ConversationFog.pastLeading)
-            func height(_ text: String) -> CGFloat {
-                let view = Text(ConversationFog.typeset(ConversationFog.inlineMarkdown(text), size: size)).font(font).lineSpacing(leading)
-                return MarkdownRender.height(of: view, width: 620)
-            }
-            let paragraphBreak = height("One.\n\nTwo.") - 2 * height("One.")
-            print("latest \(latest): a paragraph break \(paragraphBreak) pt, between turns \(ConversationFog.turnGap)")
-            XCTAssertLessThan(paragraphBreak, ConversationFog.turnGap - 4)
-            XCTAssertGreaterThan(paragraphBreak, leading + 4, "still a break, not a line")
-        }
-    }
-
-    /// Past turns set at 1.35 to 1.5, not solid; the newest reply's large type as the reply line sets it.
-    @MainActor
-    func testPastTurnsHaveReadingLeading() {
-        let size = ConversationFog.size(latest: false, fullScreen: false)
-        func height(_ text: String) -> CGFloat {
-            MarkdownRender.height(of: Text(text).font(ConchType.conversationPast).lineSpacing(size * ConversationFog.pastLeading), width: 620)
-        }
-        let pitch = height("One\nTwo") - height("One")
-        XCTAssertGreaterThanOrEqual(pitch / size, 1.35)
-        XCTAssertLessThanOrEqual(pitch / size, 1.5)
-        XCTAssertEqual(ConversationFog.newestLeading * ConversationFog.replyFontSize(fullScreen: false), 2.4, accuracy: 0.01,
-                       "the newest reply leads as the reply line does (`InlineReplyLine`: 0.1 of its size)")
-    }
-
-    /// Setting a turn changes attributes only: the words, and so where the reveal finds each one, are the same.
-    func testTypesettingKeepsTheWords() {
-        let source = ConversationFog.inlineMarkdown("First **one**.\n\n\nThen `code` and\nmore.")
-        let set = ConversationFog.typeset(source, size: 17)
-        XCTAssertEqual(String(set.characters), String(source.characters))
-        XCTAssertEqual(ConversationFog.wordStarts(set).count, ConversationFog.wordStarts(source).count)
-        let blank = set.runs.first { String(set[$0.range].characters).allSatisfy { $0 == "\n" } && set[$0.range].characters.count > 1 }
-        XCTAssertEqual(blank?.font, .system(size: 17 * ConversationFog.paragraphBreak))
-        let code = set.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }
-        XCTAssertEqual(code?.font, .system(size: 17 * ConchReading.codeScale, design: .monospaced))
     }
 }
 

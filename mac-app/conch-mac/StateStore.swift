@@ -76,10 +76,8 @@ final class StateStore: ObservableObject {
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
-    /// Recorded history for the transcript, and the overlay's own. They follow different
-    /// sessions, and neither may be answered with the other's (`HistoryStore`).
+    /// Recorded history for the transcript (`HistoryStore`).
     let history: HistoryStore
-    let overlayHistory: HistoryStore
     private var sourceState: PublishedState?
     /// The newest delivery outcome already accounted for. `nil` until the first snapshot, so
     /// opening the app never replays a failure from before it was running.
@@ -128,7 +126,6 @@ final class StateStore: ObservableObject {
         let socket = ConchSocketClient(environment: environment)
         socketClient = socket
         history = HistoryStore(client: socket)
-        overlayHistory = HistoryStore(client: socket)
         pluginHintVisible = !UserDefaults.standard.bool(forKey: Self.pluginHintDismissedKey)
             && !PluginPresence.isInstalled()
 
@@ -176,10 +173,8 @@ final class StateStore: ObservableObject {
         undoTask?.cancel()
     }
 
-    /// `overApp`: sent from over another app without conch coming forward, whatever window is key — the canvas's Send,
-    /// whose glass has given the keys back once the pen is up — so that app is handed the front back once delivered.
     @discardableResult
-    func send(_ event: ConchDaemonEvent, overApp: Bool = false) -> Task<Bool, Never> {
+    func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {
         controlSequence &+= 1
         let sequence = controlSequence
         let socketClient = socketClient
@@ -187,21 +182,11 @@ final class StateStore: ObservableObject {
         // Read at the press, before the daemon raises anything: a send that
         // did not start with conch in front has no front to hand back.
         let refocus = event.awaitDelivery == true && NSApp.isActive
-        // conch steers the screen for it: Terminal comes forward to type and conch takes the front back. The input holds
-        // where it is meanwhile, rather than flying out to the panel and straight back (`ComposerSteering`).
-        let steer = refocus ? ComposerDock.shared.beginSteering() : nil
-        // The conversation fog (FloatingPanels) types over another app without
-        // activating conch, so that app is the front to hand back.
-        let underFog = event.awaitDelivery == true && !refocus && (overApp || NSApp.keyWindow is FloatingPanel)
-            ? NSWorkspace.shared.frontmostApplication?.processIdentifier
-            : nil
         // if/else, not a ternary: `cond ? { closure } : nil` crashes the type
         // checker here ("failed to produce diagnostic").
         let whenDelivered: (@Sendable () async -> Void)?
-        if let steer {
-            whenDelivered = { await StateStore.refocusAfterDelivery(releasing: steer) }
-        } else if let underFog {
-            whenDelivered = { await StateStore.handBack(to: underFog) }
+        if refocus {
+            whenDelivered = { await StateStore.refocusAfterDelivery() }
         } else {
             whenDelivered = nil
         }
@@ -216,7 +201,7 @@ final class StateStore: ObservableObject {
         // up to yet.
         //
         // Begun HERE rather than in the composer because the composer is not the only sender:
-        // the conversation fog types into a session too, and a bubble only one of them produced
+        // the deliverable pane's notes type into a session too, and a bubble only one of them produced
         // would be a second behaviour to keep in step. Every inject routes through this one
         // function, so every inject gets an entry — and the id it is filed under is the one the
         // event already minted, which is what a late outcome comes back against.
@@ -254,13 +239,8 @@ final class StateStore: ObservableObject {
             // waits far longer than ordering ever needs and then proceeds. The
             // previous delivery is NOT cancelled; it finishes on its own.
             await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))
-            guard !Task.isCancelled else {
-                if let steer { ComposerDock.shared.endSteering(steer) }
-                return false
-            }
+            guard !Task.isCancelled else { return false }
             let delivered = await socketClient.send(event, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)
-            // Never written: nothing will steer, and no answer will come to let the input go.
-            if !delivered, let steer { ComposerDock.shared.endSteering(steer) }
             if let self, !delivered {
                 if controlSequence == sequence {
                     forceLivenessProbe()
@@ -304,52 +284,24 @@ final class StateStore: ObservableObject {
     /// Activating restores conch's key window as it was — a sheet keeps its
     /// field, the selected session is untouched.
     // ponytail: a Cmd-Tab to Terminal by hand mid-send looks identical and is handed back too; watch NSWorkspace activations if that ever bites.
-    ///
-    /// `releasing`: the input's hold for this send (`ComposerDock.beginSteering`), which lasts until conch is in front
-    /// again when it takes the front back, and ends now when it does not.
-    private static func refocusAfterDelivery(releasing steer: ComposerSteering.ID) {
-        guard !NSApp.isActive,
-              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == ComposerSteering.terminal else {
-            return ComposerDock.shared.steered(steer, refocusing: false)
-        }
-        ComposerDock.shared.steered(steer, refocusing: true)
+    private static func refocusAfterDelivery() {
+        guard !NSApp.isActive, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    /// The fog's hand-back: conch was never in front, so give the front back
-    /// to the app the fog was over, and again only from the Terminal conch
-    /// raised to type.
-    private static func handBack(to pid: pid_t) {
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              front.bundleIdentifier == "com.apple.Terminal",
-              front.processIdentifier != pid else { return }
-        NSRunningApplication(processIdentifier: pid)?.activate()
     }
 
     /// The same hand-back for a session command the daemon TYPES (`/model`,
     /// the `/rename` sync), which raises Terminal just as a send does. Read at
     /// the press, before the daemon raises anything; nil when conch was not in
     /// front, and then the command does not ask to hear about delivery at all.
-    /// The input holds where it is meanwhile, as for a send (`ComposerSteering`).
     private static func refocusWhenDelivered() -> SteeredDelivery? {
         guard NSApp.isActive else { return nil }
-        let steer = ComposerDock.shared.beginSteering()
-        return SteeredDelivery(steer: steer, whenDelivered: { await StateStore.refocusAfterDelivery(releasing: steer) })
+        return SteeredDelivery(whenDelivered: { await StateStore.refocusAfterDelivery() })
     }
 
-    /// A typed session command's hand-back, and the input's hold that ends with it.
+    /// A typed session command's hand-back. 2026-11-11: it held the floating input where it was until the typing was done
+    /// (`ComposerSteering`), which went with the old overlays; the hand-back is what is left.
     private struct SteeredDelivery: Sendable {
-        let steer: ComposerSteering.ID
         let whenDelivered: @Sendable () async -> Void
-
-        /// The daemon's answer to the command: acknowledged, the typing follows and `whenDelivered` ends the hold; anything
-        /// else (refused, no daemon, no answer) means nothing will be typed, so it ends now.
-        @MainActor
-        func settled(by outcome: ConchSocketRequestOutcome) {
-            if case let .reply(data) = outcome,
-               case .acknowledgement? = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) { return }
-            ComposerDock.shared.endSteering(steer)
-        }
     }
 
     /// Tell the daemon the machine woke.
@@ -540,16 +492,6 @@ final class StateStore: ObservableObject {
         }
     }
 
-    /// The conversation panel started or stopped filling the screen (`FloatingPanels`). While it does, the app in front
-    /// is behind it and nothing read from it is said (`ScreenReportGate.covered`): the panel's own report of what it
-    /// shows stands, and the canvas routes by it. Once it stops, the app in front is read again at once, so `showing`
-    /// catches up without waiting for the next poll or an app switch.
-    func screenCovered(_ covered: Bool) {
-        guard covered != screenGate.covered else { return }
-        screenGate.covered = covered
-        if !covered { frontWindow?.readNow() }
-    }
-
     /// Take an artifact — every version of it — off a session. Tyler had one removed by
     /// hand-editing reviews.json, because nothing else could. The daemon's own words go on the
     /// row when it refuses, so a Remove that did nothing never looks like one that worked; the
@@ -686,7 +628,6 @@ final class StateStore: ObservableObject {
         let socketClient = socketClient
         Task { [weak self] in
             let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
-            steered?.settled(by: outcome)
             let failure: String?
             switch outcome {
             case let .reply(data):
@@ -715,7 +656,6 @@ final class StateStore: ObservableObject {
             awaitDelivery: steered == nil ? nil : true
         )
         let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
-        steered?.settled(by: outcome)
         switch outcome {
         case let .reply(data):
             guard let reply = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else {
@@ -1178,12 +1118,8 @@ final class StateStore: ObservableObject {
 
         sessionCommandTask = Task { @MainActor [weak self] in
             await previousCommand?.value
-            guard !Task.isCancelled else {
-                steered?.settled(by: .connectFailed)
-                return
-            }
+            guard !Task.isCancelled else { return }
             let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
-            steered?.settled(by: outcome)
             guard let self else { return }
             finishSessionCommand(context, outcome: outcome)
         }
@@ -1725,7 +1661,6 @@ final class StateStore: ObservableObject {
             browserProfiles: sourceState.browserProfiles,
             browserTabs: sourceState.browserTabs,
             browserRequests: sourceState.browserRequests,
-            practice: sourceState.practice,
             sessionSettings: sourceState.sessionSettings,
             naturalVoices: sourceState.naturalVoices,
             // What a runaway guard stopped because it kept failing (src/runaway.ts).

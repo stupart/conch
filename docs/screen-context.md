@@ -48,7 +48,7 @@ observers ──observation──▶ resolvers (in order) ──▶ showing ─�
 | `simulator` | `udid?`, `bundleId?` | the iPhone Simulator running a build |
 | `app` | `bundleId`, `document?` | an app, when nothing more can be read |
 | `design` | none | Figma |
-| `conch` | `sessionId`, `view: panel \| overlay \| main` | conch's own window or overlay |
+| `conch` | `sessionId`, `view: panel \| overlay \| main` | conch's own window (the Mac sends `main`; `panel` and `overlay` were its floating overlays, removed 2026-11-11) |
 | `unknown` | none | an observer saw something it can't name |
 
 The socket takes it as `{kind: "screen-observation", observation}` and checks it
@@ -123,9 +123,11 @@ screen`).
 This observer runs in the Mac app. It knows only what conch itself put on
 screen:
 
-- **The Ready pill and the panel's Next** both go through
-  `ConchStatusItem.stage` (`StatusItem.swift`), whichever scene they bring
-  forward:
+- **A Ready for you row in the menu bar menu** goes through
+  `ConchStatusItem.open` (`StatusItem.swift`). What conch's window draws opens
+  there (`openInWindow`), reported as `view: main` with the session, the review
+  id and the link. Anything else goes through `ConchStatusItem.stage`,
+  whichever scene it brings forward:
   - **a link.** It reports from `NSWorkspace.open`'s own completion, including
     the app that opened it. That app used to be discarded.
   - **the terminal.** It reports after the daemon has acknowledged that there
@@ -133,16 +135,11 @@ screen:
   - **conch's window on the session.**
 
   Each of these reports carries the session, the review id and the link.
-- **The panel shows it itself.** A pick in the conversation panel (its
-  switcher, Previous and Next) of a deliverable the panel draws, or of a
-  session with nothing to open, goes full screen in the panel instead
-  (`ReviewQueue.show`, `FloatingPanels.swift`). It reports a `conch` surface
-  with `view: panel`, carrying the session, and the review id and link when a
-  deliverable is what shows.
 - **conch's own window shows a session.** This covers a pick in the dashboard
   or the menu (`ContentView`'s `workspace.viewing`). It counts only while conch
-  is in front, and not when it repeats the last report. Otherwise the pill's
-  own pick would overwrite the review it just staged.
+  is in front, and not when it repeats the last report. Otherwise the window's
+  own pick, following a Ready for you row, would overwrite the review that row
+  just staged.
 - **conch comes back to the front.** Its window shows its session again
   (`ContentView`, on `didBecomeActiveNotification`), so whatever app was in
   front before stops counting.
@@ -201,11 +198,6 @@ what that app shows.
     old tab, then the page conch opened. A held report isn't counted as said,
     so the first reading after the grace is sent if it still differs.
   - conch's own window is never held, since a pick there is Tyler's.
-  - While the conversation panel fills the screen, nothing the front-window
-    observer reads is sent: the app in front is behind the panel, and the
-    panel's own `view: panel` report is what Tyler sees. The moment the panel
-    docks or hides, the app in front is read again, so `showing` catches up
-    (`ScreenReportGate.covered`, `StateStore.screenCovered`).
   - A report counts as said once the daemon answers it, `screen-ack` or
     `screen-error` (a refusal said again is refused again, every reading). One
     it never heard is sent again at the next reading, and a published state with

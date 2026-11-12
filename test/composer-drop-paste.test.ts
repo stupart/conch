@@ -46,9 +46,10 @@ test("the editor stops accepting file drops, and keeps everything else", () => {
  * feedback — the target never even lit, which is why it read as "doesn't seem to work".
  */
 test("a dropped image is attached whether it is a file or bytes", () => {
-  // The live composer's drop target (ComposerDropTarget; the swoop's picture leaves it out).
-  expect(composer).toContain("content.onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargeted)");
-  expect(composer).toContain(".modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))");
+  // The composer's own drop target. It was a modifier the swoop's static picture left out, until the swoop went with
+  // the overlays on 2026-11-11; there is one composer now, and one drop.
+  expect(composer).toContain(".onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargetedForDrop) { providers in\n            load(providers)\n            return true\n        }");
+  expect(composer.match(/\.onDrop\(/g)).toHaveLength(1);
   const load = composer.slice(composer.indexOf("private func load(_ providers: [NSItemProvider])"));
   const body = load.slice(0, load.indexOf("\n    }\n"));
   // The file shape.

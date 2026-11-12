@@ -11,12 +11,13 @@ public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
     case permissions
     case voice
     case phone
+    /// Try it: a practice turn, then the old overlays' tour, until both went with those overlays (2026-11-11). Kept so
+    /// progress saved on it still reads back (`OnboardingProgress.init(from:)` moves it on to the end); never on the rail.
     case practice
     case done
 
-    /// Every step the rail can list, in order. Welcome and the end are not steps a person does. Which of them a Mac shows
-    /// is `OnboardingReadiness.rail`: Try it only with a daemon that can run the practice turn.
-    public static let rail: [OnboardingStep] = [.agents, .permissions, .voice, .phone, .practice]
+    /// Every step the rail lists, in order. Welcome and the end are not steps a person does.
+    public static let rail: [OnboardingStep] = [.agents, .permissions, .voice, .phone]
 
     public var title: String {
         switch self {
@@ -106,20 +107,15 @@ public struct OnboardingReadiness: Equatable, Sendable {
     /// Speech recognition and the natural voices are on this Mac and working.
     public var engineReady: Bool
     public var phonePaired: Bool
-    /// The daemon can run the practice turn (it publishes `features.practice`, `OnboardingReports.practiceAvailable`).
-    /// With one that can't (an older daemon, or none answering), the rail has no Try it and You're set follows iPhone:
-    /// setup never shows a step that does nothing.
-    public var practiceAvailable: Bool
 
     public init(agentsFound: Int = 0, agentsConnected: Int = 0, microphone: Bool = false, permissionsMissing: Int = 3,
-                engineReady: Bool = false, phonePaired: Bool = false, practiceAvailable: Bool = false) {
+                engineReady: Bool = false, phonePaired: Bool = false) {
         self.agentsFound = agentsFound
         self.agentsConnected = agentsConnected
         self.microphone = microphone
         self.permissionsMissing = permissionsMissing
         self.engineReady = engineReady
         self.phonePaired = phonePaired
-        self.practiceAvailable = practiceAvailable
     }
 
     /// A fresh Mac: nothing found, nothing granted.
@@ -147,11 +143,9 @@ public struct OnboardingReadiness: Equatable, Sendable {
     }
 
     /// The steps this Mac's rail lists.
-    public var rail: [OnboardingStep] {
-        OnboardingStep.rail.filter { $0 != .practice || practiceAvailable }
-    }
+    public var rail: [OnboardingStep] { OnboardingStep.rail }
 
-    /// Whether a step needs nothing more from the person. Trying it is never already done: it is the part that shows.
+    /// Whether a step needs nothing more from the person.
     public func satisfies(_ step: OnboardingStep) -> Bool {
         switch step {
         case .agents: agentsConnected > 0 && agentsConnected == agentsFound
@@ -167,9 +161,9 @@ public struct OnboardingReadiness: Equatable, Sendable {
     public var isReturning: Bool { agentsConnected > 0 && microphone }
 
     /// What "Welcome back" asks about. A returning Mac already has an agent wired, and which others it wires was its own
-    /// choice, so agents are never missing; the practice turn is never missing either.
+    /// choice, so agents are never missing.
     public var missingForReturning: [OnboardingStep] {
-        rail.filter { $0 != .agents && $0 != .practice && !satisfies($0) }
+        rail.filter { $0 != .agents && !satisfies($0) }
     }
 }
 
@@ -224,8 +218,8 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     public var putAway: Bool
     /// conch quit to reopen for a grant, and should come straight back to this step.
     public var reopening: Bool
-    /// Set up before, by hand or by an older conch (`welcomingBack`): Welcome back asks only what is missing, never the
-    /// practice turn, so the menu never counts Try it as left for it. False in progress saved before it was kept.
+    /// Set up before, by hand or by an older conch (`welcomingBack`): Welcome back asks only what is missing. False in
+    /// progress saved before it was kept.
     public var returning: Bool
 
     public init(step: OnboardingStep = .welcome, marks: [OnboardingStep: OnboardingMark] = [:], phone: PhoneHandoff = .init(),
@@ -241,7 +235,8 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
     }
 
     /// Read leniently: a field added since (`returning`) is absent from progress an older conch wrote, and that progress
-    /// must still read back, or a set-up Mac would be walked through setup again.
+    /// must still read back, or a set-up Mac would be walked through setup again. Progress left on Try it, gone since
+    /// 2026-11-11, comes back on the end, You're set, with nothing owed for it.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
@@ -252,22 +247,23 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
         putAway = try container.decode(Bool.self, forKey: .putAway)
         reopening = try container.decode(Bool.self, forKey: .reopening)
         returning = try container.decodeIfPresent(Bool.self, forKey: .returning) ?? false
+        if step == .practice { step = .done }
+        marks[.practice] = nil
     }
 
     public func mark(_ step: OnboardingStep) -> OnboardingMark { marks[step] ?? .todo }
 
     /// Rail steps left for later or not yet done, and not true on this Mac by now: the menu's "Finish setting up conch ·
-    /// 2 left: Permissions, iPhone". A permission skipped here and allowed later in System Settings is not left. Try it
-    /// is offered to a returning Mac, never owed by it.
+    /// 2 left: Permissions, iPhone". A permission skipped here and allowed later in System Settings is not left.
     public func remaining(_ readiness: OnboardingReadiness) -> [OnboardingStep] {
-        readiness.rail.filter { mark($0) != .done && !readiness.satisfies($0) && !(returning && $0 == .practice) }
+        readiness.rail.filter { mark($0) != .done && !readiness.satisfies($0) }
     }
 
     /// Where Welcome back starts: on the first thing missing, with everything it isn't asking about ticked (a returning
-    /// Mac's agents among them: one is wired, which is what set up means). Never the practice turn.
+    /// Mac's agents among them: one is wired, which is what set up means).
     public static func welcomingBack(missing: [OnboardingStep], readiness: OnboardingReadiness) -> OnboardingProgress {
         var progress = OnboardingProgress(step: missing.first ?? .done, returning: true)
-        for step in readiness.rail where !missing.contains(step) && step != .practice {
+        for step in readiness.rail where !missing.contains(step) {
             progress.marks[step] = .done
         }
         return progress
@@ -341,8 +337,7 @@ public struct OnboardingProgress: Codable, Equatable, Sendable {
 
     /// The next rail step after `step` that still wants the person: not done, and not already true on this Mac.
     /// Already-true steps are ticked on the way past. Nothing left is the end. After is in the rail's whole order, so a
-    /// step this Mac's rail doesn't list (Try it, with a daemon that can't run it) still moves on, never back to the
-    /// start.
+    /// step the rail doesn't list (Try it, gone) still moves on, never back to the start.
     private mutating func firstOpen(after step: OnboardingStep?, readiness: OnboardingReadiness) -> OnboardingStep {
         let order = OnboardingStep.rail
         let start = step.flatMap { order.firstIndex(of: $0) }.map { $0 + 1 } ?? 0

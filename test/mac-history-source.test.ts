@@ -26,7 +26,6 @@ function sliceFrom(text: string, start: string, end: string): string {
 describe("the Mac app reads recorded history", () => {
   const store = read("mac-app/conch-mac/HistoryStore.swift");
   const conversation = read("mac-app/conch-mac/ConversationStackView.swift");
-  const panels = read("mac-app/conch-mac/FloatingPanels.swift");
   const state = read("mac-app/conch-mac/StateStore.swift");
   const history = read("design/ConchDesign/Sources/ConchDesign/History.swift");
   const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
@@ -78,7 +77,6 @@ describe("the Mac app reads recorded history", () => {
     // the daemon already picked for this window.
     expect(conversation).toContain("HistorySnapshot.branchTip(forSnapshotItems: conversation.items");
     expect(conversation.match(/history\.select\(session: conversation\.sessionId, branchTip: branchTip\)/g)?.length).toBe(2);
-    expect(panels).toContain("forSnapshotItems: (conversation?.items ?? []).map");
 
     // Captured once, with the session: a tip that moved as messages arrived would be a
     // different ancestry under an open cursor, and the store answers that with a stale
@@ -188,28 +186,11 @@ describe("the Mac app reads recorded history", () => {
     expect(conversation).toContain("private static let toolResultCap = 400");
   });
 
-  test("the full-screen overlay enlarges the message, not the cut", () => {
-    expect(panels).toContain("ConversationFogHost(store: store, panels: self, queue: queue, history: store.overlayHistory)");
-    const turns = sliceFrom(panels, "static func turns(", "/// Full screen is where");
-    expect(turns).toContain("whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
-    // Sliced to the function's own end: it used to stop at the next function's doc comment, which left with it.
-    const whole = sliceFrom(panels, "private func readWhole(", "\n    }\n");
-    // Selected through the panel's one door, which it also goes through docked (`follow`).
-    expect(whole).toContain("select(row)");
-    const select = sliceFrom(panels, "private func select(_ row: SessionRow) {", "\n    }\n");
-    expect(select).toContain("history.select(session: row.id, branchTip: HistorySnapshot.branchTip(");
-    expect(whole).toContain("HistorySnapshot.wasCut($0.text, cap: 4_000)");
-    expect(whole).toContain("history.loadFullBodies(forSnapshotItems: cut)");
-    expect(panels).toContain(".onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }");
-  });
-
-  test("the dashboard and the overlay read with their own readers", () => {
-    // They follow different sessions — the overlay stays on what the Ready pill staged —
-    // and one reader cannot hold two sessions' pages.
+  test("the dashboard reads with the store's own reader", () => {
+    // 2026-11-11: the floating conversation panel, which followed another session with a reader of its own, went with
+    // the old overlays; the window's conversation reads through the store's.
     expect(state).toContain("let history: HistoryStore");
-    expect(state).toContain("let overlayHistory: HistoryStore");
     expect(state).toContain("history = HistoryStore(client: socket)");
-    expect(state).toContain("overlayHistory = HistoryStore(client: socket)");
     expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("history: store.history,");
   });
 

@@ -43,8 +43,9 @@ describe("animation clocks stop where nobody can see them", () => {
         expect(text, `${file} reads conchHidden`).toContain("@Environment(\\.conchHidden) private var hidden");
       }
     }
-    // VoiceGlyph, Thinking, FogLookView, the setup spinner and PulseDot: a floor, so an empty scan cannot pass.
-    expect(clocks).toBeGreaterThanOrEqual(5);
+    // VoiceGlyph, the lagoon's switch, the setup spinner and PulseDot: a floor, so an empty scan cannot pass. The
+    // conversation panel's look and its thinking line were two more, until the overlays went on 2026-11-11.
+    expect(clocks).toBeGreaterThanOrEqual(4);
   });
 
   test("each window that is ordered out rather than torn down tells its content when it can't be seen", () => {
@@ -52,15 +53,8 @@ describe("animation clocks stop where nobody can see them", () => {
     expect(flat(slice(read("mac-app/conch-mac/ConchMacApp.swift"), 'WindowGroup("conch") {', ".defaultSize("))).toContain(
       ".background(WindowBackgroundConfigurator()) // Its animation clocks stop while the window can't be seen: hidden behind others, minimised, on // another Space (`conchHidden`). .conchPausesWhenHidden()",
     );
-    const panels = read("mac-app/conch-mac/FloatingPanels.swift");
-    // The control bar and the conversation panel: `show(_:_:)` orders them out when turned off.
-    expect(panels).toContain("if on { panel.orderFrontRegardless() } else { panel.orderOut(nil) }");
-    for (const host of ["private struct ControlBarHost: View {", "private struct ConversationFogHost: View {"]) {
-      const body = slice(panels, host, "\n}\n");
-      expect(body.length, host).toBeGreaterThan(400);
-      expect(body, host).toContain(".conchPausesWhenHidden()");
-    }
-    // Setup's window is kept when closed.
+    // The control bar and the conversation panel were ordered out too, until they went with the old overlays on
+    // 2026-11-11. Setup's window is kept when closed.
     expect(read("mac-app/conch-mac/OnboardingController.swift")).toContain(
       "window.contentView = NSHostingView(rootView: OnboardingRootView(model: model, controller: self).conchPausesWhenHidden())",
     );

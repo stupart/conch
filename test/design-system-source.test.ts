@@ -95,16 +95,8 @@ test("M2: each menu item calls the command the dashboard already sends", () => {
   expect(item).toContain("if let dot = item.dot { entry.image = Self.dot(dot) }");
 });
 
-test("M2: Show control bar is on by default, and both M3 toggles persist", () => {
-  const register = at(item, "UserDefaults.standard.register(defaults: [");
-  const defaults = item.slice(register, at(item, "])", register));
-  expect(defaults).toContain("Self.showControlBarKey: true,");
-  expect(defaults).toContain("Self.showConversationKey: false,");
-  expect(statusMenu).toContain('Item(title: "Control Bar", command: .controlBar, mark: input.controlBar ? .on : .off)');
-  expect(item).toContain("controlBar: defaults.bool(forKey: Self.showControlBarKey),");
-  expect(item).toContain("case .controlBar: #selector(toggleControlBar)");
-  expect(item).toContain("UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)");
-});
+// "M2: Show control bar is on by default, and both M3 toggles persist" went on 2026-11-11 with the control bar and
+// the conversation panel it guarded: the old overlays and their menu toggles were removed.
 
 test("M2: the status item takes focus only for Open conch and opening a session", () => {
   const activate = [...item.matchAll(/NSApp\.activate\(/g)];
@@ -116,7 +108,7 @@ test("M2: the status item takes focus only for Open conch and opening a session"
   expect(item).not.toContain("orderFrontRegardless");
 
   const callers = [...item.matchAll(/bringConchForward\(\)/g)].map((match) => enclosingFunction(item, match.index!));
-  // openInWindow is opening a session too: with the overlays off, what the panel would have shown, in conch's window.
+  // openInWindow is opening a session too: a Ready for you item that conch's window draws, in its deliverable pane.
   expect(callers.sort()).toEqual(["bringConchForward", "openConch", "openInWindow", "openSession"]);
 });
 

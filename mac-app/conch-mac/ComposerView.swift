@@ -25,13 +25,13 @@ final class ComposerDraftStore: ObservableObject {
     /// "this text keeps showing in the 'morrow prime' session input box. i keep delting it and it keeps coming back."
     private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"
 
-    /// One store for the dashboard's composer and the conversation fog (M3), so a session has one draft
-    /// wherever it is typed, and a dictation lands in it once however many views are watching.
+    /// One store for every composer, so a session has one draft wherever it is typed, and a dictation lands in it once
+    /// however many views are watching.
     static let shared = ComposerDraftStore()
 
     @Published private var drafts: [String: Entry]
-    /// Sessions with a send on its way. The session's rather than a view's: the input can leave the window mid-send
-    /// (ComposerDock), and the composer it lands as must still know not to send the same words again.
+    /// Sessions with a send on its way. The session's rather than a view's: the composer can be rebuilt mid-send (another
+    /// session shown and back), and the one built again must still know not to send the same words again.
     @Published private(set) var sending: Set<String> = []
     /// The last dictation applied. State republishes several times a second, so without this the same
     /// spoken sentence would be appended over and over.
@@ -86,9 +86,6 @@ final class ComposerDraftStore: ObservableObject {
 
     func isSending(_ sessionID: String) -> Bool { sending.contains(sessionID) }
 
-    /// Words or files waiting to go to this session: a reply in progress (`ComposerDock.pinReply`).
-    func hasDraft(_ sessionID: String) -> Bool { drafts[sessionID] != nil }
-
     func setSending(_ sessionID: String, _ on: Bool) {
         if on { sending.insert(sessionID) } else { sending.remove(sessionID) }
     }
@@ -121,8 +118,8 @@ final class ComposerDraftStore: ObservableObject {
     ///
     /// Not published: it is advanced from the state the composer is drawn with, while it draws, and changes nothing
     /// anyone else draws. A following that is published from inside a view's update is SwiftUI's "publishing changes from
-    /// within view updates". Here rather than in the view because the input moves between the window and the panel
-    /// (ComposerDock) mid-dictation, and a view's own state would start over each time it did.
+    /// within view updates". Here rather than in the view because the composer can be rebuilt mid-dictation, and a view's
+    /// own state would start over each time it was.
     private var followers: [String: ComposerDictation.Follower] = [:]
     /// Sessions whose composer mic asked for a dictation, and when, until the capture it asked for is seen. Only those
     /// words go into the draft; the voice loop's reply, the window's Space and the menu bar talk to the session itself.
@@ -201,13 +198,6 @@ final class ComposerDraftStore: ObservableObject {
     }
 }
 
-/// Where the composer is drawn (ComposerDock). There is one input, and it is in one place at a time: its card under the
-/// conversation in conch's window; the panel's glass, as the conversation panel's reply line or as the reply line alone;
-/// or bare, only what is on it, for the swoop's pictures of it (`ComposerSwoop`), which draws the glass itself.
-enum ComposerChrome {
-    case window, panel, bare
-}
-
 /// Type to a session from the Mac, with images.
 ///
 /// conch could speak to an agent and the phone could type to one, but the Mac
@@ -268,14 +258,10 @@ struct ComposerView: View {
     /// else…" row, today. A counter rather than a Bool because the request is
     /// an event, and the same request can arrive twice in a row.
     var focusRequest: Int = 0
-    var chrome: ComposerChrome = .window
 
     @State private var isTargetedForDrop = false
     /// Each video on the composer as it is made ready for the agent, and drops on their way (`ComposerVideos`).
     @ObservedObject private var videos = ComposerVideos.shared
-    /// Drawn for a picture (`ComposerSwoop`, through ImageRenderer): the text view, the scroll view and the bridges are
-    /// AppKit's, which a picture cannot draw, so their words are drawn as they would sit.
-    @Environment(\.conchRendersStatically) private var rendersStatically
     /// The field has the keyboard; set true to give it the keyboard (`ComposerEditor.isFocused`).
     @State private var fieldFocused = false
     /// A key was typed into the field while it was read-only for a dictation: the caption says why nothing happened,
@@ -316,7 +302,7 @@ struct ComposerView: View {
                 SlashTypeaheadList(
                     matches: typeahead.matches,
                     selected: typeahead.selected,
-                    surface: chrome == .panel ? .glass : .card,
+                    surface: .card,
                     onChoose: choose
                 )
                 // Under the tiles, the highlight keeps the 6 it has from the card's edge, not the strip's 2.
@@ -489,7 +475,7 @@ struct ComposerView: View {
         // .cbox in the lab: 6 all round. This was 14/8, which with the inner box that
         // just went is where the composer's dead height came from.
         .padding(6)
-        .modifier(ComposerCard(chrome: chrome, isTargetedForDrop: isTargetedForDrop))
+        .modifier(ComposerCard(isTargetedForDrop: isTargetedForDrop))
         // Dropping a screenshot straight onto the window is how anyone actually
         // shares one, so it must work without opening a file picker first.
         // `.image` as well as `.fileURL`. A drag out of Finder carries a file URL and always
@@ -500,7 +486,10 @@ struct ComposerView: View {
         // same way the file picker asks for `.image` rather than listing extensions.
         // `.movie` too, for the same reason: a screen recording's thumbnail, a video from Photos or one from a browser is a
         // PROMISED movie, not a file URL, and was refused as image bytes once were (`load`, `ComposerVideos`).
-        .modifier(ComposerDropTarget(live: !rendersStatically, isTargeted: $isTargetedForDrop, load: load))
+        .onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargetedForDrop) { providers in
+            load(providers)
+            return true
+        }
         .onChange(of: focusRequest) { _, _ in
             // Somewhere else asked for the cursor — the "Something else…" row
             // on a question, today. Ignore the initial value so opening a
@@ -508,9 +497,6 @@ struct ComposerView: View {
             fieldFocused = true
         }
         .onAppear(perform: refreshTypeahead)
-        // The floating input's Esc lets go of the field; with the list open, it closes the list first (ComposerDock).
-        .onChange(of: typeaheadShowing) { _, open in if chrome != .bare { ComposerDock.shared.typeaheadOpen = open } }
-        .onDisappear { if chrome != .bare, typeaheadShowing { ComposerDock.shared.typeaheadOpen = false } }
         .onChange(of: draft) { _, _ in refreshTypeahead() }
         .onChange(of: caret) { _, _ in refreshTypeahead() }
         .onChange(of: commandRead) { _, _ in refreshTypeahead() }
@@ -533,7 +519,7 @@ struct ComposerView: View {
 
     /// Offered where the agent's own commands can be typed, and not while a dictation fills the field.
     private var typeaheadEnabled: Bool {
-        commandCapabilities != nil && !rendersStatically && dictation == nil && messageUnavailableReason == nil
+        commandCapabilities != nil && dictation == nil && messageUnavailableReason == nil
     }
 
     private var typeaheadShowing: Bool { typeaheadEnabled && typeahead.isShowing }
@@ -595,116 +581,89 @@ struct ComposerView: View {
 
     private var composerField: some View {
         ZStack(alignment: .topLeading) {
-            if rendersStatically, let dictation {
-                // The swoop's picture mid-dictation: the field as `ComposerDictationText` draws it, the draft and the
-                // settled words plain, the changing ones dimmer.
-                Text(Self.attributed(dictation))
-                    .font(ConchType.readingBody)
-                    .lineSpacing(ConchType.readingLineSpacing)
-                    .lineLimit(8)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: Self.lineHeight, alignment: .topLeading)
-                    .padding(.top, Self.fieldInsetTop)
-                    .padding(.bottom, Self.fieldInsetBottom)
-                    .padding(.horizontal, Self.fieldInsetX)
-            } else if rendersStatically {
-                // The field for the swoop's picture: its words where the editor lays them, in its type, leading and
-                // insets, or what it says when empty. A picture of the text view itself would be blank.
-                Text(draft.isEmpty ? (messageUnavailableReason ?? "Message \(sessionLabel)") : draft)
-                    .font(ConchType.readingBody)
-                    .lineSpacing(ConchType.readingLineSpacing)
-                    .foregroundStyle(draft.isEmpty ? ConchPalette.textDim : ConchPalette.textPrimary)
-                    .lineLimit(8)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: Self.lineHeight, alignment: .topLeading)
-                    .padding(.top, Self.fieldInsetTop)
-                    .padding(.bottom, Self.fieldInsetBottom)
-                    .padding(.horizontal, Self.fieldInsetX)
-            } else {
-                // AppKit's text view, owned rather than reached into (`ComposerEditor` says what SwiftUI's TextEditor did
-                // to the words in it). It sizes itself from its own layout: one line until the text needs two, then up to
-                // eight, measured at the width it is actually laid out at.
-                ComposerEditor(text: $draft, isFocused: $fieldFocused, identity: sessionID, onSend: send)
-                    // Read-only while a dictation fills the field, and a key pressed there says why (`micCaption`).
-                    // Typing into a draft the dictation is about to be added to would put the words somewhere the
-                    // field is not showing them; they wait, and Return sends the lot once the words land.
-                    .readOnly(dictation != nil) { typedWhileDictating = true }
-                    .typeahead(onKey: typeaheadKey, onCaret: { caret = $0 }, caret: caretRequest)
-                    // Typing here is a claim on this session. Without it the
-                    // pane keeps following the live session, so starting a
-                    // sentence to one agent and having another begin working
-                    // moves the window out from under you mid-word — with the
-                    // draft still attached to the session you have just left.
-                    .onChange(of: draft) { previous, current in
-                        if previous.isEmpty, !current.isEmpty { onDraftStarted() }
-                    }
-                    // The editor slides DOWN by the same half-leading its glyphs are raised
-                    // by inside their line fragment, so the words land exactly where the
-                    // placeholder draws them and only the caret has moved. Top and bottom trade
-                    // the same 2 pt, so the field's height, and the gap to the controls under
-                    // it, are both unchanged. See `ComposerCaretBaseline`.
+            // AppKit's text view, owned rather than reached into (`ComposerEditor` says what SwiftUI's TextEditor did
+            // to the words in it). It sizes itself from its own layout: one line until the text needs two, then up to
+            // eight, measured at the width it is actually laid out at.
+            ComposerEditor(text: $draft, isFocused: $fieldFocused, identity: sessionID, onSend: send)
+                // Read-only while a dictation fills the field, and a key pressed there says why (`micCaption`).
+                // Typing into a draft the dictation is about to be added to would put the words somewhere the
+                // field is not showing them; they wait, and Return sends the lot once the words land.
+                .readOnly(dictation != nil) { typedWhileDictating = true }
+                .typeahead(onKey: typeaheadKey, onCaret: { caret = $0 }, caret: caretRequest)
+                // Typing here is a claim on this session. Without it the
+                // pane keeps following the live session, so starting a
+                // sentence to one agent and having another begin working
+                // moves the window out from under you mid-word — with the
+                // draft still attached to the session you have just left.
+                .onChange(of: draft) { previous, current in
+                    if previous.isEmpty, !current.isEmpty { onDraftStarted() }
+                }
+                // The editor slides DOWN by the same half-leading its glyphs are raised
+                // by inside their line fragment, so the words land exactly where the
+                // placeholder draws them and only the caret has moved. Top and bottom trade
+                // the same 2 pt, so the field's height, and the gap to the controls under
+                // it, are both unchanged. See `ComposerCaretBaseline`.
+                .padding(.top, Self.fieldInsetTop + Self.caretRaise)
+                .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
+                .padding(.horizontal, Self.fieldInsetX)
+                .background(ComposerPasteBridge { urls in attach(urls) })
+                // Kept where it is while a dictation is drawn over it, not taken out: the draft, the caret, the
+                // keyboard and Cmd-Z all stay with it, so the words land in the field you were in and you can
+                // carry on typing after them. It used to be swapped out for the dictation line and rebuilt
+                // after, which dropped the keyboard and the undo history every time.
+                .opacity(dictation == nil ? 1 : 0)
+                .allowsHitTesting(dictation == nil)
+                .accessibilityHidden(dictation != nil)
+                // Nor does it size the field meanwhile: the dictation does. A long draft under a voice turn's one
+                // line (`ComposerDictation.Preview.joinsDraft`) held the field eight lines tall around it.
+                .frame(height: dictation == nil ? nil : 0, alignment: .top)
+
+            if let dictation {
+                // The dictation takes the field while you speak: the draft as it is, then everything said so far,
+                // growing as the words arrive (`ComposerDictation`). 2026-10-05, Tyler: "make the transcript
+                // accumulate in the input bar with whatever text is already there instead of just showing like the
+                // last few words". It showed `partial` alone, the segment being heard, in place of the draft.
+                //
+                // It is still not written INTO the draft: the transcript is revised right up until it lands, and the
+                // draft must be exactly what it was if the dictation is cancelled. Drawn by the editor's own
+                // typesetting, at the editor's own insets, so the draft does not move by a pixel when it takes over
+                // and none of the words move when they land.
+                ComposerDictationText(preview: dictation)
                     .padding(.top, Self.fieldInsetTop + Self.caretRaise)
                     .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
                     .padding(.horizontal, Self.fieldInsetX)
-                    .background(ComposerPasteBridge { urls in attach(urls) })
-                    // Kept where it is while a dictation is drawn over it, not taken out: the draft, the caret, the
-                    // keyboard and Cmd-Z all stay with it, so the words land in the field you were in and you can
-                    // carry on typing after them. It used to be swapped out for the dictation line and rebuilt
-                    // after, which dropped the keyboard and the undo history every time.
-                    .opacity(dictation == nil ? 1 : 0)
-                    .allowsHitTesting(dictation == nil)
-                    .accessibilityHidden(dictation != nil)
-                    // Nor does it size the field meanwhile: the dictation does. A long draft under a voice turn's one
-                    // line (`ComposerDictation.Preview.joinsDraft`) held the field eight lines tall around it.
-                    .frame(height: dictation == nil ? nil : 0, alignment: .top)
-
-                if let dictation {
-                    // The dictation takes the field while you speak: the draft as it is, then everything said so far,
-                    // growing as the words arrive (`ComposerDictation`). 2026-10-05, Tyler: "make the transcript
-                    // accumulate in the input bar with whatever text is already there instead of just showing like the
-                    // last few words". It showed `partial` alone, the segment being heard, in place of the draft.
-                    //
-                    // It is still not written INTO the draft: the transcript is revised right up until it lands, and the
-                    // draft must be exactly what it was if the dictation is cancelled. Drawn by the editor's own
-                    // typesetting, at the editor's own insets, so the draft does not move by a pixel when it takes over
-                    // and none of the words move when they land.
-                    ComposerDictationText(preview: dictation)
-                        .padding(.top, Self.fieldInsetTop + Self.caretRaise)
-                        .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
-                        .padding(.horizontal, Self.fieldInsetX)
-                        .help(dictation.joinsDraft
-                              ? "Dictating — the words join your message when they land"
-                              : "Listening — these words go straight to \(sessionLabel)")
-                        .accessibilityElement()
-                        .accessibilityLabel(dictation.joinsDraft ? "Dictating" : "Listening")
-                        .accessibilityValue(dictation.text)
-                } else if let argumentPlaceholder {
-                    // What the chosen command takes, after the caret: the draft drawn clear in the field's own type, so the
-                    // hint starts where the next letter will, then the hint in the placeholder's ink. Gone at the first key.
-                    (Text(draft).foregroundStyle(.clear) + Text(argumentPlaceholder).foregroundStyle(ConchPalette.textDim))
-                        .font(ConchType.readingBody)
-                        .lineLimit(1)
-                        .frame(height: Self.lineHeight, alignment: .topLeading)
-                        .padding(.top, Self.fieldInsetTop)
-                        .padding(.bottom, Self.fieldInsetBottom)
-                        .padding(.horizontal, Self.fieldInsetX)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                } else if draft.isEmpty {
-                    Text(messageUnavailableReason ?? "Message \(sessionLabel)")
-                        .font(ConchType.readingBody)
-                        .foregroundStyle(ConchPalette.textDim)
-                        // `.leading` centred it in the field's height, which is the whole
-                        // grown box — so it drifted further from the first line the taller
-                        // the draft got. The editor lays its first line out at the TOP; the
-                        // placeholder has to do the same or they are two different rules
-                        // positioning one line of text. Empty, the field is one line.
-                        .frame(height: Self.lineHeight, alignment: .topLeading)
-                        .padding(.top, Self.fieldInsetTop)
-                        .padding(.bottom, Self.fieldInsetBottom)
-                        .padding(.horizontal, Self.fieldInsetX)
-                        .allowsHitTesting(false)
-                }
+                    .help(dictation.joinsDraft
+                          ? "Dictating — the words join your message when they land"
+                          : "Listening — these words go straight to \(sessionLabel)")
+                    .accessibilityElement()
+                    .accessibilityLabel(dictation.joinsDraft ? "Dictating" : "Listening")
+                    .accessibilityValue(dictation.text)
+            } else if let argumentPlaceholder {
+                // What the chosen command takes, after the caret: the draft drawn clear in the field's own type, so the
+                // hint starts where the next letter will, then the hint in the placeholder's ink. Gone at the first key.
+                (Text(draft).foregroundStyle(.clear) + Text(argumentPlaceholder).foregroundStyle(ConchPalette.textDim))
+                    .font(ConchType.readingBody)
+                    .lineLimit(1)
+                    .frame(height: Self.lineHeight, alignment: .topLeading)
+                    .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
+                    .padding(.horizontal, Self.fieldInsetX)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            } else if draft.isEmpty {
+                Text(messageUnavailableReason ?? "Message \(sessionLabel)")
+                    .font(ConchType.readingBody)
+                    .foregroundStyle(ConchPalette.textDim)
+                    // `.leading` centred it in the field's height, which is the whole
+                    // grown box — so it drifted further from the first line the taller
+                    // the draft got. The editor lays its first line out at the TOP; the
+                    // placeholder has to do the same or they are two different rules
+                    // positioning one line of text. Empty, the field is one line.
+                    .frame(height: Self.lineHeight, alignment: .topLeading)
+                    .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
+                    .padding(.horizontal, Self.fieldInsetX)
+                    .allowsHitTesting(false)
             }
         }
         .onChange(of: dictation == nil) { _, ended in
@@ -713,16 +672,6 @@ struct ComposerView: View {
         // No inner box: §3 says the stage has one card and no others, and the lab draws the
         // placeholder straight onto the composer. A field-shaped rectangle inside a
         // composer-shaped rectangle reads as two controls and costs ~20 pt of height.
-    }
-
-    /// The dictation for a picture of the field: the draft and the settled words in the text colour, the changing words
-    /// dimmer, as `ComposerDictationText` sets them.
-    private static func attributed(_ preview: ComposerDictation.Preview) -> AttributedString {
-        var plain = AttributedString(preview.plain)
-        plain.foregroundColor = ConchPalette.textPrimary
-        var pending = AttributedString(preview.pending)
-        pending.foregroundColor = ConchPalette.textDim
-        return plain + pending
     }
 
     /// The mic, said three ways. A person mid-sentence needs to know conch is
@@ -876,11 +825,6 @@ struct ComposerView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .movie, .pdf, .plainText]
-        // A modal picker brings conch forward, which would call the input home to the window (ComposerDock): it is held
-        // where it is while the picker is up, and from the panel the app Tyler was in gets the front back after.
-        let previous = chrome == .panel ? NSWorkspace.shared.frontmostApplication : nil
-        ComposerDock.shared.hold()
-        defer { ComposerDock.shared.release(handingBackTo: previous) }
         guard panel.runModal() == .OK else { return }
         attach(panel.urls)
     }
@@ -980,50 +924,36 @@ struct ComposerView: View {
     }
 }
 
-/// The composer's card, for where it is (`ComposerChrome`).
+/// The composer's card under the conversation.
 private struct ComposerCard: ViewModifier {
-    let chrome: ComposerChrome
     let isTargetedForDrop: Bool
 
     func body(content: Content) -> some View {
-        switch chrome {
-        case .window:
-            content
-                // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
-                // floating elevation.
-                //
-                // It was a full-width bar pinned to the frame with a hairline over it, so the
-                // transcript was set to a 700 pt column while the field you answer it in was twice
-                // that and touching the edge — the reply and the thing being replied to did not share
-                // a column. Same constant as the transcript, so they cannot drift apart.
-                .background(
-                    ConchPalette.surface,
-                    in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
-                )
-                // `--shFloat` is two shadows: a 0.5 px hairline ring AND the soft drop. §3 names the
-                // hairline explicitly; conchElevation carries only the drop, so the ring is drawn here.
-                .overlay(
-                    RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
-                        .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
-                )
-                .overlay { dropRing(radius: ConchRadius.large) }
-                // Where the card is, for the swoop to leave from and land on (ComposerDock).
-                .background(ComposerCardAnchor())
-                // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
-                // that happens to look right is how the design system and the app come apart.
-                .conchElevation(.floating)
-                .frame(maxWidth: ConversationTextView.composerMeasure)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
-        case .panel:
-            // The panel's reply line: the overlay's own glass, in the panel's corner, like the reply capsule it replaces.
-            content
-                .overlayGlass(RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous))
-                .overlay { dropRing(radius: ConchRadius.panel) }
-        case .bare:
-            // The swoop draws the glass, morphing from one of those to the other; the picture is only what is on it.
-            content
-        }
+        content
+            // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
+            // floating elevation.
+            //
+            // It was a full-width bar pinned to the frame with a hairline over it, so the
+            // transcript was set to a 700 pt column while the field you answer it in was twice
+            // that and touching the edge — the reply and the thing being replied to did not share
+            // a column. Same constant as the transcript, so they cannot drift apart.
+            .background(
+                ConchPalette.surface,
+                in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+            )
+            // `--shFloat` is two shadows: a 0.5 px hairline ring AND the soft drop. §3 names the
+            // hairline explicitly; conchElevation carries only the drop, so the ring is drawn here.
+            .overlay(
+                RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+                    .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+            )
+            .overlay { dropRing(radius: ConchRadius.large) }
+            // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
+            // that happens to look right is how the design system and the app come apart.
+            .conchElevation(.floating)
+            .frame(maxWidth: ConversationTextView.composerMeasure)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 14)
     }
 
     /// `.cbox.drop{box-shadow:0 0 0 2px #0A84FF,var(--shFloat)}` — 2 pt, the system drop
@@ -1040,67 +970,15 @@ private struct ComposerCard: ViewModifier {
     }
 }
 
-/// The window composer's card, as AppKit has it: where on screen it is and in which window, for the swoop to leave from
-/// and land on. Asked when needed rather than reported, so a window moved or resized since is still measured right.
-/// Drops onto the composer, left out of the swoop's picture. `.onDrop` is backed by an AppKit view, which ImageRenderer
-/// can't draw: it draws its placeholder instead, a yellow box with a no-entry sign, and as the drop target is the whole
-/// composer, the whole input box flew yellow for the half second of each swoop (Tyler: "the input box itself turned
-/// yellow"; it never showed in a screenshot because taking one ends the flight).
-private struct ComposerDropTarget: ViewModifier {
-    let live: Bool
-    @Binding var isTargeted: Bool
-    let load: ([NSItemProvider]) -> Void
-
-    func body(content: Content) -> some View {
-        if live {
-            content.onDrop(of: [.fileURL, .movie, .image], isTargeted: $isTargeted) { providers in
-                load(providers)
-                return true
-            }
-        } else {
-            content
-        }
-    }
-}
-
-private struct ComposerCardAnchor: NSViewRepresentable {
-    final class Anchor: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            MainActor.assumeIsolated { ComposerDock.shared.windowCard(self, laidOut: window != nil) }
-        }
-        override func setFrameSize(_ newSize: NSSize) {
-            super.setFrameSize(newSize)
-            MainActor.assumeIsolated { ComposerDock.shared.windowCardMoved(self) }
-        }
-        override func setFrameOrigin(_ newOrigin: NSPoint) {
-            super.setFrameOrigin(newOrigin)
-            MainActor.assumeIsolated { ComposerDock.shared.windowCardMoved(self) }
-        }
-    }
-
-    func makeNSView(context: Context) -> Anchor { Anchor(frame: .zero) }
-    func updateNSView(_ nsView: Anchor, context: Context) {}
-    static func dismantleNSView(_ nsView: Anchor, coordinator: ()) {
-        MainActor.assumeIsolated { ComposerDock.shared.windowCard(nsView, laidOut: false) }
-    }
-}
-
-/// The one composer for a session, wired to the store. conch's window builds it under the conversation, and the panel
-/// builds the same one as its reply line (ComposerDock): one construction, so the draft, the attachments, the mic and
-/// send cannot come to behave differently in the two places. It is never in both at once.
+/// The one composer for a session, wired to the store, under the conversation in conch's window.
 struct SessionComposer: View {
     let row: SessionRow
     let state: PublishedState?
     let store: StateStore
-    var chrome: ComposerChrome = .window
     var focusRequest = 0
     /// The first character or file: a claim on this session, so whatever shows it stops following the busiest session.
     let onDraftStarted: () -> Void
-    /// Sent, as it goes, with the delivery: the panel flies it into its transcript and takes it back if it didn't go.
-    var onSent: ((String, Task<Bool, Never>) -> Void)? = nil
-    /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
+    /// One draft per session wherever it is typed.
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
 
     /// What the mic is doing FOR THIS ROW, by identity (`WorkspaceModel.voiceState`): a row the voice is not on reports
@@ -1131,9 +1009,7 @@ struct SessionComposer: View {
                 ? { await store.capabilities(backend: row.backend ?? "claude", cwd: "", sessionId: row.id).capabilities }
                 : nil,
             onSend: { text in
-                let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
-                onSent?(text, delivery)
-                return delivery
+                store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },
             onInterrupt: {
                 store.send(.interrupt(sessionId: row.id, label: row.label))
@@ -1160,8 +1036,7 @@ struct SessionComposer: View {
                 store.send(.recite(sessionId: row.id, label: row.label))
             },
             onDraftStarted: onDraftStarted,
-            focusRequest: focusRequest,
-            chrome: chrome
+            focusRequest: focusRequest
         )
     }
 }

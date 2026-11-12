@@ -60,15 +60,17 @@ describe("the window", () => {
     expect(closed).toContain("if let progress, !progress.finished { apply(.close) }");
   });
 
-  test("the rail shows this Mac's steps: Try it only with a daemon that says it can run the practice turn", () => {
+  test("the rail shows this Mac's steps, and Try it is no longer one of them", () => {
     expect(controller).toContain("steps: model.readiness.rail");
-    // Never switched on by the app itself: the daemon's `features.practice`, and an older daemon keeps it hidden.
-    expect(controller).not.toMatch(/practiceAvailable:\s*true/);
-    expect(controller).toContain("practiceAvailable: practiceAvailability ?? (progress?.step == .practice))");
-    // And never with the overlays off: the tour Try it runs is on them (`ConchOverlays`).
-    expect(controller).toContain("OnboardingReports.practiceAvailability(feature: published.practiceFeature, published: publishedSeen,\n                                               overlays: ConchStatusItem.overlaysOn)");
-    expect(support).toContain('practiceFeature: (object["features"] as? [String: Any])?["practice"] as? Int');
-    expect(read("design/ConchDesign/Sources/ConchDesign/OnboardingReports.swift")).toContain("practiceAvailable: Bool = false");
+    const onboarding = read("design/ConchDesign/Sources/ConchDesign/Onboarding.swift");
+    expect(onboarding).toContain("public static let rail: [OnboardingStep] = [.agents, .permissions, .voice, .phone]");
+    expect(onboarding).toContain("public var rail: [OnboardingStep] { OnboardingStep.rail }");
+    // Try it ran the old overlays' tour, and went with them on 2026-11-11. Progress saved on it still reads back, on
+    // to the end, and the window draws the end for it, so nobody is left on a page that no longer exists.
+    expect(onboarding).toContain("if step == .practice { step = .done }");
+    expect(controller).toContain("case .done, .practice:\n                OnboardingDoneStep(");
+    expect(controller).not.toContain("practiceAvailab");
+    expect(support).not.toContain("practiceFeature");
   });
 
   test("progress lives in onboarding.json, written atomically, every event through the rule", () => {
@@ -255,19 +257,11 @@ describe("setup's window, as reviewed", () => {
     expect(voice).not.toContain("PermissionCenter.shared.statuses");
   });
 
-  test("Try it waits while the daemon hasn't said whether it can run it, and skips only on its no", () => {
-    const page = controller.slice(controller.indexOf("case .practice:\n"), controller.indexOf("case .done:\n"));
-    const skip = page.indexOf("Color.clear.onAppear { model.apply(.skip) }");
-    expect(skip).toBeGreaterThan(-1);
-    expect(page.slice(0, skip)).toContain("if model.practiceAvailability == false {");
-    // Unknown until the daemon's state has been read this launch.
-    expect(controller.match(/publishedSeen = true/g)?.length).toBe(3);
-    expect(member(controller, "private func readPublished() {")).toContain("if !publishedSeen { publishedSeen = true }");
-  });
-
-  test("You're set never offers to answer the practice turn", () => {
+  test("You're set offers a session that needs an answer, or one that finished since the window opened", () => {
     const waiting = member(controller, "var waitingSession: SessionRow? {");
-    expect(waiting).toContain(".filter { $0.id != TourCoach.practiceSessionId }");
+    expect(waiting).toContain("rows.first { $0.needsResponse || $0.status == .needs }");
+    expect(waiting).toContain("($0.at ?? 0) >= since");
+    // Not every idle session.
     expect(waiting).not.toContain("stateStore?.state?.rows.first");
   });
 

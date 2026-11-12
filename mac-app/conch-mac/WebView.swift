@@ -350,8 +350,6 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.layer?.backgroundColor = NSColor(ConchPalette.bg).cgColor
         context.coordinator.observeLoadingState(of: webView)
         context.coordinator.observeCurrentURL(of: webView)
-        // A review's page: its agent's marks are found in it (`AgentInkController`).
-        if let item = context.environment.agentInkItem { AgentInkController.shared.appeared(webView, showing: item) }
         if let annotator, let bridge = context.coordinator.annotate {
             bridge.webView = webView
             bridge.annotator = annotator
@@ -375,7 +373,6 @@ struct DeliverableWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        AgentInkController.shared.gone(webView)
         coordinator.annotate?.annotator?.detach(webView)
         coordinator.stopObservingLoadingState()
         webView.navigationDelegate = nil

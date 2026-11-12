@@ -91,16 +91,23 @@ describe("Send", () => {
   });
 
   test("taken isn't landed: a send refused later puts the notes back on the deliverable they came from", () => {
-    expect(annotate).toContain("guard let failure = await CanvasController.failure(of: event.opId, in: store) else { return }");
+    expect(annotate).toContain("guard let failure = await Self.failure(of: event.opId, in: store) else { return }");
+    // Taken is not landed: the daemon's outcome comes back against the send's own id. The question was the canvas's
+    // (`CanvasController.failure`) until the canvas went with the overlays on 2026-11-11, and is Annotate's own now.
+    const failure = annotate.slice(annotate.indexOf("static func failure(of opId: String?, in store: StateStore) async -> String? {"), annotate.indexOf("/// The tray's Copy notes"));
+    expect(failure).toContain("guard let entry = store.outbox.entries.first(where: { $0.id == opId }) else { return nil }");
+    expect(failure).toContain("if case let .failed(sentence) = entry.state { return sentence }");
+    expect(failure).toContain("if entry.state.isTerminal { return nil }");
     expect(annotate).toContain("AnnotationDrafts.shared.keep(back, for: item)");
     expect(annotate).toContain("guard self.item?.id == item.id else { return }");
   });
 
-  test("its folder is Tyler's alone and kept 14 days, as the canvas's", () => {
+  test("its folder is Tyler's alone and kept 14 days", () => {
     expect(annotate).toContain('.appendingPathComponent(".cache/conch/annotations", isDirectory: true)');
     expect(annotate).toContain("attributes: [.posixPermissions: 0o700]");
     expect(annotate).toContain("attributes: [.posixPermissions: 0o600]");
-    expect(annotate).toContain("static let kept = CanvasFolder.kept");
+    // Fourteen days of its own: it borrowed the canvas's `CanvasFolder.kept` until the canvas went on 2026-11-11.
+    expect(annotate).toContain("static let kept: TimeInterval = 14 * 24 * 3600");
   });
 });
 
@@ -113,7 +120,7 @@ describe("the harness", () => {
     for (const guarded of ["static func pendingSelection() -> String? {\n        guard answersRequests", "static func pendingInspection() -> String? {\n        guard answersRequests", "static func serviceRequest() {\n        guard answersRequests"]) {
       expect(snapshot).toContain(guarded);
     }
-    // Its pictures are of conch's own window (canvas-source.test.ts holds every capture to this).
+    // Its pictures are of conch's own window.
     expect(filesWith("CONCH_HARNESS").sort()).toEqual(["AnnotateHarness.swift", "ConchMacApp.swift", "DebugSnapshot.swift"]);
   });
 

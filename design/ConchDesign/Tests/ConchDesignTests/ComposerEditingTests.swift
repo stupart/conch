@@ -7,20 +7,12 @@ import XCTest
 final class ComposerEditingTests: XCTestCase {
     // MARK: Return
 
-    /// Return sends; Shift- or Option-Return breaks the line, as the conversation panel's own line does.
+    /// Return sends; Shift- or Option-Return breaks the line.
     func testReturnSendsAndShiftOrOptionBreaksTheLine() {
         XCTAssertEqual(ComposerEditing.returnKey(shift: false, option: false, composing: false), .send)
         XCTAssertEqual(ComposerEditing.returnKey(shift: true, option: false, composing: false), .newline)
         XCTAssertEqual(ComposerEditing.returnKey(shift: false, option: true, composing: false), .newline)
         XCTAssertEqual(ComposerEditing.returnKey(shift: true, option: true, composing: false), .newline)
-        // The panel's rule and this one cannot drift apart on the keys they share.
-        for shift in [false, true] {
-            for option in [false, true] {
-                let panel = FogReply.key(returnKey: true, shift: shift, option: option)
-                let composer = ComposerEditing.returnKey(shift: shift, option: option, composing: false)
-                XCTAssertEqual(panel == .send, composer == .send, "shift \(shift) option \(option)")
-            }
-        }
     }
 
     /// While the input method is composing, Return is the composition's: it commits, whatever the modifiers. The SwiftUI

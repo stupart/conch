@@ -7,8 +7,8 @@ import { join } from "node:path";
  *
  * The rules themselves are provider-neutral and tested by `swift test`
  * (design/ConchDesign/Tests/ConchDesignTests/WorkspaceTests.swift). What those tests cannot
- * see is the wiring: that the window, the conversation pane, the transcript and the overlay
- * all ASK the model rather than each keeping a chain of its own — which is how they drifted,
+ * see is the wiring: that the window, the conversation pane and the transcript all ASK the
+ * model rather than each keeping a chain of its own — which is how they drifted,
  * and how some of them came to answer by label, a name the user can change and two sessions
  * can share.
  */
@@ -20,7 +20,6 @@ const content = read("mac-app/conch-mac/ContentView.swift");
 const dashboard = read("mac-app/conch-mac/DashboardView.swift");
 const adapter = read("mac-app/conch-mac/Workspace.swift");
 const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const app = read("mac-app/conch-mac/ConchMacApp.swift");
 const review = read("mac-app/conch-mac/ReviewView.swift");
 const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
@@ -46,9 +45,9 @@ describe("one owner", () => {
 
   /** A missing `import ConchDesign` has slipped through twice; CI builds neither app. */
   test("every file that reads the model imports the design system", () => {
-    // The composer and its dock read the model too, wherever the input is (`SessionComposer`, `ComposerDock`).
-    const composerFiles = ["ComposerView.swift", "ComposerDock.swift"].map((file) => read(`mac-app/conch-mac/${file}`));
-    for (const source of [content, dashboard, adapter, stack, panels, app, ...composerFiles]) {
+    // The composer reads the model too (`SessionComposer`). 2026-11-11: its floating dock went with the old overlays.
+    const composer = read("mac-app/conch-mac/ComposerView.swift");
+    for (const source of [content, dashboard, adapter, stack, app, composer]) {
       expect(source).toContain("import ConchDesign");
     }
     expect(project).toContain("/* Workspace.swift in Sources */ = {isa = PBXBuildFile;");
@@ -59,8 +58,7 @@ describe("one owner", () => {
     // What I am looking at, which session the voice is on, and where a message goes: three
     // answers that are allowed to differ, from one place, never from a label.
     expect(pane).toContain("workspace.viewedRow(in: state)");
-    // The composer asks for its row's voice and dictation by the model's own rule, wherever it is: the window's and the
-    // panel's reply line are one construction (`SessionComposer`), and the panel has no workspace object of its own.
+    // The composer asks for its row's voice and dictation by the model's own rule (`SessionComposer`).
     const composer = read("mac-app/conch-mac/ComposerView.swift");
     expect(composer).toContain("WorkspaceModel.voiceState(of: row, in: state)");
     expect(composer).toContain("WorkspaceModel.dictation(of: row, in: state)");
@@ -88,15 +86,9 @@ describe("one owner", () => {
 });
 
 describe("the same decision, not a second copy of it", () => {
-  test("the overlay resolves its session through the window's own chain", () => {
-    expect(panels).toContain("WorkspaceFocus.viewed(in: Workspace(state), pinned: staged)");
-    // Its staged pin (#222) stays where it is — the overlay is allowed to be on another
-    // session; it is the RULE that must not be written twice.
-    expect(panels).toContain("@Published var staged: SessionRow.ID?");
-    // Which session the voice is on, for the panel's reply line, is the composer's own reading (`SessionComposer`), so
-    // the panel keeps no copy of that rule; the speaking chip asks the same focus rules by identity.
-    expect(panels).not.toContain("private func voice(for row: SessionRow)");
-    expect(panels).toContain("WorkspaceFocus.addressed(in: Workspace(state))");
+  test("one translation from the daemon's rows to the rules, and the ledger asks the same rule", () => {
+    // 2026-11-11: the floating conversation panel, which resolved its session through this chain with a staged pin of
+    // its own, went with the old overlays. What is left is the window's, asking the same rules.
     // One translation from the daemon's rows to the rules, used by all of them.
     expect(adapter).toContain("extension Workspace {");
     // The ledger's scroll target is the same question, so it asks the same rule — it used to

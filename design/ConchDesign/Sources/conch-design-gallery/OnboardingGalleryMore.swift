@@ -297,13 +297,6 @@ func renderOnboardingFilms() throws {
         }
     }
 
-    try onb("onb-film-resume", width: filmWidth) {
-        Heading(title: "Back to the Mac", note: "The phone reports its last stage; the Mac holds \"All set on your iPhone\" for a beat (1.2 s), then carries on by itself: the iPhone step's check pops in, the rail's highlight travels to Try it on pop, and the page swaps on swap. Frame 0 is the held beat; the times are from when the swap starts.")
-        filmstrip(times, scale: windowScale, size: windowFrame) { t in PhoneToPractice(t: t).padding(10) }
-        Caption("Reduce Motion")
-        filmstrip(times, scale: windowScale, size: windowFrame) { t in PhoneToPractice(t: t, reduceMotion: true).padding(10) }
-    }
-
     let handoffTimes: [Double] = [0, 0.06, 0.12, 0.2, 0.3, 0.5]
     try onb("onb-film-handoff", width: (556 * 0.5 + 16) * CGFloat(handoffTimes.count) + 80) {
         Heading(title: "The code gives way to the phone", note: "The phone scans: the code leaves soft and a touch large, the phone arrives from a touch small (swap), and its stages drop in one by one (pop, 36 ms apart), each ticking as the phone reports it.")

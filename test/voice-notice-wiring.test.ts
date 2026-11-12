@@ -4,9 +4,10 @@ import { join } from "node:path";
 
 /**
  * Where the natural voices' calm line shows (NaturalVoicesNotice.swift decides it; XCTest pins the rules): the Mac's
- * window notices and control bar, and the iPhone's list. These pin the wiring the Swift builds can't: that each app
- * reads the daemon's `naturalVoices`, steps it through the shared rules, remembers dismissals, and puts the line where
- * Tyler looks — and that Try again is setup's own Retry.
+ * window notices and the iPhone's list. These pin the wiring the Swift builds can't: that each app reads the daemon's
+ * `naturalVoices`, steps it through the shared rules, remembers dismissals, and puts the line where Tyler looks — and
+ * that Try again is setup's own Retry. 2026-11-11: the control bar's second line, which carried a short form of it, went
+ * with the old overlays.
  */
 
 const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
@@ -15,7 +16,6 @@ const flat = (text: string) => text.replace(/\s+/g, " ");
 describe("the Mac", () => {
   const models = flat(read("mac-app/conch-mac/Models.swift"));
   const notices = read("mac-app/conch-mac/Notices.swift");
-  const panels = flat(read("mac-app/conch-mac/FloatingPanels.swift"));
   const statusItem = flat(read("mac-app/conch-mac/StatusItem.swift"));
   const settings = flat(read("mac-app/conch-mac/SettingsView.swift"));
 
@@ -49,11 +49,6 @@ describe("the Mac", () => {
     // Why? leads to Settings › General, where the voices' own line is: a page of the window now (SettingsRouter).
     expect(line).toContain("case .why: SettingsRouter.shared.open(.general)");
     expect(line).toContain('if notice.dismissible { Button("OK", action: voices.dismiss)');
-  });
-
-  test("the control bar's second line carries the short line, before or after the working count by its tone", () => {
-    expect(panels).toContain("@ObservedObject var voices = NaturalVoicesNoticeStore.shared");
-    expect(panels).toContain("news: NaturalVoicesNotices.barNews(working: ConchStatusItem.news(store.state), notice: voices.notice),");
   });
 
   test("Settings, where Why? leads, says how far along and offers the same Try again", () => {

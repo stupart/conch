@@ -173,7 +173,7 @@ enum ComposerVideoPrep {
 
 /// Where a video that arrived without a file of its own is kept: one promised by Photos, a screen recording's
 /// thumbnail or a browser, or handed over as bytes. `~/.cache/conch/attachments/<id>/<its name>`, so the agent and the
-/// tile see the name it had, for Tyler alone, and gone two weeks on, as canvases are (`CanvasFolder`).
+/// tile see the name it had, for Tyler alone, and gone two weeks on, as annotations are (`AnnotationFolder`).
 enum ComposerDropFolder {
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/conch/attachments", isDirectory: true)
     static let kept: TimeInterval = 14 * 24 * 3600

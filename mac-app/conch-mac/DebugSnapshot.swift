@@ -58,12 +58,9 @@ enum DebugSnapshot {
     /// Which window to photograph.
     ///
     /// `key` is what a one-line request has always meant and stays the default.
-    /// The floating panels were unreachable until now: the candidate list
-    /// deliberately excluded them, which left the conversation overlay — the
-    /// surface under the heaviest iteration — impossible for the app to
-    /// photograph at all.
+    /// 2026-11-11: `overlay` and `controlbar` went with the old overlays.
     enum Target: String {
-        case key, overlay, controlbar, dashboard, geometry
+        case key, dashboard, geometry
     }
 
     /// Read and clear a pending request to show a session.
@@ -90,20 +87,6 @@ enum DebugSnapshot {
         try? manager.removeItem(atPath: inspectRequestPath)
         return wanted ?? ""
     }
-
-    /// The conversation overlay, identified by the one thing true of it in EVERY state: which window it is.
-    ///
-    /// Not by its frame autosave name: `FloatingPanels` blanks that while the fog is
-    /// collapsed or full screen (so neither is ever saved as the restore frame), which
-    /// are exactly two of the states worth photographing. A name-matching lookup would
-    /// find the overlay in the easy states and silently miss it in the interesting ones.
-    /// Nor by `takesKeys`: the canvas's glass takes keys too, while the pen is down.
-    @MainActor
-    private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.conversationWindow }
-
-    /// The control bar, the same way: the canvas's glass, its tools and Show's ring are floating panels too.
-    @MainActor
-    private static func isControlBar(_ panel: FloatingPanel) -> Bool { panel === FloatingPanels.installed?.controlBarWindow }
 
     /// Everything conch has on screen, whichever window is being photographed.
     ///
@@ -156,14 +139,11 @@ enum DebugSnapshot {
 
     @MainActor
     private static func name(of window: NSWindow) -> String {
-        guard let panel = window as? FloatingPanel else {
-            // Not every non-panel window is the dashboard — the menu bar's own status
-            // window is one too. Calling that "dashboard" in the very artifact that
-            // exists to say which window is which would be its own small lie, so
-            // anything without a title answers with its class instead.
-            return window.title.isEmpty ? String(describing: type(of: window)) : "dashboard"
-        }
-        return isOverlay(panel) ? "overlay" : isControlBar(panel) ? "controlbar" : "canvas"
+        // Not every window is the dashboard — the menu bar's own status window is
+        // one too. Calling that "dashboard" in the very artifact that exists to say
+        // which window is which would be its own small lie, so anything without a
+        // title answers with its class instead.
+        window.title.isEmpty ? String(describing: type(of: window)) : "dashboard"
     }
 
     /// Honour a pending request, if there is one. Cheap enough to call per poll.
@@ -199,9 +179,7 @@ enum DebugSnapshot {
         }
 
         let onScreen = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized }
-        // Not the floating panels (M3): this photographs the conch window.
-        let candidates = onScreen.filter { !($0 is FloatingPanel) }
-        let panels = onScreen.compactMap { $0 as? FloatingPanel }
+        let candidates = onScreen
         // Whatever is in FRONT is what someone wants a picture of.
         //
         // This used to take the largest visible window on the reasoning that
@@ -223,8 +201,6 @@ enum DebugSnapshot {
         switch target {
         case .key: window = key ?? largest
         case .dashboard: window = largest
-        case .overlay: window = panels.first(where: isOverlay)
-        case .controlbar: window = panels.first(where: isControlBar)
         case .geometry: window = nil
         }
 
@@ -237,10 +213,6 @@ enum DebugSnapshot {
             "captured": window.map(name(of:)) ?? NSNull(),
             "target": target.rawValue,
             "windows": described,
-            // The overlay paints its own light or dark from this, independently of the
-            // system appearance — an hour went into comparing a light-mode reference
-            // against a dark-mode app without noticing.
-            "overlayAppearance": UserDefaults.standard.string(forKey: FloatingPanels.Look.appearanceKey) ?? "auto",
             "appIsActive": NSApp.isActive,
             // The session the window shows, so `conch parity` can say when it isn't the one it asked for.
             "viewing": viewing ?? NSNull(),
@@ -255,12 +227,6 @@ enum DebugSnapshot {
         if target == .geometry { return }
 
         guard let window else {
-            if target == .overlay, !ConchStatusItem.overlaysOn {
-                return fail("the overlays are off (Debug ▸ Overlays (experimental), conch.overlays is false), so there is no conversation overlay to photograph")
-            }
-            if target == .overlay, !UserDefaults.standard.bool(forKey: ConchStatusItem.showConversationKey) {
-                return fail("the conversation overlay is switched off (conch.showConversation is false), so there is no window to photograph")
-            }
             return fail("no \(target.rawValue) window (of \(NSApp.windows.count) total)")
         }
         guard let view = window.contentView else { return fail("window has no contentView") }

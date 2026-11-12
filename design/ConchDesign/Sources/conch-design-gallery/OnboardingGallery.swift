@@ -4,8 +4,8 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 
-// First-run setup, drawn from the views the apps will host (Onboarding*.swift): the Mac window at each step, the tour
-// over a screen, the iPhone's screens, every state that isn't the happy one, and the key transitions frame by frame.
+// First-run setup, drawn from the views the apps will host (Onboarding*.swift): the Mac window at each step, the
+// iPhone's screens, every state that isn't the happy one, and the key transitions frame by frame.
 //   swift run conch-design-gallery <outdir> onb
 
 // MARK: - Assets, read from the repo
@@ -287,38 +287,9 @@ struct OnbScreens {
         }
     }
 
-    static func practice() -> some View {
-        OnbMacWindow {
-            OnboardingWindow(progress: progress(.practice, done: [.agents, .voice, .phone], later: [.permissions]), downloads: dlDone) {
-                OnboardingPracticeStep {
-                    ZStack(alignment: .top) {
-                        TourDesktop().scaleEffect(0.62, anchor: .top).frame(width: 556, height: 236).clipped().blur(radius: 1.5)
-                        Rectangle().fill(Color.black.opacity(0.04))
-                        VStack(spacing: 18) {
-                            ControlBar(state: .speaking, detail: "Practice turn", mode: .constant(.talk))
-                            (Text("Hi, I'm conch. When an agent finishes, ")
-                                + Text("I read you what it did. Try answering me.").foregroundColor(Color.black.opacity(0.32)))
-                                .font(.system(size: 17, weight: .medium))
-                                .tracking(-0.2)
-                                .foregroundStyle(Color.black.opacity(0.85))
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 380)
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 14)
-                                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.82)))
-                                .conchElevation(.floating)
-                        }
-                        .padding(.top, 20)
-                    }
-                    .environment(\.colorScheme, .light)
-                }
-            }
-        }
-    }
-
     static func done(later: Bool = true) -> some View {
         OnbMacWindow {
-            OnboardingWindow(progress: progress(.done, done: [.agents, .voice, .phone, .practice], later: later ? [.permissions] : []), downloads: dlLate) {
+            OnboardingWindow(progress: progress(.done, done: [.agents, .voice, .phone], later: later ? [.permissions] : []), downloads: dlLate) {
                 OnboardingDoneStep(
                     summary: [
                         OnboardingSummaryLine(step: .agents, detail: "Claude Code and Codex connected", status: "", done: true),
@@ -351,241 +322,6 @@ struct OnbScreens {
                     OnboardingActionRow.phone()
                 }
             }
-        }
-    }
-}
-
-// MARK: - The tour, over a screen
-
-let tourScreen = panelScreenSize
-/// The browser window on the tour's screen, and the Join button in it, which the canvas beat marks up.
-let tourWindow = CGRect(x: 330, y: 112, width: 1020, height: 720)
-let tourJoin = CGRect(x: 394, y: 452, width: 150, height: 48)
-
-/// The screen the tour happens over: a quiet wallpaper and a page open in a browser, as anyone's might be.
-struct TourDesktop: View {
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        let dark = scheme == .dark
-        let ink = dark ? Color.white.opacity(0.9) : Color.black.opacity(0.82)
-        ZStack(alignment: .topLeading) {
-            LinearGradient(
-                colors: dark
-                    ? [Color(red: 0.10, green: 0.16, blue: 0.24), Color(red: 0.18, green: 0.13, blue: 0.22), Color(red: 0.24, green: 0.16, blue: 0.14)]
-                    : [Color(red: 0.76, green: 0.85, blue: 0.94), Color(red: 0.93, green: 0.84, blue: 0.80), Color(red: 0.85, green: 0.80, blue: 0.93)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    TrafficLights()
-                    Spacer()
-                    HStack(spacing: 6) {
-                        Image(systemName: "lock.fill").font(.system(size: 10, weight: .semibold))
-                        Text("morrow.example/join").font(.system(size: 13))
-                    }
-                    .foregroundStyle(ink.opacity(0.7))
-                    .frame(width: 380, height: 30)
-                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)))
-                    Spacer()
-                    Color.clear.frame(width: 52)
-                }
-                .padding(.horizontal, 18)
-                .frame(height: 52)
-                .background(dark ? Color(red: 0.17, green: 0.17, blue: 0.18) : Color(red: 0.97, green: 0.97, blue: 0.96))
-                Rectangle().fill(dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)).frame(height: 1)
-                HStack(alignment: .top, spacing: 56) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Blueprint Studio").font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
-                        Text("Join the Morrow team").font(.system(size: 44, weight: .bold)).tracking(-0.8).foregroundStyle(ink).padding(.top, 96)
-                        Text("You'll see Morrow's boards and drafts as soon as you're in.").font(.system(size: 18)).foregroundStyle(ink.opacity(0.65)).padding(.top, 12)
-                        HStack(spacing: 22) {
-                            Text("Join").font(.system(size: 17, weight: .semibold)).foregroundStyle(dark ? Color.black : Color.white)
-                                .frame(width: tourJoin.width, height: tourJoin.height)
-                                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ink))
-                            Text("Maybe later").font(.system(size: 16, weight: .medium)).foregroundStyle(ink.opacity(0.6))
-                        }
-                        .padding(.top, 36)
-                    }
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(red: 0.98, green: 0.78, blue: 0.64), Color(red: 0.74, green: 0.78, blue: 0.97)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 360, height: 440)
-                        .overlay(alignment: .bottomLeading) {
-                            HStack(spacing: -10) {
-                                ForEach(0..<4, id: \.self) { index in
-                                    Circle().fill(Color.white.opacity(0.9 - Double(index) * 0.12)).frame(width: 40, height: 40)
-                                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 2))
-                                }
-                            }
-                            .padding(24)
-                        }
-                }
-                .padding(.horizontal, 64)
-                .padding(.top, 52)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : Color.white)
-            }
-            .frame(width: tourWindow.width, height: tourWindow.height)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(dark ? 0.5 : 0.22), radius: 28, y: 16)
-            .offset(x: tourWindow.minX, y: tourWindow.minY)
-        }
-        .frame(width: tourScreen.width, height: tourScreen.height, alignment: .topLeading)
-    }
-}
-
-let tourBackdrops: [Bool: PanelBackdrop] = MainActor.assumeIsolated {
-    var all: [Bool: PanelBackdrop] = [:]
-    for dark in [false, true] {
-        let renderer = ImageRenderer(content: TourDesktop().environment(\.colorScheme, dark ? .dark : .light))
-        renderer.scale = 1
-        if let image = renderer.cgImage { all[dark] = PanelBackdrop(dark ? "tour, dark" : "tour, light", image) }
-    }
-    return all
-}
-
-/// The menu bar across the top of the screen, with conch's mark in it.
-struct OnbMenuBar: View {
-    var voice: VoiceState = .talk
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        HStack(spacing: 20) {
-            Image(systemName: "apple.logo").font(.system(size: 14, weight: .semibold))
-            Text("Safari").font(.system(size: 13, weight: .bold))
-            ForEach(["File", "Edit", "View", "History", "Window"], id: \.self) { Text($0).font(.system(size: 13)) }
-            Spacer()
-            HStack(spacing: 16) {
-                ConchMarkView(state: voice).frame(width: 18, height: 18)
-                Image(systemName: "wifi")
-                Image(systemName: "battery.75percent")
-                Image(systemName: "switch.2")
-                Text("Mon 27 Sep  9:41").font(.system(size: 13, weight: .medium))
-            }
-            .font(.system(size: 13, weight: .medium))
-        }
-        .foregroundStyle(scheme == .dark ? Color.white : Color.black.opacity(0.85))
-        .padding(.horizontal, 18)
-        .frame(height: panelMenuBar)
-        .background(scheme == .dark ? Color.black.opacity(0.35) : Color.white.opacity(0.45))
-    }
-}
-
-let practiceSession = FogSession(id: "practice", label: "Practice turn", agent: "conch", standing: .ready)
-let practiceTurns = [
-    ConversationTurn(id: "p1", fromYou: false, text: "Hi, I'm conch. When an agent finishes a turn, I read you what it did, then listen for your answer. Try it: say anything."),
-    ConversationTurn(id: "p2", fromYou: true, text: "Show me what you made."),
-    ConversationTurn(id: "p3", fromYou: false, text: "Here it is: a welcome card, waiting where the work lives. Click the pill, or look below. When you answer here, it goes to whoever spoke."),
-]
-
-/// One beat of the tour: the screen, the menu bar, the pill, and whatever else the beat shows, with its card.
-struct TourScene<Extra: View>: View {
-    let bar: ControlBar?
-    let card: CoachCard
-    let cardAt: CGPoint
-    var voice: VoiceState = .talk
-    var panel = false
-    let extra: Extra
-    @Environment(\.colorScheme) private var scheme
-
-    init(bar: ControlBar?, card: CoachCard, cardAt: CGPoint, voice: VoiceState = .talk, panel: Bool = false, @ViewBuilder extra: () -> Extra) {
-        self.bar = bar
-        self.card = card
-        self.cardAt = cardAt
-        self.voice = voice
-        self.panel = panel
-        self.extra = extra()
-    }
-
-    var body: some View {
-        let dark = scheme == .dark
-        ZStack(alignment: .topLeading) {
-            if panel, let backdrop = tourBackdrops[dark] {
-                PanelScene(backdrop: backdrop, turns: practiceTurns, session: practiceSession)
-            } else {
-                TourDesktop()
-            }
-            extra
-            OnbMenuBar(voice: voice).frame(width: tourScreen.width)
-            if let bar {
-                bar.frame(width: tourScreen.width).padding(.top, panelMenuBar + 10)
-            }
-            card.fixedSize().position(cardAt)
-        }
-        .frame(width: tourScreen.width, height: tourScreen.height, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous))
-    }
-}
-
-extension TourScene where Extra == EmptyView {
-    init(bar: ControlBar?, card: CoachCard, cardAt: CGPoint, voice: VoiceState = .talk, panel: Bool = false) {
-        self.init(bar: bar, card: card, cardAt: cardAt, voice: voice, panel: panel, extra: { EmptyView() })
-    }
-}
-
-/// Marks over the tour's screen: Tyler's box round the Join button and a note on it in his orange, and an agent's arrow
-/// at it in its violet.
-let tourMarks: [CanvasMark] = {
-    func at(_ x: CGFloat, _ y: CGFloat) -> CanvasPoint { CanvasPoint(x: x / tourScreen.width, y: y / tourScreen.height) }
-    let box = tourJoin.insetBy(dx: -16, dy: -14)
-    return [
-        CanvasMark(kind: .box, points: [at(box.minX, box.minY), at(box.maxX, box.maxY)]),
-        CanvasMark(kind: .note, points: [at(box.maxX - 6, box.minY + 18)], text: "bigger"),
-        CanvasMark(kind: .arrow, author: .agent, points: [at(760, 640), at(box.maxX + 10, box.maxY - 6)]),
-    ]
-}()
-
-enum Tour {
-    static let pillCard = CGPoint(x: tourScreen.width / 2, y: panelMenuBar + 10 + 48 + 16 + 95)
-
-    static func pill() -> some View {
-        TourScene(
-            bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk), news: "About to speak"),
-            // Each card is the tour's own (`TourCard`): the words the app shows, from the rule it follows.
-            card: CoachCard(TourCard(.pill)),
-            cardAt: pillCard
-        )
-    }
-
-    static func answer() -> some View {
-        TourScene(
-            bar: ControlBar(state: .listening, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(TourCard(.answer, heard: "Show me what you made.")),
-            cardAt: CGPoint(x: pillCard.x, y: pillCard.y + 24),
-            voice: .listening
-        )
-    }
-
-    static func ready() -> some View {
-        TourScene(
-            bar: ControlBar(state: .talk, detail: "", mode: .constant(.talk), ready: ControlBar.Ready(label: "Welcome to conch", position: 1, count: 1), onTap: {}),
-            card: CoachCard(TourCard(.ready)),
-            cardAt: pillCard,
-            voice: .ready
-        )
-    }
-
-    static func panel() -> some View {
-        TourScene(
-            bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(TourCard(.panel)),
-            cardAt: CGPoint(x: dockedWindow.maxX + 190, y: dockedWindow.minY + 150),
-            panel: true
-        )
-    }
-
-    static func canvas() -> some View {
-        let pillY = panelMenuBar + 10 + 48 + 14 + 21
-        return TourScene(
-            bar: ControlBar(state: .talk, detail: "Practice turn", mode: .constant(.talk)),
-            card: CoachCard(TourCard(.canvas, chordLit: true)),
-            cardAt: CGPoint(x: tourScreen.width / 2 + 250 + 24 + 150, y: pillY - 40 + 104)
-        ) {
-            CanvasInkPreview(marks: tourMarks, size: tourScreen)
-            CanvasToolPill(tool: .box, armed: true, canUndo: true, canSend: true, route: CanvasToolPill.Route(id: "practice", label: "Practice turn", sure: true),
-                           onTool: { _ in }, onUndo: {}, onSend: {}, onShow: {}, onDiscard: {}, onDone: {})
-                .fixedSize()
-                .position(x: tourScreen.width / 2, y: pillY)
         }
     }
 }
@@ -746,46 +482,6 @@ struct CodeToPhone: View {
     }
 }
 
-/// The phone handing back: the iPhone step, all ticked, gives way to Try it. The rail's highlight travels down a row on
-/// pop and the iPhone step's check pops in; the page swaps (the old out soft and a touch large, the new in from a touch
-/// small, on swap).
-struct PhoneToPractice: View {
-    let t: Double
-    var reduceMotion = false
-
-    var body: some View {
-        let travel = springAt(ConchMotion.pop.resolved(reduceMotion: reduceMotion), t)
-        let check = springAt(ConchMotion.pop.resolved(reduceMotion: reduceMotion), t)
-        let out = springAt(ConchMotion.liftOff, t)
-        let inn = springAt(ConchMotion.swap.resolved(reduceMotion: reduceMotion), max(0, t - 0.06))
-        var rail = progress(.practice, done: [.agents, .voice, .phone], later: [.permissions])
-        rail.step = t == 0 ? .phone : .practice
-        return OnbMacWindow {
-            HStack(spacing: 0) {
-                OnboardingRail(progress: rail, downloads: dlDone)
-                    .padding(OnboardingWindowMetrics.railInset)
-                    .padding(.trailing, -OnboardingWindowMetrics.railInset / 2)
-                    .environment(\.onboardingRailMove, t == 0 ? nil : OnboardingRailMove(from: .phone, travel: reduceMotion ? min(1, travel) : travel, check: reduceMotion ? 1 : lerp(0.5, 1, check)))
-                ZStack(alignment: .topLeading) {
-                    OnboardingPhoneStep(state: .finished(PhoneHandoff(device: tylersPhone, stage: .finished)), qr: onbQR)
-                        .scaleEffect(reduceMotion ? 1 : lerp(1, 1 / ConchMotion.swapScale, out))
-                        .blur(radius: reduceMotion ? 0 : lerp(0, ConchMotion.swapBlur, out))
-                        .opacity(Double(1 - out))
-                    OnboardingPracticeStep {
-                        TourDesktop().scaleEffect(0.62, anchor: .top).frame(width: 556, height: 236).clipped()
-                    }
-                    .scaleEffect(reduceMotion ? 1 : lerp(ConchMotion.swapScale, 1, inn))
-                    .blur(radius: reduceMotion ? 0 : lerp(ConchMotion.swapBlur, 0, inn))
-                    .opacity(Double(inn))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .frame(width: OnboardingWindowMetrics.size.width, height: OnboardingWindowMetrics.size.height)
-            .background(ConchColor.ground)
-        }
-    }
-}
-
 /// The views the gallery borrows from the library's internals, redrawn with the same parts.
 struct NumberedLineGallery: View {
     let number: Int
@@ -850,7 +546,7 @@ func renderOnboarding() throws {
         }
     }
     try onb("onb-00-flow", width: (thumbSize.width * thumb + 20) * 4 + 80) {
-        Heading(title: "Setup, start to finish", note: "The Mac's five steps between Welcome and You're set, the rail tracking them and the downloads under it the whole way. The iPhone branch runs on the phone while the Mac waits on step 4, and hands back.")
+        Heading(title: "Setup, start to finish", note: "The Mac's four steps between Welcome and You're set, the rail tracking them and the downloads under it the whole way. The iPhone branch runs on the phone while the Mac waits on step 4, and hands back.")
         HStack(alignment: .top, spacing: 20) {
             step("Welcome") { OnbScreens.welcome(.calm) }
             step("1 · Agents") { OnbScreens.agents() }
@@ -860,7 +556,6 @@ func renderOnboarding() throws {
         HStack(alignment: .top, spacing: 20) {
             step("4 · iPhone: the code") { OnbScreens.phone(.waiting(relay: true)) }
             step("4 · iPhone: following the phone") { OnbScreens.phone(.settingUp(PhoneHandoff(device: tylersPhone, stage: .microphone))) }
-            step("5 · Try it") { OnbScreens.practice() }
             step("You're set") { OnbScreens.done() }
         }
         Caption("Meanwhile, on the iPhone (step 4)")
@@ -874,14 +569,6 @@ func renderOnboarding() throws {
             ].enumerated()), id: \.offset) { _, screen in
                 scaled(0.34, CGSize(width: 415, height: 874)) { OnbPhone { screen } }
             }
-        }
-        Caption("Then the tour, over the real screen (step 5)")
-        HStack(alignment: .top, spacing: 20) {
-            scaled(0.15, tourScreen) { Tour.pill() }
-            scaled(0.15, tourScreen) { Tour.answer() }
-            scaled(0.15, tourScreen) { Tour.ready() }
-            scaled(0.15, tourScreen) { Tour.panel() }
-            scaled(0.15, tourScreen) { Tour.canvas() }
         }
     }
 
@@ -927,32 +614,6 @@ func renderOnboarding() throws {
         Heading(title: "4 · iPhone, while the phone sets itself up", note: "Mirrored from the phone's reports through the pairing: the Mac shows each stage as the phone passes it, then carries on.")
         OnbDesk { OnbScreens.phone(.settingUp(PhoneHandoff(device: tylersPhone, stage: .microphone))) }
         OnbDesk { OnbScreens.phone(.finished(PhoneHandoff(device: tylersPhone, stage: .finished, declined: [.notifications]))) }
-    }
-
-    try onb("onb-mac-06-try", width: windowPage) {
-        Heading(title: "5 · Try it", note: "A practice turn from conch itself: no agent, no cost. The window steps aside for the tour.")
-        OnbDesk { OnbScreens.practice() }
-    }
-
-    let tourScale: CGFloat = 0.6
-    try onb("onb-mac-07-tour", width: tourScreen.width * tourScale * 2 + 24 + 80) {
-        Heading(title: "The tour", note: "Five beats on the real surfaces, each a thing to do rather than read: the pill, answering, Ready, the panel, the canvas. The glass is the gallery's stand-in.")
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) { Caption("1 · The pill"); scaled(tourScale, tourScreen) { Tour.pill() } }
-                VStack(alignment: .leading, spacing: 8) { Caption("2 · Answer out loud"); scaled(tourScale, tourScreen) { Tour.answer() } }
-            }
-            HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) { Caption("3 · Ready"); scaled(tourScale, tourScreen) { Tour.ready() } }
-                VStack(alignment: .leading, spacing: 8) { Caption("4 · The panel"); scaled(tourScale, tourScreen) { Tour.panel() } }
-            }
-            VStack(alignment: .leading, spacing: 8) { Caption("5 · Draw on anything"); scaled(tourScale, tourScreen) { Tour.canvas() } }
-        }
-    }
-
-    try onb("onb-mac-07b-tour-ready", width: tourScreen.width + 80) {
-        Heading(title: "The tour, full size: Ready", note: "The card hangs from the pill it's about, with the one thing to do on its button.")
-        Tour.ready()
     }
 
     try onb("onb-mac-08-done", width: windowPage) {

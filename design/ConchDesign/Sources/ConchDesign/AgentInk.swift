@@ -211,18 +211,3 @@ public enum AgentInk {
         )
     }
 }
-
-/// Which of an agent's marks have drawn on already, this launch, by id: the review's and the agent's own
-/// (`AgentInkController`), so another review's are new and this one's keep theirs. Every staged change clears the canvas,
-/// so Next and Previous back to a review drew each of its marks on again from nothing, every visit; now a mark draws on
-/// once, and coming back shows it as it was left.
-public struct AgentInkMemory: Sendable {
-    private var drawn: Set<String> = []
-
-    public init() {}
-
-    /// Whether the mark `id` draws on now: the first time it is shown, and never again.
-    public mutating func drawsOn(_ id: String) -> Bool {
-        drawn.insert(id).inserted
-    }
-}
