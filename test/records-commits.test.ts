@@ -83,3 +83,21 @@ test("a receipt commits with an fsync and leaves the store at NORMAL", () => {
   expect(synchronous()).toBe(1);
 });
 
+test("a watched root: a transcript written anywhere in it is read without waiting for the reconcile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-record-watch-"));
+  const claudeHome = join(root, "claude");
+  mkdirSync(join(claudeHome, "projects"), { recursive: true });
+  const store = new RecordStore({ configDir: join(root, "config") });
+  // The default reconcile: its first walk is 30 s away, far past this test.
+  const indexer = new RecordsIndexer(store, { ownerDeviceId: "test-device", claudeHome, codexHome: join(root, "codex"), pollMs: 5 });
+  cleanups.push(async () => { await indexer.stop(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  indexer.start();
+  // Let the start's walk of the (empty) root finish.
+  await Bun.sleep(200);
+  const path = join(claudeHome, "projects", "-somewhere", `${id(9)}.jsonl`);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, message("written later"));
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline && store.counts().items < 1) await Bun.sleep(25);
+  expect(store.counts().items).toBe(1);
+}, 10_000);

@@ -1,5 +1,6 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { RecordsDiscovery, recordsCandidate, recordsRoots, type RecordsCandidate } from "./records-discovery.ts";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, watch, type FSWatcher } from "node:fs";
+import { join } from "node:path";
+import { RecordsDiscovery, recordsCandidate, recordsRoots, type RecordsCandidate, type RecordsRoot } from "./records-discovery.ts";
 import { inspectRecordSource, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES } from "./records-source.ts";
 import { recordKey, type RecordProvider, type RecordSession } from "./records-types.ts";
 import type { RecordCoverageStatus, RecordStore } from "./records-store.ts";
@@ -37,6 +38,13 @@ const errorCode = (error: unknown) => (error as NodeJS.ErrnoException)?.code ?? 
 /** An unchanged live source is polled at most every 2^3 `pollMs` (8 s by default) until the daemon renders again. */
 const MAX_POLL_DOUBLINGS = 3;
 
+/** How often every root is walked again while all of them are watched (`watchRoots`). */
+const WATCHED_RECONCILE_MS = 5 * 60_000;
+
+function rootExists(root: RecordsRoot): boolean {
+  try { return lstatSync(root.path).isDirectory(); } catch { return false; }
+}
+
 /** The worker owns this scheduler. Neither construction nor hints start a scan. */
 export class RecordsIndexer {
   private discovery: RecordsDiscovery;
@@ -44,6 +52,8 @@ export class RecordsIndexer {
   private polling = new Map<string, { job: Job; at: number }>();
   /** How many polls in a row found each live source as it was: its next poll waits `pollMs` doubled that often. */
   private unchangedPolls = new Map<string, number>();
+  /** Each polled source's path, to its job: what a watched root's event names (`noticed`). */
+  private polledPaths = new Map<string, string>();
   private hints: RecordsPriorityHints = { live: [] };
   private live = new Set<string>();
   private livePaths: RecordsPriorityHints["live"] = [];
@@ -61,6 +71,9 @@ export class RecordsIndexer {
   private readonly maxRecordBytes: number;
   private readonly pollMs: number;
   private readonly reconcileMs: number;
+  /** Set when `reconcileMs` was not given: the reconcile slows to `WATCHED_RECONCILE_MS` while every root is watched. */
+  private readonly reconcileDefault: boolean;
+  private watchers = new Map<string, FSWatcher>();
 
   constructor(private store: RecordStore, private options: RecordsIndexerOptions) {
     this.batchBytes = options.batchBytes ?? 256 * 1024;
@@ -72,6 +85,7 @@ export class RecordsIndexer {
     this.maxRecordBytes = options.maxRecordBytes ?? 32 * 1024 * 1024;
     this.pollMs = options.pollMs ?? 1000;
     this.reconcileMs = options.reconcileMs ?? 30_000;
+    this.reconcileDefault = options.reconcileMs === undefined;
     if (!options.ownerDeviceId || ![this.batchBytes, this.batchLines, this.maxRecordBytes, this.pollMs, this.reconcileMs]
       .every((value) => Number.isSafeInteger(value) && value > 0)
       || this.batchBytes <= SOURCE_PROBE_BYTES * 2 || this.maxRecordBytes < this.batchBytes) {
@@ -85,7 +99,61 @@ export class RecordsIndexer {
     if (this.running) return;
     if (this.discovery.done) { this.discovery.reset(); this.recovery = [{}]; }
     this.running = true;
+    this.watchRoots();
     this.schedule(0);
+  }
+  /**
+   * Each root watched (FSEvents, recursive): a transcript that is written is read now, rather than when the next
+   * reconcile walks to it.
+   *
+   * Every 30 s the reconcile walked every root and read every stored source again: on this Mac 1,832 Claude
+   * transcripts in 218 folders, 2026-11-11, three `lstat`s and a handful of queries each, all to find the few that
+   * moved. With every root watched it runs every `WATCHED_RECONCILE_MS` instead, as the safety net for an event
+   * FSEvents dropped and a deletion (which names no file left to read). A root that doesn't exist yet is tried again
+   * at each reconcile; until then there is nothing in it to miss. Live sources are polled regardless (`poll`).
+   */
+  private watchRoots(): void {
+    const roots = new Set(this.discovery.roots.map((root) => root.path));
+    for (const [path, watcher] of this.watchers) {
+      if (roots.has(path)) continue;
+      watcher.close();
+      this.watchers.delete(path);
+    }
+    for (const root of this.discovery.roots) {
+      if (this.watchers.has(root.path)) continue;
+      try {
+        const watcher = watch(root.path, { recursive: true }, (_event, name) => this.noticed(root, name));
+        watcher.on("error", () => { watcher.close(); this.watchers.delete(root.path); });
+        this.watchers.set(root.path, watcher);
+      } catch {}
+    }
+  }
+  private noticed(root: RecordsRoot, name: string | Buffer | null): void {
+    if (!this.running) return;
+    if (!name) {
+      // FSEvents said something changed and not what: walk soon.
+      this.nextReconcile = Math.min(this.nextReconcile, Date.now() + this.pollMs);
+      return;
+    }
+    const path = join(root.path, String(name));
+    if (!/\.jsonl(?:\.\d+)?$/.test(path)) return;
+    // A live source being polled already: read it at the next tick, no need to find it again. Every append to a
+    // working session's transcript is an event; registering each one was three `lstat`s and two queries.
+    const polled = this.polledPaths.get(path);
+    const entry = polled && this.polling.get(polled);
+    if (entry) {
+      entry.at = Date.now();
+      this.unchangedPolls.delete(polled!);
+      return;
+    }
+    try {
+      const candidate = recordsCandidate(root, path);
+      if (candidate) this.register(candidate);
+    } catch { /* gone again, or not a transcript: the reconcile decides */ }
+  }
+  private reconcileEvery(): number {
+    const watched = this.discovery.roots.every((root) => this.watchers.has(root.path) || !rootExists(root));
+    return this.reconcileDefault && watched ? WATCHED_RECONCILE_MS : this.reconcileMs;
   }
   private schedule(delay: number): void {
     this.timer = setTimeout(async () => {
@@ -100,8 +168,11 @@ export class RecordsIndexer {
     this.timer = undefined;
     await this.flight;
     this.discovery.close();
+    for (const watcher of this.watchers.values()) watcher.close();
+    this.watchers.clear();
     this.jobs.clear();
     this.polling.clear();
+    this.polledPaths.clear();
     this.unchangedPolls.clear();
     this.buffered = undefined;
   }
@@ -111,6 +182,7 @@ export class RecordsIndexer {
       this.options = { ...this.options, ...(hints.claudeHomes ? { claudeHomes: [...hints.claudeHomes] } : {}), ...(hints.codexHomes ? { codexHomes: [...hints.codexHomes] } : {}) };
       this.discovery.close();
       this.discovery = new RecordsDiscovery(recordsRoots(this.options));
+      if (this.running) this.watchRoots();
     }
     // The daemon sends these after each render, and a live transcript that grew is what renders it: every live
     // source is polled again within `pollMs`, however far its polls had backed off (`poll`).
@@ -192,7 +264,8 @@ export class RecordsIndexer {
   private step(): void {
     this.counters.ticks++;
     if (Date.now() >= this.nextReconcile && this.discovery.done && !this.recovery.length) {
-      this.nextReconcile = Date.now() + this.reconcileMs;
+      if (this.running) this.watchRoots();
+      this.nextReconcile = Date.now() + this.reconcileEvery();
       this.discovery.reset();
       this.recovery.push({});
     }
@@ -229,6 +302,7 @@ export class RecordsIndexer {
     if (count) this.unchangedPolls.set(job.id, count);
     else this.unchangedPolls.delete(job.id);
     this.polling.set(job.id, { job, at: Date.now() + this.pollMs * 2 ** count });
+    this.polledPaths.set(job.path, job.id);
   }
   /**
    * A source already read to its end whose file hasn't moved since: one `lstat` and one row, never a write.
