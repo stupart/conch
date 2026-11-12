@@ -69,6 +69,10 @@ final class StateStore: ObservableObject {
     private static let sessionCloseTimeout: TimeInterval = 45
     /// A restart closes (up to the close's own 45 s) and then opens a Terminal window.
     private static let sessionRestartTimeout: TimeInterval = 55
+    /// A session command (a send, dismiss, restore, prioritize) answers at once, unless the daemon's one thread is busy
+    /// for a moment. The socket's 1 s default read a daemon a second behind as "daemon did not reply" and filed it as a
+    /// failure, after the daemon had done what was asked (2026-11-11). 4 s, as the daemon's own budget for a request.
+    private static let sessionCommandTimeout: TimeInterval = 4
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
@@ -681,7 +685,7 @@ final class StateStore: ObservableObject {
         )
         let socketClient = socketClient
         Task { [weak self] in
-            let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+            let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
             steered?.settled(by: outcome)
             let failure: String?
             switch outcome {
@@ -710,7 +714,7 @@ final class StateStore: ObservableObject {
             model: model,
             awaitDelivery: steered == nil ? nil : true
         )
-        let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+        let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
         steered?.settled(by: outcome)
         switch outcome {
         case let .reply(data):
@@ -1178,7 +1182,7 @@ final class StateStore: ObservableObject {
                 steered?.settled(by: .connectFailed)
                 return
             }
-            let outcome = await socketClient.request(request, whenDelivered: steered?.whenDelivered)
+            let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)
             steered?.settled(by: outcome)
             guard let self else { return }
             finishSessionCommand(context, outcome: outcome)
