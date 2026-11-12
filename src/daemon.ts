@@ -3960,6 +3960,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const skillsLibrary = createSkillsLibrary({
     homes: () => libraryHomes(cfg.claudeDir),
     discover: createSkillIndexes({ log }),
+    // Settings › Workflows' runs (workflows.ts): each live session's, by its transcript's folder, where Claude Code
+    // keeps them (another agent's has none there).
+    sessions: () => [...panelSessions.values()]
+      .map((session) => ({ id: session.sessionId, label: labelForSessionId(session.sessionId),
+        ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}) })),
   });
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
     historyPage: (message) => records.historyPage({ ...message,
