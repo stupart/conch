@@ -1,4 +1,5 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -223,6 +224,25 @@ describe("a kept tail reads exactly as a fresh one", () => {
     // Three whole lines appended: those three, and the empty line after the last newline.
     appendFileSync(path, [200, 201, 202].map((n) => `${JSON.stringify({ type: "user", uuid: `n${n}`, message: { content: `new ${n}` } })}\n`).join(""));
     expect(await parsed(() => expectSameRead(path, "s", "claude", 1 << 20))).toBe(4);
+  });
+
+  test("an unchanged kept transcript, read as it was built, is not opened: one stat", async () => {
+    const random = seeded(4);
+    const path = join(dir, "unopened.jsonl");
+    writeFileSync(path, Array.from({ length: 40 }, (_, n) => claudeRecord(n, random)).join("\n") + "\n");
+    keepConversationTails([path]);
+    const first = await readConversationTail(path, "s", "claude", { tailBytes: 1 << 20 });
+    const opens = spyOn(fs, "openSync");
+    try {
+      expect(await readConversationTail(path, "s", "claude", { tailBytes: 1 << 20 })).toEqual(first);
+      expect(opens).not.toHaveBeenCalled();
+      // Grown: opened, and read from where it ended.
+      appendFileSync(path, `${JSON.stringify({ type: "user", uuid: "late", message: { content: "late" } })}\n`);
+      expect((await expectSameRead(path, "s", "claude", 1 << 20)).order.at(-1)).toBe("late");
+      expect(opens).toHaveBeenCalled();
+    } finally {
+      opens.mockRestore();
+    }
   });
 
   test("a read that reaches further back parses only the lines in front of what it holds", async () => {

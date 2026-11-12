@@ -1959,13 +1959,31 @@ function parsedTail(
   tailBytes: number,
   keyFor: (after: number) => string,
 ): { tail: ParsedTail; start: number; key: string } | null {
+  const keep = keptPaths.has(path);
+  // A kept tail whose file hasn't moved, already built for this read, is answered on one `stat`: every render asks
+  // for each published conversation, moved or not, and the open, `fstat` and close this was cost three file calls
+  // each, 8,615 a minute in `conch evals`' scripted load (2026-11-11).
+  if (keep) {
+    const kept = keptTails.get(path);
+    let stat: Stats | undefined;
+    try {
+      stat = statSync(path);
+    } catch {
+      return null;
+    }
+    if (!stat.size) return null;
+    if (kept && kept.ino === stat.ino && kept.size === stat.size && kept.mtimeMs === stat.mtimeMs) {
+      const start = Math.max(0, stat.size - tailBytes);
+      const key = keyFor(start > 0 ? start : -1);
+      if (kept.built.has(key)) return { tail: kept, start, key };
+    }
+  }
   let fd: number;
   try {
     fd = openSync(path, "r");
   } catch {
     return null;
   }
-  const keep = keptPaths.has(path);
   try {
     const stat = fstatSync(fd);
     if (!stat.size) return null;
