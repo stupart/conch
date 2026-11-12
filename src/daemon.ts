@@ -5,7 +5,7 @@ import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
 import { ResourceLedger, withStillRunning, type LedgerSession } from "./resource-ledger.ts";
-import { handleResourceRequest, loadResourceMemory, psProcessTable, RESOURCE_SAMPLE_MS, ResourceSampler, stopResource } from "./resource-sampler.ts";
+import { controlResource, controlSession, handleResourceRequest, loadResourceMemory, psProcessTable, RESOURCE_SAMPLE_MS, ResourceSampler, stopResource } from "./resource-sampler.ts";
 import { readClaudeTitle } from "./claude-title.ts";
 import { handleAccountTools } from "./account-tools.ts";
 import { readBenchmarks } from "./benchmarks.ts";
@@ -1081,6 +1081,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    */
   const resourceLedger = new ResourceLedger({
     memory: loadResourceMemory(),
+    // The load budget, read at each look: `conch set agent-budget-cpu 40` holds from the next one.
+    budget: () => ({ cpuPercent: cfg.agentBudgetCpu, memoryPercent: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground }),
     // A session conch never saw live (an orphan's environment names one from before this daemon): conch's own label for
     // it, else the title Claude Code gave its transcript. Asked once per session; the ledger keeps the answer.
     labelFor: (agentSessionId) => {
@@ -2773,7 +2775,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   /** The rows' "3 still running", into the published state the phone shares, and the full list into the sessions file. */
   function publishResources(): void {
     if (lastPublishedPanelState) {
-      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts());
+      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts(), resourceLedger.rowLevels());
     }
     publishedStateWriter.request();
   }
@@ -2798,6 +2800,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         return /^no live session conch knows started/.test(bound.reason) ? { person: true } : { reason: bound.reason };
       },
       stop: (entry) => stopResource(entry, { table: psProcessTable() }),
+      control: (entry, action) => controlResource(entry, action, { table: psProcessTable() }),
+      controlSession: (session, action) => controlSession(session, action, { table: psProcessTable() }),
       listenerPid: async (port) => (await portListeners(port))[0]?.pid,
       onChange: publishResources,
       log,
@@ -3248,7 +3252,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // Failure tickets: how many are open and unseen, for the gear's dot and Settings › Failures (failure-tickets.ts).
       lastPublishedPanelState.failures = failureDesk.digest();
       // Each live row's "3 still running" (resource-ledger.ts): a fresh build carries none until this puts them back.
-      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts());
+      lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts(), resourceLedger.rowLevels());
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.

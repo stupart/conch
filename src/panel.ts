@@ -364,6 +364,8 @@ export interface PublishedSessionRow {
    * Absent at none.
    */
   stillRunning?: number;
+  /** What it uses all told, its own processes and its leftovers, when that is yellow or red (resource-load.ts). */
+  resourceLevel?: "yellow" | "red";
   /**
    * The permission prompt a `needs` row is showing, so an app can put Allow /
    * Deny in front of the person rather than only a red mark. `answerable:

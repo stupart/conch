@@ -7,6 +7,7 @@ import { dlopen, FFIType, ptr } from "bun:ffi";
 import { readProcessIdentity } from "./process-identity.ts";
 import {
   decodeLedgerMemory,
+  PROCESS_KINDS,
   limaInstance,
   parseCwds,
   parseLifetime,
@@ -240,13 +241,30 @@ export class ResourceSampler {
       listeners: this.listeners, environment, vmInstances, cwds, simulatorNames,
       memoryOf: (row) => footprint(row.pid) ?? row.rss,
     };
-    const changed = ledger.observe(forest, evidence, now, read.complete);
+    let changed = ledger.observe(forest, evidence, now, read.complete);
+    changed = await this.autoBackground(now) || changed;
     const memory = JSON.stringify(ledger.memory);
     if (memory !== this.savedMemory) {
       this.savedMemory = memory;
       (this.options.saveMemory ?? saveResourceMemory)(ledger.memory);
     }
     if (changed) this.options.onChange?.();
+  }
+
+  /**
+   * `agent-auto-background`: while agents are over their CPU budget, a heavy leftover goes to macOS's background band.
+   * It still runs, after what Tyler is doing; nothing is stopped or paused, and Restore priority takes it back.
+   */
+  private async autoBackground(now: number): Promise<boolean> {
+    let moved = false;
+    for (const entry of this.options.ledger.autoBackgroundCandidates(now)) {
+      const done = await controlResource(entry, "lower", { table: async () => this.lastTable, probe: this.probe });
+      if (!done.ok) continue;
+      this.options.ledger.markLowered(entry, "auto", now);
+      this.options.log?.(`resources: agents are over their CPU budget; lowered the priority of ${entry.title} (${entry.id}${entry.owner ? `, ${entry.owner.label}'s` : ""})`);
+      moved = true;
+    }
+    return moved;
   }
 
   /** The table the last look read. */
@@ -305,20 +323,12 @@ export async function stopResource(entry: ResourceEntry, deps: StopDependencies)
     return await probe(["xcrun", "simctl", "shutdown", entry.udid], [0], 60_000) === null
       ? { ok: false, error: "xcrun simctl shutdown failed" } : { ok: true };
   }
-  const table = await deps.table();
-  if (!table) return { ok: false, error: "couldn't read the process table" };
+  const now = await groupNow(entry, deps.table);
+  if ("error" in now) return { ok: false, error: now.error };
+  const group = now.group;
   const signal = deps.signal ?? ((pid, name) => process.kill(pid, name));
   const alive = deps.alive ?? pidAlive;
   const sleep = deps.sleep ?? ((ms) => Bun.sleep(ms));
-  const byPid = new Map(table.map((row) => [row.pid, row]));
-  const matches = (point: { pid: number; startedAt: number }) => {
-    const row = byPid.get(point.pid);
-    return row !== undefined && sameSecond(row.startedAt, point.startedAt);
-  };
-  // The top of the group as recorded, if it is still that process; else the process it is named for.
-  const top = matches(entry.root) ? entry.root : matches(entry.anchor) ? entry.anchor : undefined;
-  if (!top) return { ok: false, error: "it is no longer running as the process conch recorded" };
-  const group: ProcessRow[] = [byPid.get(top.pid)!, ...new ProcessForest(table, []).descendants(top.pid)];
   const sent: ProcessRow[] = [];
   for (const row of group) {
     try {
@@ -343,6 +353,68 @@ export async function stopResource(entry: ResourceEntry, deps: StopDependencies)
   return { ok: true };
 }
 
+/** A resource's group as it runs now: the top as recorded (else the process it is named for), and everything under it. */
+async function groupNow(entry: ResourceEntry, read: ProcessTableSource): Promise<{ group: ProcessRow[] } | { error: string }> {
+  const table = await read();
+  if (!table) return { error: "couldn't read the process table" };
+  const byPid = new Map(table.map((row) => [row.pid, row]));
+  const matches = (point: { pid: number; startedAt: number }) => {
+    const row = byPid.get(point.pid);
+    return row !== undefined && sameSecond(row.startedAt, point.startedAt);
+  };
+  const top = matches(entry.root) ? entry.root : matches(entry.anchor) ? entry.anchor : undefined;
+  if (!top) return { error: "it is no longer running as the process conch recorded" };
+  return { group: [byPid.get(top.pid)!, ...new ProcessForest(table, []).descendants(top.pid)] };
+}
+
+export interface ControlDependencies {
+  table: ProcessTableSource;
+  probe?: Probe;
+  signal?(pid: number, signal: "SIGSTOP" | "SIGCONT"): void;
+}
+
+/** `taskpolicy -b|-B -p <pid>` for each: macOS's background band, and back. Says which it couldn't. */
+async function setBackground(rows: readonly ProcessRow[], on: boolean, probe: Probe): Promise<{ ok: true } | { ok: false; error: string }> {
+  let failed = 0;
+  for (const row of rows) if (await probe(["taskpolicy", on ? "-b" : "-B", "-p", String(row.pid)], [0], 3_000) === null) failed += 1;
+  return failed === rows.length && rows.length ? { ok: false, error: "taskpolicy refused every process in it" } : { ok: true };
+}
+
+/**
+ * Hold a resource (SIGSTOP to its group as it runs now) or let it go on (SIGCONT); move it to macOS's background band
+ * (`taskpolicy -b`), where it runs only after what the person is doing, or back (`-B`). Each only on Tyler's word, but
+ * `lower` by `agent-auto-background`. Process groups only: a VM or a simulator is stopped, never held.
+ */
+export async function controlResource(
+  entry: ResourceEntry,
+  action: "hold" | "resume" | "lower" | "restore",
+  deps: ControlDependencies,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!PROCESS_KINDS.has(entry.kind)) return { ok: false, error: `a ${entry.kind === "vm" ? "VM" : entry.kind} can be stopped, not ${action === "hold" || action === "resume" ? "held" : "reprioritised"}` };
+  const now = await groupNow(entry, deps.table);
+  if ("error" in now) return { ok: false, error: now.error };
+  if (action === "lower" || action === "restore") return setBackground(now.group, action === "lower", deps.probe ?? probeCommand);
+  const signal = deps.signal ?? ((pid, name) => process.kill(pid, name));
+  let sent = 0;
+  for (const row of now.group) {
+    try {
+      signal(row.pid, action === "hold" ? "SIGSTOP" : "SIGCONT");
+      sent += 1;
+    } catch { /* gone */ }
+  }
+  return sent ? { ok: true } : { ok: false, error: "nothing in it could be signalled" };
+}
+
+/** A whole session to the background band or back: its own process and everything under it, as they run now. */
+export async function controlSession(session: LedgerSession, action: "lower" | "restore", deps: Pick<ControlDependencies, "table" | "probe">): Promise<{ ok: true } | { ok: false; error: string }> {
+  const table = await deps.table();
+  if (!table) return { ok: false, error: "couldn't read the process table" };
+  const forest = new ProcessForest(table, []);
+  const rows = session.pids.flatMap((pid) => (forest.byPid.has(pid) ? [forest.byPid.get(pid)!, ...forest.descendants(pid)] : []));
+  if (!rows.length) return { ok: false, error: "its processes aren't running" };
+  return setBackground(rows, action === "lower", deps.probe ?? probeCommand);
+}
+
 // MARK: requests
 
 export interface ResourceRequestDependencies {
@@ -354,6 +426,10 @@ export interface ResourceRequestDependencies {
    */
   caller(callerPid: number | undefined): Promise<{ session?: LedgerSession; person?: true; reason?: string }>;
   stop(entry: ResourceEntry): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Hold, resume, lower or restore a resource (`controlResource`). */
+  control(entry: ResourceEntry, action: "hold" | "resume" | "lower" | "restore"): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Lower or restore a whole session (`controlSession`). */
+  controlSession(session: LedgerSession, action: "lower" | "restore"): Promise<{ ok: true } | { ok: false; error: string }>;
   /** The process listening on a port (`portListenerLookup`). */
   listenerPid?(port: number): Promise<number | undefined>;
   onChange(): void;
@@ -395,6 +471,17 @@ export async function handleResourceRequest(request: ResourceRequest, deps: Reso
       void deps.sampler.sample(true);
       return { kind: "resource-done", id: entry.id, action: "stop", title: entry.title, state: "stopping", message: `stopped ${entry.title}` };
     }
+    if (request.action === "hold" || request.action === "resume" || request.action === "lower" || request.action === "restore") {
+      const done = await deps.control(entry, request.action);
+      if (!done.ok) return { kind: "resource-error", error: `couldn't ${request.action} ${entry.title}: ${done.error}` };
+      if (request.action === "hold" || request.action === "resume") ledger.markHeld(entry, request.action === "hold", now);
+      else ledger.markLowered(entry, request.action === "lower" ? "you" : null, now);
+      deps.sampler.persist();
+      deps.onChange();
+      deps.log(`resources: ${request.action} ${entry.title} (${entry.id}), as asked`);
+      const said = { hold: `paused ${entry.title}; Resume lets it go on`, resume: `${entry.title} goes on`, lower: `${entry.title} runs after everything else now; Restore priority takes it back`, restore: `${entry.title} runs at its usual priority again` };
+      return { kind: "resource-done", id: entry.id, action: request.action, title: entry.title, state: ledger.stateOf(entry, now).state, message: said[request.action] };
+    }
     ledger.decide(entry.id, request.action, now);
     deps.sampler.persist();
     deps.onChange();
@@ -403,6 +490,24 @@ export async function handleResourceRequest(request: ResourceRequest, deps: Reso
     return {
       kind: "resource-done", id: entry.id, action: request.action, title: entry.title, state,
       message: request.action === "keep" ? `keeping ${entry.title}; conch won't ask about it again` : `conch will ask about ${entry.title} again in 4 hours`,
+    };
+  }
+
+  if (request.kind === "resource-session") {
+    // A whole session to the background band, or back: the throttle the budget offers for a session that is over it.
+    const session = ledger.liveSession(request.sessionId);
+    if (!session) return { kind: "resource-error", error: `no live session is ${request.sessionId}` };
+    const caller = await deps.caller(request.callerPid);
+    if (!caller.person) return { kind: "resource-error", error: `lowering a session's priority is the user's to do: Settings › Resources${caller.reason ? ` (${caller.reason})` : ""}` };
+    const done = await deps.controlSession(session, request.action);
+    if (!done.ok) return { kind: "resource-error", error: `couldn't ${request.action} ${session.label}: ${done.error}` };
+    ledger.markSessionLowered(session, request.action === "lower", now);
+    deps.sampler.persist();
+    deps.onChange();
+    deps.log(`resources: ${request.action} the priority of ${session.label}, as asked`);
+    return {
+      kind: "resource-done", id: session.sessionId, action: request.action, title: session.label,
+      message: request.action === "lower" ? `${session.label} runs after everything else now` : `${session.label} runs at its usual priority again`,
     };
   }
 

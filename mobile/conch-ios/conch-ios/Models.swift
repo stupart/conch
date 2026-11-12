@@ -243,6 +243,8 @@ struct PublishedState: Decodable, Equatable {
         /// How many things it started on the Mac are still running (src/resource-ledger.ts): "3 still running" under
         /// it once it isn't working. The list itself, and Stop, are the Mac's. Older daemons never send it.
         var stillRunning: Int?
+        /// What it uses all told, when yellow or red (src/resource-load.ts): the dot before that line.
+        var resourceLevel: String?
 
         /// What a working agent is doing right now: its running step, or its words from the last minute.
         struct Activity: Decodable, Equatable {
@@ -353,6 +355,7 @@ struct PublishedState: Decodable, Equatable {
             case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval, settings
             case activity
             case stillRunning
+            case resourceLevel
         }
 
         init() {}
@@ -394,6 +397,7 @@ struct PublishedState: Decodable, Equatable {
             // A line this build can't read is no line, never a row that fails.
             activity = try? c.decodeIfPresent(Activity.self, forKey: .activity)
             stillRunning = try? c.decodeIfPresent(Int.self, forKey: .stillRunning)
+            resourceLevel = try? c.decodeIfPresent(String.self, forKey: .resourceLevel)
         }
     }
 

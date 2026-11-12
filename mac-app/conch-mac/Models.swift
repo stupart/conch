@@ -1391,6 +1391,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// How many things this session started are still running (src/resource-ledger.ts): its second line's "3 still
     /// running" (`SidebarRowText.secondLine`). Older daemons never send it.
     let stillRunning: Int?
+    /// What it uses all told, its own processes and its leftovers, when yellow or red (src/resource-load.ts): the dot
+    /// before its "3 still running". Older daemons never send it.
+    let resourceLevel: String?
 
     /// Its turn is over and nothing of it is still running or waiting on an answer, so a restart loses nothing
     /// (`ToolsStaleRestart.isIdle`): the tools line's Restart restarts it at once, and Settings' "Restart idle sessions"
@@ -1458,6 +1461,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case activity
         case toolsStale
         case stillRunning
+        case resourceLevel
     }
 
     init(
@@ -1499,7 +1503,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         workDirs: [String]? = nil,
         activity: Activity? = nil,
         toolsStale: ToolsStale? = nil,
-        stillRunning: Int? = nil
+        stillRunning: Int? = nil,
+        resourceLevel: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -1540,6 +1545,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.activity = activity
         self.toolsStale = toolsStale
         self.stillRunning = stillRunning
+        self.resourceLevel = resourceLevel
     }
 
     init(from decoder: Decoder) throws {
@@ -1594,6 +1600,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         // The same: a verdict this build can't read, or one naming nothing, is no line.
         toolsStale = try? container.decodeIfPresent(ToolsStale.self, forKey: .toolsStale)
         stillRunning = try? container.decodeIfPresent(Int.self, forKey: .stillRunning)
+        resourceLevel = try? container.decodeIfPresent(String.self, forKey: .resourceLevel)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -1636,7 +1643,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             workDirs: workDirs,
             activity: activity,
             toolsStale: toolsStale,
-            stillRunning: stillRunning
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 }
@@ -1658,7 +1666,8 @@ extension SessionRow {
             revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: activity, toolsStale: toolsStale,
-            stillRunning: stillRunning
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 
@@ -1675,7 +1684,8 @@ extension SessionRow {
             revealable: revealable, noTerminal: noTerminal, messageRoute: messageRoute, attachable: attachable, parked: parked,
             waitingOnAgents: waitingOnAgents, approval: approval, parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId, cwd: cwd, workDirs: workDirs, activity: nil, toolsStale: toolsStale,
-            stillRunning: stillRunning
+            stillRunning: stillRunning,
+            resourceLevel: resourceLevel
         )
     }
 

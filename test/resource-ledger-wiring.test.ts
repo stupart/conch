@@ -33,6 +33,22 @@ describe("the daemon", () => {
     expect(timer).not.toContain("stop");
   });
 
+  test("the budget is read live from the settings, and the automatic step is the sampler's alone, behind its setting", () => {
+    expect(between(daemon, "const resourceLedger = new ResourceLedger({", "\n  });\n"))
+      .toContain("budget: () => ({ cpuPercent: cfg.agentBudgetCpu, memoryPercent: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground })");
+    const sampler = read("src/resource-sampler.ts");
+    // The one call that changes anything without a request: lowering priority, and only what the ledger names.
+    expect(sampler.match(/controlResource\(entry, "lower"/g)).toHaveLength(1);
+    expect(between(sampler, "private async autoBackground(now: number)", "\n  }\n")).toContain("this.options.ledger.autoBackgroundCandidates(now)");
+    const candidates = between(read("src/resource-ledger.ts"), "autoBackgroundCandidates(now: number = this.sampledAt): ResourceEntry[] {", "\n  }\n");
+    expect(candidates).toContain("if (!published.budget.autoBackground");
+    expect(candidates).toContain("!entry.owner || !PROCESS_KINDS.has(entry.kind)");
+    // Holds, resumes and priority changes otherwise come only from a request.
+    const daemonControls = daemon.match(/controlResource\(|controlSession\(/g) ?? [];
+    expect(daemonControls).toHaveLength(2);
+    expect(between(daemon, "const resources = {", "  };\n")).toContain("control: (entry, action) => controlResource(entry, action, { table: psProcessTable() })");
+  });
+
   test("stops nothing on its own: the one stop is the request handler's", () => {
     expect(daemon.match(/stopResource\(/g)).toHaveLength(1);
     const handler = between(daemon, "const resources = {", "  };\n");
@@ -46,9 +62,9 @@ describe("the daemon", () => {
     const sessionsFile = between(daemon, "function writeSessionsFile(): void {", "\n  }\n");
     expect(sessionsFile).toContain("resources: resourceLedger.published()");
     const build = between(daemon, "lastPublishedPanelState = buildDaemonPublishedState(", "applyLiveActivity();");
-    expect(build).toContain("lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts());");
+    expect(build).toContain("lastPublishedPanelState = withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts(), resourceLedger.rowLevels());");
     const publish = between(daemon, "function publishResources(): void {", "\n  }\n");
-    expect(publish).toContain("withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts())");
+    expect(publish).toContain("withStillRunning(lastPublishedPanelState, resourceLedger.rowCounts(), resourceLedger.rowLevels())");
     expect(publish).toContain("publishedStateWriter.request()");
   });
 

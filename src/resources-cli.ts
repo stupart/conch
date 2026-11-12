@@ -3,6 +3,7 @@ import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import {
   ageText,
   decodeResourceRequest,
+  RESOURCE_ACTIONS,
   memoryText,
   type PublishedResource,
   type PublishedResources,
@@ -11,6 +12,7 @@ import {
   type ResourceState,
   type ResourceTarget,
 } from "./resource-ledger.ts";
+import type { Level } from "./resource-load.ts";
 
 /**
  * `conch resources`: what agent sessions started that is still running, whose it is, and Tyler's word on it, from a
@@ -21,10 +23,14 @@ import {
  */
 
 export const RESOURCES_USAGE = `usage:
-  conch resources [--long] [--json]       what sessions started that is still running: whose, how old, CPU, memory
+  conch resources [--long] [--json]       what sessions use and left running: whose, how old, CPU, memory, green/yellow/red,
+                                          and agents' load against the budget (agent-budget-cpu, agent-budget-memory)
   conch resources stop <id>               stop it: colima/limactl stop, simctl shutdown, or SIGTERM then SIGKILL
   conch resources keep <id>               keep it; conch won't ask about it again
   conch resources later <id>              ask again in 4 hours
+  conch resources hold|resume <id>        pause it (SIGSTOP) or let it go on (SIGCONT)
+  conch resources lower|restore <id>      run it after everything else (taskpolicy -b), or at its usual priority again
+  conch resources lower|restore --session <session id>   the same for a whole session and everything under it
   conch resources add (--pid <pid> | --port <port> | --simulator <udid|name|booted> | --vm <colima profile>)
                       --until <turn|session-end|keep|30m|2h|1d> [--why "<one line>"]
                                           from a session's shell: this is mine, for this long, because`;
@@ -40,7 +46,12 @@ export function parseResourcesArgs(args: readonly string[], callerPid: number): 
   const [verb, ...more] = rest;
   if (!verb || verb === "list") return more.length ? { error: `conch resources takes no arguments but --long and --json\n${RESOURCES_USAGE}` } : { request: { kind: "resources" }, json, long };
   if (verb === "help" || verb === "--help" || verb === "-h") return { error: RESOURCES_USAGE };
-  if (verb === "stop" || verb === "keep" || verb === "later") {
+  if ((verb === "lower" || verb === "restore") && more[0] === "--session") {
+    if (more.length !== 2) return { error: `conch resources ${verb} --session takes one session id\n${RESOURCES_USAGE}` };
+    const decoded = decodeResourceRequest({ kind: "resource-session", sessionId: more[1], action: verb, callerPid });
+    return !decoded || "error" in decoded ? { error: decoded?.error ?? RESOURCES_USAGE } : { request: decoded, json, long };
+  }
+  if ((RESOURCE_ACTIONS as readonly string[]).includes(verb)) {
     if (more.length !== 1) return { error: `conch resources ${verb} takes one id, as \`conch resources\` lists it\n${RESOURCES_USAGE}` };
     const decoded = decodeResourceRequest({ kind: "resource-decide", id: more[0], action: verb, callerPid });
     return !decoded || "error" in decoded ? { error: decoded?.error ?? RESOURCES_USAGE } : { request: decoded, json, long };
@@ -127,20 +138,50 @@ function ownerText(item: PublishedResource, now: number): string {
   return `${item.owner.label}${ended}`;
 }
 
-/** The list, grouped as the Mac app groups it, one line a resource; `long` adds its command, folder and why. */
-export function renderResources(resources: PublishedResources, now: number, long = false): string[] {
-  if (!resources.items.length) return ["Nothing a session started is running."];
+/** A level as a coloured dot on a terminal, or as a word where colour can't be shown. */
+function mark(level: Level | undefined, color: boolean): string {
+  const at = level ?? "green";
+  if (!color) return `[${at}]`;
+  return `${{ green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m" }[at]}●\x1b[0m`;
+}
+
+/**
+ * The budget, each session's load, then the list grouped as the Mac app groups it, one line a resource; `long` adds its
+ * command, folder and why.
+ */
+export function renderResources(resources: PublishedResources, now: number, long = false, color = false): string[] {
   const lines: string[] = [];
+  const budget = resources.budget;
+  if (budget) {
+    const over = budget.over.length
+      ? ` · over: ${budget.over.map((key) => resources.sessions.find((session) => session.key === key)?.label ?? key).join(", ")}`
+      : "";
+    lines.push(`${mark(budget.level, color)} Budget (${budget.cpuPercent}% of ${budget.cores} cores, ${budget.memoryPercent}% of memory): ${budget.reason}${over}`);
+  }
+  const sessions = (resources.sessions ?? []).filter((session) => session.key !== "unowned" || session.resources > 0);
+  if (sessions.length) {
+    lines.push("", "By session");
+    const width = Math.min(28, Math.max(...sessions.map((session) => session.label.length + (session.live ? 0 : 8))));
+    for (const session of sessions) {
+      const name = `${session.label}${session.live || session.key === "unowned" ? "" : " (ended)"}`.padEnd(width);
+      const load = `${(session.cpu / 100).toFixed(1)} cores${session.sustained ? "" : "*"} · ${memoryText(session.memory)} · ${session.resources} left running`;
+      lines.push(`  ${mark(session.level, color)} ${name}  ${load}${session.reasons.length ? `  ${session.reasons[0]}` : ""}${session.lowered ? " · lowered" : ""}`);
+    }
+    if (sessions.some((session) => !session.sustained)) lines.push("  * not yet five minutes of looks: what it uses now");
+  }
+  if (!resources.items.length) return [...lines, ...(lines.length ? [""] : []), "Nothing a session started is running."];
+  lines.push("");
   const width = Math.min(16, Math.max(...resources.items.map((item) => item.id.length)));
   for (const group of GROUPS) {
     const items = resources.items.filter((item) => group.states.includes(item.state));
     if (!items.length) continue;
-    if (lines.length) lines.push("");
+    if (lines.at(-1) !== "") lines.push("");
     lines.push(group.heading(items.length));
     for (const item of items) {
-      const numbers = `up ${ageText(now - item.startedAt)} · ${Math.round(item.cpu)}% CPU · ${memoryText(item.memory)}`;
+      const numbers = `up ${ageText(now - item.startedAt)} · ${Math.round(item.cpuSustained ?? item.cpu)}% CPU · ${memoryText(item.memory)}`;
       const why = item.state === "asking" || item.state === "later" || item.state === "stopping" ? ` · ${item.reason ?? item.state}` : "";
-      lines.push(`  ${item.id.padEnd(width)}  ${item.title}  ·  ${ownerText(item, now)}  ·  ${numbers}${why}`);
+      const marks = `${item.held ? " · held" : ""}${item.lowered ? ` · lowered${item.lowered === "auto" ? " (budget)" : ""}` : ""}`;
+      lines.push(`  ${mark(item.level, color)} ${item.id.padEnd(width)}  ${item.title}  ·  ${ownerText(item, now)}  ·  ${numbers}${why}${marks}`);
       if (long) {
         lines.push(`  ${"".padEnd(width)}    ${item.command}`);
         if (item.cwd) lines.push(`  ${"".padEnd(width)}    in ${item.cwd}`);
@@ -149,9 +190,7 @@ export function renderResources(resources: PublishedResources, now: number, long
       }
     }
   }
-  if (resources.items.some((item) => item.state !== "unowned")) {
-    lines.push("", "conch resources stop|keep|later <id>; nothing is ever stopped unless you ask.");
-  }
+  lines.push("", "conch resources stop|keep|later|hold|resume|lower|restore <id>; nothing is stopped or held unless you ask.");
   return lines;
 }
 
@@ -163,7 +202,8 @@ export async function runResourcesCli(args: readonly string[], socketPath: strin
     return args[0] === "help" || args[0] === "--help" || args[0] === "-h" ? 0 : 2;
   }
   const { request, json, long } = parsed;
-  const reply = await requestResources(socketPath, request, request.kind === "resource-decide" && request.action === "stop" ? STOP_REPLY_MS : REPLY_MS);
+  const slow = request.kind === "resource-session" || (request.kind === "resource-decide" && request.action !== "keep" && request.action !== "later");
+  const reply = await requestResources(socketPath, request, slow ? STOP_REPLY_MS : REPLY_MS);
   if (json) {
     console.log(JSON.stringify(reply.kind === "resources" ? reply.resources : reply, null, 2));
     return reply.kind === "resource-error" ? 1 : 0;
@@ -173,7 +213,8 @@ export async function runResourcesCli(args: readonly string[], socketPath: strin
     return 1;
   }
   if (reply.kind === "resources") {
-    for (const line of renderResources(reply.resources, Date.now(), long)) console.log(line);
+    const color = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+    for (const line of renderResources(reply.resources, Date.now(), long, color)) console.log(line);
     return 0;
   }
   console.log(reply.message);

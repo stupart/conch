@@ -156,7 +156,7 @@ describe("stopping, only when asked", () => {
   const entry = (extra: object = {}) => ({
     id: "p300", identity: "300@1", kind: "server" as const, title: "vite :5100",
     anchor: { pid: 302, startedAt: T0 }, root: { pid: 300, startedAt: T0 }, startedAt: T0, firstSeenAt: T0,
-    members: [], cpu: 0, rss: 0, ports: [5100], command: "vite", users: [], seen: 2, ...extra,
+    members: [], extras: [], cpu: 0, rss: 0, ports: [5100], command: "vite", users: [], seen: 2, ...extra,
   });
 
   test("SIGTERM to the group as it runs now, SIGKILL after the wait to what is still the same process", async () => {
@@ -224,6 +224,8 @@ describe("requests", () => {
       sampler: m.sampler,
       caller: async () => caller,
       stop: async (entry) => { stops.push(entry.id); return { ok: true }; },
+      control: async (entry, action) => { stops.push(`${action} ${entry.id}`); return { ok: true }; },
+      controlSession: async (session, action) => { stops.push(`${action} session ${session.sessionId}`); return { ok: true }; },
       onChange: () => {},
       log: (line) => lines.push(line),
       now: () => T0 + 31_000,
@@ -265,6 +267,27 @@ describe("requests", () => {
     expect(m.ledger.published(T0 + 31_000).items.find((item) => item.id === "p102")).toMatchObject({ why: "preview for the review", lifetime: { kind: "until" }, owner: { how: "declared" } });
   });
 
+  test("hold, resume, lower and restore are the user's, or a session's for its own; a whole session's priority only the user's", async () => {
+    const { deps, stops, m, as } = await setup();
+    as({ session: { sessionId: "s-other", pids: [900], label: "other" } });
+    expect(await handleResourceRequest({ kind: "resource-decide", id: "p102", action: "hold", callerPid: 5 }, deps)).toMatchObject({ kind: "resource-error" });
+    as({ person: true });
+    expect(await handleResourceRequest({ kind: "resource-decide", id: "p102", action: "hold" }, deps)).toMatchObject({ kind: "resource-done", action: "hold" });
+    expect(m.ledger.published(T0 + 31_000).items.find((item) => item.id === "p102")?.held).toBe(true);
+    expect(await handleResourceRequest({ kind: "resource-decide", id: "p102", action: "resume" }, deps)).toMatchObject({ kind: "resource-done" });
+    expect(m.ledger.published(T0 + 31_000).items.find((item) => item.id === "p102")?.held).toBeUndefined();
+    expect(await handleResourceRequest({ kind: "resource-decide", id: "p102", action: "lower" }, deps)).toMatchObject({ kind: "resource-done" });
+    expect(m.ledger.published(T0 + 31_000).items.find((item) => item.id === "p102")?.lowered).toBe("you");
+    // A whole session: refused to an agent, done for the user, and said on its usage.
+    as({ session: { sessionId: "s-live", agentSessionId: "s-live", pids: [100], label: "site" } });
+    expect(await handleResourceRequest({ kind: "resource-session", sessionId: "s-live", action: "lower", callerPid: 5 }, deps)).toMatchObject({ kind: "resource-error" });
+    as({ person: true });
+    expect(await handleResourceRequest({ kind: "resource-session", sessionId: "s-live", action: "lower" }, deps)).toMatchObject({ kind: "resource-done" });
+    expect(m.ledger.published(T0 + 31_000).sessions.find((session) => session.key === "s-live")?.lowered).toBe(true);
+    expect(await handleResourceRequest({ kind: "resource-session", sessionId: "nobody", action: "lower" }, deps)).toMatchObject({ kind: "resource-error" });
+    expect(stops).toEqual(["hold p102", "resume p102", "lower p102", "lower session s-live"]);
+  });
+
   test("targets: a port's listener, a booted simulator by name, a colima profile", async () => {
     const table = [
       row(500, 1, "/opt/homebrew/bin/limactl hostagent --pidfile /Users/dev/.colima/_lima/colima-ci/ha.pid colima-ci"),
@@ -292,22 +315,39 @@ describe("conch resources", () => {
     expect(parseResourcesArgs(["add", "--pid", "1", "--port", "2", "--until", "2h"], 42)).toHaveProperty("error");
     expect(parseResourcesArgs(["add", "--pid", "5", "--until"], 42)).toHaveProperty("error");
     expect(parseResourcesArgs(["frobnicate"], 42)).toHaveProperty("error");
+    expect(parseResourcesArgs(["hold", "p102"], 42)).toMatchObject({ request: { kind: "resource-decide", action: "hold" } });
+    expect(parseResourcesArgs(["lower", "--session", "abc-123"], 42)).toMatchObject({ request: { kind: "resource-session", sessionId: "abc-123", action: "lower", callerPid: 42 } });
+    expect(parseResourcesArgs(["hold", "--session", "abc-123"], 42)).toHaveProperty("error");
   });
 
-  test("the list, grouped as the Mac app groups it", () => {
+  test("the budget, each session's load, then the list grouped as the Mac app groups it", () => {
+    const budget = { cpuPercent: 25, memoryPercent: 25, autoBackground: false, cores: 8, cpuLimit: 200, memoryLimit: 8 * 1024 ** 3, cpu: 410, sustained: true, memory: 15 * 1024 ** 3, level: "red" as const, over: ["s1"], reason: "agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB" };
     const lines = renderResources({
-      v: 1, sampledAt: T0, asking: 1,
+      v: 1, sampledAt: T0, asking: 1, budget,
+      sessions: [
+        { key: "s1", sessionId: "s1", label: "infra", live: true, cpu: 400, sustained: true, memory: 13 * 1024 ** 3, resources: 1, level: "red", reasons: ["over the agents' budget"], over: true },
+        { key: "old", label: "old prototype", live: false, cpu: 0, sustained: true, memory: 200 * 1024 ** 2, resources: 1, level: "red", reasons: ["vite :5100: past its time for over a day"] },
+        { key: "unowned", label: "Unowned", live: false, cpu: 1, sustained: false, memory: 3 * 1024 ** 3, resources: 1, level: "yellow", reasons: ["3.0 GB of memory"] },
+      ],
       items: [
-        { id: "p1", kind: "server", title: "vite :5100", command: "node vite", startedAt: T0 - 2 * 24 * 60 * MIN, cpu: 0.4, memory: 200 * 1024 ** 2, state: "asking", reason: "its session ended", owner: { label: "old prototype", live: false, how: "environment", endedAt: T0 - 24 * 60 * MIN } },
-        { id: "vm-ci", kind: "vm", title: "colima ci", command: "limactl hostagent", startedAt: T0 - 45 * MIN, cpu: 133, memory: 12 * 1024 ** 3, state: "running", owner: { label: "infra", live: true, how: "environment", sessionId: "s1" } },
-        { id: "sim-1111", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim", startedAt: T0 - 3 * 60 * MIN, cpu: 1, memory: 3 * 1024 ** 3, state: "unowned", reason: "no session started it" },
+        { id: "p1", kind: "server", title: "vite :5100", command: "node vite", startedAt: T0 - 2 * 24 * 60 * MIN, cpu: 0.4, memory: 200 * 1024 ** 2, state: "asking", reason: "its session ended", level: "red", owner: { key: "old", label: "old prototype", live: false, how: "environment", endedAt: T0 - 24 * 60 * MIN } },
+        { id: "vm-ci", kind: "vm", title: "colima ci", command: "limactl hostagent", startedAt: T0 - 45 * MIN, cpu: 133, cpuSustained: 140, memory: 12 * 1024 ** 3, state: "running", level: "red", owner: { key: "s1", label: "infra", live: true, how: "environment", sessionId: "s1" } },
+        { id: "sim-1111", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim", startedAt: T0 - 3 * 60 * MIN, cpu: 1, memory: 3 * 1024 ** 3, state: "unowned", reason: "no session started it", level: "yellow", lowered: "auto" },
       ],
     }, T0);
-    expect(lines.join("\n")).toContain("Asking (1)");
-    expect(lines.join("\n")).toContain("p1        vite :5100  ·  old prototype, ended 24 h ago  ·  up 2 d · 0% CPU · 200 MB · its session ended");
-    expect(lines.join("\n")).toContain("vm-ci     colima ci  ·  infra  ·  up 45 min · 133% CPU · 12.0 GB");
-    expect(lines.join("\n")).toContain("Unowned (1)");
-    expect(lines.at(-1)).toContain("nothing is ever stopped unless you ask");
-    expect(renderResources({ v: 1, sampledAt: T0, asking: 0, items: [] }, T0)).toEqual(["Nothing a session started is running."]);
+    const text = lines.join("\n");
+    expect(lines[0]).toBe("[red] Budget (25% of 8 cores, 25% of memory): agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB · over: infra");
+    expect(text).toContain("  [red] infra                  4.0 cores · 13.0 GB · 1 left running  over the agents' budget");
+    expect(text).toContain("old prototype (ended)");
+    expect(text).toContain("* not yet five minutes of looks");
+    expect(text).toContain("Asking (1)");
+    expect(text).toContain("[red] p1        vite :5100  ·  old prototype, ended 24 h ago  ·  up 2 d · 0% CPU · 200 MB · its session ended");
+    expect(text).toContain("[red] vm-ci     colima ci  ·  infra  ·  up 45 min · 140% CPU · 12.0 GB");
+    expect(text).toContain("Test Phone simulator  ·  unowned  ·  up 3 h · 1% CPU · 3.0 GB · lowered (budget)");
+    expect(lines.at(-1)).toContain("nothing is stopped or held unless you ask");
+    expect(renderResources({ v: 1, sampledAt: T0, asking: 0, items: [], sessions: [], budget: { ...budget, level: "green", over: [] } }, T0).at(-1)).toBe("Nothing a session started is running.");
+    // On a terminal, a dot in the level's colour.
+    expect(renderResources({ v: 1, sampledAt: T0, asking: 0, items: [], sessions: [], budget }, T0, false, true)[0]).toStartWith("\x1b[31m●\x1b[0m Budget");
   });
+
 });

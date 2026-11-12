@@ -45,15 +45,33 @@ describe("the Mac app", () => {
     expect(ledger).toContain("!(state.resources?.items.isEmpty ?? true)");
   });
 
-  test("Tyler's word goes to the daemon as his: no pid, and a stop waits for the stop", () => {
-    const decide = between(dashboard, "static let decideResource:", "\n    }\n");
-    expect(decide).toContain("ConchSocketClient().request(ResourceDecideRequest(id: id, action: action), timeout: action == .stop ? 200 : 5)");
-    expect(decide).not.toContain("callerPid");
+  test("Tyler's word goes to the daemon as his: no pid, and a stop, hold or priority change waits for it", () => {
+    const requests = between(dashboard, "enum ResourceRequests {", "private struct SessionLedger: View {");
+    expect(requests).toContain("ConchSocketClient().request(ResourceDecideRequest(id: id, action: action), timeout: quick ? 5 : 200)");
+    expect(requests).toContain("ConchSocketClient().request(ResourceSessionRequest(sessionId: sessionId, lower: lower), timeout: 60)");
+    expect(requests).not.toContain("callerPid");
+    expect(dashboard).toContain("static let decideResource = ResourceRequests.decide");
+  });
+
+  test("Settings › Resources draws the published list and budget, and sends through the same requests", () => {
+    const settings = read("mac-app/conch-mac/SettingsView.swift");
+    expect(settings).toContain("case .resources: ConchResourcesSettingsView()");
+    const page = between(settings, "struct ConchResourcesSettingsView: View {", "struct ConchEnvironmentsView: View {");
+    expect(page).toContain('SettingsSectionHeader(title: "Resources"');
+    expect(page).toContain("resources: store.state?.resources");
+    expect(page).toContain("decide: ResourceRequests.decide");
+    expect(page).toContain("lowerSession: ResourceRequests.lowerSession");
+    expect(page).toContain("setBudget: ResourceRequests.setBudget");
+    // The budget's settings have names in General too.
+    expect(settings).toContain('"agent-budget-cpu": "Agents\' CPU budget (% of cores)"');
   });
 
   test("a row's second line says what it left running", () => {
     const row = between(dashboard, "private var secondLine: SidebarRowText.SecondLine? {", "private var accessibilityName: String {");
     expect(row).toContain("stillRunning: row.stillRunning");
+    expect(row).toContain("stillRunningLevel: row.resourceLevel");
+    expect(models).toContain("resourceLevel = try? container.decodeIfPresent(String.self, forKey: .resourceLevel)");
+    expect(models.match(/resourceLevel: resourceLevel/g)?.length).toBe(3);
     expect(between(dashboard, "private var accessibilityName: String {", "\n    }\n")).toContain("stillRunning: row.stillRunning");
   });
 });
@@ -83,6 +101,7 @@ describe("the phone", () => {
     expect(models).toContain("stillRunning = try? c.decodeIfPresent(Int.self, forKey: .stillRunning)");
     const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
     expect(ledger).toContain("if activity == nil, let running = StillRunning.rowLine(row.stillRunning) {");
+    expect(ledger).toContain("level: ResourceLevel(row.resourceLevel)");
     expect(ledger).not.toContain("ResourceDecideRequest");
   });
 });
