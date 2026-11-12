@@ -322,7 +322,8 @@ test("a batch late in a long session holds the worker's loop briefly, not for a 
   }) + "\n").join(""));
   // 2026-11-11: CPU time, not the wall clock. A loaded gate parks this process between ticks, so a wall-clock limit
   // failed here at 304 ms with the walk long fixed. The walk costs CPU: with #422's index taken away a batch spends
-  // 1,000-1,500 ms of it, and with the index 20-30 ms however busy the Mac is.
+  // 1,000-1,500 ms of it, and with the index 20-30 ms however busy the Mac is. The same parking stretches the whole
+  // run past bun's 5-second default (6 s at a load average of 100, 2 s idle), so the test gets 30.
   let longest = 0;
   while (f.indexer.status().linesIndexed < lines && longest < 250) {
     const started = process.cpuUsage();
@@ -332,7 +333,7 @@ test("a batch late in a long session holds the worker's loop briefly, not for a 
   }
   expect(longest).toBeLessThan(250);
   expect(f.store.counts().items).toBe(lines);
-});
+}, 30_000);
 
 test("adding an account makes its transcripts indexable without restarting the worker", async () => {
   const f = fixture();
