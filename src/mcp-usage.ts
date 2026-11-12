@@ -36,6 +36,8 @@ export interface McpCallRecord {
    * `run`, the same command through the `conch_run` tool. `tool` is the handler's either way, so a tool keeps its history.
    */
   via?: McpCallVia;
+  /** 2026-11-11: the UTF-8 bytes of the reply's text, what the call put in the agent's context. Absent on older lines. */
+  bytes?: number;
 }
 
 export type McpCallVia = "cli" | "run";
@@ -51,6 +53,8 @@ export interface McpCallObservation {
   /** The call's `params._meta`: a Codex client names its thread there. */
   meta?: unknown;
   via?: McpCallVia;
+  /** The reply's text in UTF-8 bytes (`replyTextBytes` in mcp.ts). */
+  bytes?: number;
 }
 
 export interface McpCaller {
@@ -145,6 +149,7 @@ export function mcpCallRecord(
     ...(call.error ? { error: cleanCallError(call.error, call.arguments, conchHome(), vocabulary) } : {}),
     ...(args ? { args } : {}),
     ...(call.via ? { via: call.via } : {}),
+    ...(typeof call.bytes === "number" && Number.isFinite(call.bytes) ? { bytes: Math.max(0, Math.round(call.bytes)) } : {}),
   };
 }
 
@@ -287,6 +292,8 @@ export interface McpToolUsage {
   errorRate: number;
   p50ms: number;
   p90ms: number;
+  /** How big the replies were, over the calls whose line says (`bytes`, logged since 2026-11-11). */
+  replyBytes?: { sized: number; p50: number; p90: number; mean: number; max: number };
   /** The commonest errors, grouped (`errorGroup`), each with the outcome it was counted as. */
   topErrors: Array<{ outcome: McpCallOutcome; error: string; count: number }>;
 }
@@ -327,6 +334,17 @@ export interface McpUsageOptions {
 
 const noOutcomes = (): Record<McpCallOutcome, number> => ({ ok: 0, "input-error": 0, refused: 0, failed: 0 });
 
+/** Reply sizes, ascending, as the summary gives them. */
+export function replyBytesSummary(sorted: readonly number[]): NonNullable<McpToolUsage["replyBytes"]> {
+  return {
+    sized: sorted.length,
+    p50: percentile(sorted, 0.5),
+    p90: percentile(sorted, 0.9),
+    mean: Math.round(sorted.reduce((sum, value) => sum + value, 0) / Math.max(1, sorted.length)),
+    max: sorted.at(-1) ?? 0,
+  };
+}
+
 export function summariseMcpCalls(all: readonly McpCallRecord[], options: McpUsageOptions): McpUsageSummary {
   const records = all.filter((record) => record.ts >= options.since && (!options.session || record.session === options.session));
   const byTool = new Map<string, McpCallRecord[]>();
@@ -346,6 +364,7 @@ export function summariseMcpCalls(all: readonly McpCallRecord[], options: McpUsa
     }
     const errors = calls.length - outcomes.ok;
     const ms = calls.map((call) => call.ms).sort((a, b) => a - b);
+    const sizes = calls.flatMap((call) => (typeof call.bytes === "number" ? [call.bytes] : [])).sort((a, b) => a - b);
     return {
       tool,
       calls: calls.length,
@@ -356,6 +375,7 @@ export function summariseMcpCalls(all: readonly McpCallRecord[], options: McpUsa
       errorRate: Math.round((errors / calls.length) * 1000) / 1000,
       p50ms: percentile(ms, 0.5),
       p90ms: percentile(ms, 0.9),
+      ...(sizes.length ? { replyBytes: replyBytesSummary(sizes) } : {}),
       topErrors: [...groups.values()].sort((a, b) => b.count - a.count).slice(0, options.topErrors ?? 3),
     };
   }).sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool));
@@ -395,18 +415,23 @@ export function formatMcpUsage(summary: McpUsageSummary): string[] {
   const lines = [`conch MCP calls since ${when(summary.since)} (${summary.path})`];
   if (!summary.calls) return [...lines, "no calls recorded in this window"];
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const sized = summary.tools.some((tool) => tool.replyBytes);
+  const kb = (bytes: number | undefined) => (bytes === undefined ? "—" : (bytes / 1024).toFixed(1));
   lines.push(
     `${summary.calls} calls${summary.cli ? ` (${summary.cli} through conch agent)` : ""} · ${summary.sessions} sessions · ${summary.errors} errors`
       + ` (input ${summary.outcomes["input-error"]}, refused ${summary.outcomes.refused}, failed ${summary.outcomes.failed})`,
     "",
     `${"tool".padEnd(24)} ${"calls".padStart(6)} ${"cli".padStart(5)} ${"sess".padStart(5)} ${"err".padStart(5)} ${"rate".padStart(5)}`
-      + ` ${"in".padStart(4)} ${"ref".padStart(4)} ${"fail".padStart(4)} ${"p50ms".padStart(7)} ${"p90ms".padStart(7)}`,
+      + ` ${"in".padStart(4)} ${"ref".padStart(4)} ${"fail".padStart(4)} ${"p50ms".padStart(7)} ${"p90ms".padStart(7)}`
+      // Reply sizes only once the log has them (lines written since 2026-11-11), so an older log reads as it did.
+      + (sized ? ` ${"p50KB".padStart(6)} ${"p90KB".padStart(6)}` : ""),
   );
   for (const tool of summary.tools) {
     lines.push(
       `${tool.tool.padEnd(24)} ${String(tool.calls).padStart(6)} ${String(tool.cli).padStart(5)} ${String(tool.sessions).padStart(5)} ${String(tool.errors).padStart(5)}`
         + ` ${pct(tool.errorRate).padStart(5)} ${String(tool.outcomes["input-error"]).padStart(4)} ${String(tool.outcomes.refused).padStart(4)}`
-        + ` ${String(tool.outcomes.failed).padStart(4)} ${String(tool.p50ms).padStart(7)} ${String(tool.p90ms).padStart(7)}`,
+        + ` ${String(tool.outcomes.failed).padStart(4)} ${String(tool.p50ms).padStart(7)} ${String(tool.p90ms).padStart(7)}`
+        + (sized ? ` ${kb(tool.replyBytes?.p50).padStart(6)} ${kb(tool.replyBytes?.p90).padStart(6)}` : ""),
     );
     for (const { outcome, error, count } of tool.topErrors) lines.push(`    ${String(count).padStart(4)}× ${outcome.padEnd(11)} ${error}`);
   }
