@@ -133,7 +133,6 @@ class FakeElement {
   focus() { this.focused = true; }
   selected = 0;
   select() { this.selected += 1; }
-  contains(other: FakeElement): boolean { return other === this || this.descendants().includes(other); }
   scrolls: unknown[] = [];
   scrollIntoView(options?: unknown) { this.scrolls.push(options); }
 }
