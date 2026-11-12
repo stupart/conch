@@ -3802,10 +3802,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       };
       const wanted = [change.model, change.effort].filter(Boolean).join(" · ");
       const startedAt = Date.now();
-      const refuse = (message: string): false => {
+      // `file: false` for a no the session's state gave (busy, waiting on you, a dialog or unsent words in the way): its
+      // row says so and a retry later works, so it is no failure of conch's to file (2026-11-11, docs/failure-tickets.md).
+      const refuse = (message: string, file = true): false => {
         settle({ state: "failed", ...change, at: Date.now(), startedAt, message });
         log(`"${target.label}" stays as it is (${wanted}): ${message}`);
-        recordDaemonError("session-settings", `Could not change "${target.label}" to ${wanted}: ${message}`, target.sessionId, { ...change, backend });
+        if (file) recordDaemonError("session-settings", `Could not change "${target.label}" to ${wanted}: ${message}`, target.sessionId, { ...change, backend });
         return false;
       };
       if (sessionSettingsChanges.get(target.sessionId)?.state === "applying") {
@@ -3815,9 +3817,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (!target.pid) return refuse("the session has no terminal conch can type into");
       const status = lastPanelModel?.rows.find((row) => row.sessionId === target.sessionId)?.status;
       if (status === "working" && !AGENT_SESSION_SETTINGS[backend].changesMidTurn) {
-        return refuse("the session is working; change it when its turn is over");
+        return refuse("the session is working; change it when its turn is over", false);
       }
-      if (status === "needs") return refuse("the session is waiting on you; answer it first");
+      if (status === "needs") return refuse("the session is waiting on you; answer it first", false);
       settle({ state: "applying", ...change, at: startedAt, startedAt });
       const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");
       receipt.emit("accepted", "provider-command-accepted");
@@ -3833,7 +3835,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         reason: error instanceof Error ? error.message : String(error),
       }));
       receipt.emit(outcome.ok ? "delivered" : "failed", outcome.ok ? "transport-submitted" : "delivery-unconfirmed");
-      if (!outcome.ok) return refuse(outcome.reason);
+      if (!outcome.ok) return refuse(outcome.reason, !("declined" in outcome && outcome.declined));
       settle({ state: "applied", ...change, at: Date.now(), startedAt, message: outcome.message });
       log(`"${target.label}" now runs ${wanted} for this session only: ${outcome.message}`);
       return true;
