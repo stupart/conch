@@ -121,13 +121,22 @@ describe("the screens, as designed, each telling the Mac", () => {
     expect(flow).toContain("PhoneSetupDone(mac: flow.macNameStartingASentence, declined: flow.declinedSentences, onDone: { store.next() })");
   });
 
-  test("no notifications screen and no notifications ask, until the phone has notifications (decision 11)", () => {
+  // Decision 11 kept the ask out of setup while the app sent no notifications. It sends them now (2026-11-10, daemon
+  // notify-user.ts), but only once its Mac has a push key, which setup can't know: so setup still doesn't ask, and the one
+  // ask is PushNotifications.swift's `turnOn`, from the ledger's offer (once the Mac can push) or Settings.
+  test("no notifications screen in setup; the one ask is turnOn, and nothing asks at launch (decision 11)", () => {
     for (const name of readdirSync(join(root, "mobile", "conch-ios", "conch-ios")).filter((file) => file.endsWith(".swift"))) {
       const source = ios(name);
       expect(source, name).not.toContain("PhonePermissionAsk(.notifications");
+      if (name === "PushNotifications.swift") continue;
       expect(source, name).not.toContain("UNUserNotificationCenter");
       expect(source, name).not.toContain("requestAuthorization(options:");
     }
+    const push = ios("PushNotifications.swift");
+    expect(push.match(/requestAuthorization\(options:/g)).toHaveLength(1);
+    expect(between(push, "func turnOn() async {", "func dismissOffer()")).toContain("requestAuthorization(options: [.alert, .sound, .badge])");
+    // Launch reads what iOS has and asks nothing.
+    expect(between(push, "func start() {", "func refresh() async {")).not.toContain("requestAuthorization");
     expect(between(phoneViews, "public enum PhoneSetupScreen", "public var reports")).not.toContain("case notifications");
   });
 
@@ -198,7 +207,9 @@ describe("the pairing code and relay are left as they were (decisions 6, 7, 10 a
     }
     const project = readFileSync(join(root, "mobile", "conch-ios", "conch-ios.xcodeproj", "project.pbxproj"), "utf8");
     expect(project).not.toContain("associated-domains");
-    expect(project).not.toContain("CODE_SIGN_ENTITLEMENTS");
+    // The app has entitlements now (push, 2026-11-10), and they name push alone: no associated domains.
+    const entitlements = readFileSync(join(root, "mobile", "conch-ios", "conch-ios", "conch-ios.entitlements"), "utf8");
+    expect([...entitlements.matchAll(/<key>([^<]+)<\/key>/g)].map((match) => match[1])).toEqual(["aps-environment"]);
   });
 });
 

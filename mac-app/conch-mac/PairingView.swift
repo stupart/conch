@@ -48,6 +48,10 @@ struct ConchPairingView: View {
                         lanSection(pairing)
                     }
 
+                    // Push to the paired phone (PushSettingsView.swift): the APNs key, where it stands, a test.
+                    SettingsHairline()
+                    PushSettingsSection()
+
                     if let error = store.error {
                         Text(error)
                             .font(.callout)

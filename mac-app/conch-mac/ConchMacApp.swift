@@ -25,6 +25,8 @@ struct ConchMacApp: App {
         Task { @MainActor in AnnotateHarness.startIfAsked(store: store) }
         // The notifications ask waits for its first need: something ready while conch is Quiet.
         ReviewNotifications.shared.isQuiet = { MainActor.assumeIsolated { store.state?.mode.paused == true } }
+        // A notice's "Open link" goes through the store's door (NoticeDelivery.swift).
+        Task { @MainActor in NoticeTaps.store = store }
     }
 
     var body: some Scene {
@@ -157,6 +159,8 @@ private final class ConchAppDelegate: NSObject,
         #endif
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        // A notice with a link offers "Open link" (NoticeDelivery.swift).
+        NoticeTaps.registerCategories(on: center)
         // The first launch opens conch at login, visibly: macOS's notice, and conch's own line on setup's welcome or in
         // the window. Only the first, so a switch turned off stays off (`LoginItem`).
         LoginItem.shared.registerAtLaunch()
@@ -220,7 +224,19 @@ private final class ConchAppDelegate: NSObject,
         withCompletionHandler completionHandler:
             @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list])
+        // A notice pings (`sound` is set only on those); a deliverable ready stays silent, as it always was.
+        completionHandler([.banner, .list, .sound])
+    }
+
+    /// A click on a notification: a notice goes to its session, Settings › Providers or its link (`NoticeTaps`); a
+    /// deliverable's, which names none of those, brings conch forward, as macOS did before this answered.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        NoticeTaps.open(response)
+        completionHandler()
     }
 }
 
@@ -244,6 +260,10 @@ final class ReviewNotifications {
     private var didStartAuthorization = false
     private var seenReviewIDs: Set<ReviewItem.ID> = []
     private var queuedRequests: [UNNotificationRequest] = []
+    /// Notices that arrived while launch was still reading what macOS has: delivered once it's known (`deliver`).
+    private var afterResolution: [() -> Void] = []
+    /// The notices posted, by id, kept across launches (`NoticePosting`): one stays on the sessions file a few minutes.
+    private static let postedNoticesKey = "conch.notices.posted.v1"
     private(set) weak var reviewWindow: NSWindow?
     private var hasPendingWindowAttention = false
 
@@ -266,7 +286,7 @@ final class ReviewNotifications {
     func requestNow(_ done: @escaping (Bool) -> Void) {
         precondition(Thread.isMainThread)
         deliveryState = .resolvingAuthorization
-        center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             DispatchQueue.main.async {
                 self?.completeAuthorization(isAuthorized: granted)
                 done(granted)
@@ -326,7 +346,7 @@ final class ReviewNotifications {
             guard isQuiet() else { break }
             queuedRequests.append(request)
             deliveryState = .resolvingAuthorization
-            center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
                 DispatchQueue.main.async {
                     self?.completeAuthorization(isAuthorized: granted)
                 }
@@ -336,6 +356,66 @@ final class ReviewNotifications {
         case .denied:
             break
         }
+    }
+
+    // MARK: Notices (daemon notify-user.ts)
+
+    /// The daemon's notices for this Mac: each posted once, with sound, and the daemon told whether it showed
+    /// (`answer(id, outcome, error)`: shown, asking, off or failed).
+    func post(notices: [ConchNotice], answer: @escaping (String, String, String?) -> Void) {
+        precondition(Thread.isMainThread)
+        let posted = UserDefaults.standard.stringArray(forKey: Self.postedNoticesKey) ?? []
+        let due = NoticePosting.due(notices, posted: posted)
+        guard !due.isEmpty else { return }
+        UserDefaults.standard.set(NoticePosting.remember(due, in: posted), forKey: Self.postedNoticesKey)
+        for notice in due { deliver(notice, answer: answer) }
+    }
+
+    private func deliver(_ notice: ConchNotice, answer: @escaping (String, String, String?) -> Void) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = notice.body
+        content.sound = .default
+        content.userInfo = NoticeRoute.userInfo(for: notice)
+        content.threadIdentifier = notice.sessionId.map { "session:\($0)" } ?? "conch"
+        if notice.link != nil { content.categoryIdentifier = NoticeRoute.linkCategory }
+        let request = UNNotificationRequest(identifier: "conch.notice.\(notice.id)", content: content, trigger: nil)
+
+        switch deliveryState {
+        case .authorized:
+            center.add(request) { error in
+                DispatchQueue.main.async { answer(notice.id, error == nil ? "shown" : "failed", error?.localizedDescription) }
+            }
+        case .denied:
+            answer(notice.id, "off", nil)
+        case .resolvingAuthorization where !didAskForNotice:
+            // Launch is still reading what macOS has: this one waits for that, then goes as it says.
+            afterResolution.append { [weak self] in self?.deliver(notice, answer: answer) }
+        case .resolvingAuthorization:
+            // macOS is already asking because of a notice: this one goes with the first once allowed.
+            queuedRequests.append(request)
+            answer(notice.id, "asking", nil)
+        case .notAsked:
+            // A notice is the first need, Quiet or not: someone asked to be told this.
+            queuedRequests.append(request)
+            answer(notice.id, "asking", nil)
+            didAskForNotice = true
+            deliveryState = .resolvingAuthorization
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+                DispatchQueue.main.async {
+                    self?.completeAuthorization(isAuthorized: granted)
+                }
+            }
+        }
+    }
+
+    /// Whether the ask under way is a notice's, so another notice joins its queue rather than waiting on launch.
+    private var didAskForNotice = false
+
+    private func runAfterResolution() {
+        let waiting = afterResolution
+        afterResolution.removeAll()
+        for deliver in waiting { deliver() }
     }
 
     private func handleAuthorizationStatus(_ status: UNAuthorizationStatus) {
@@ -348,10 +428,11 @@ final class ReviewNotifications {
             deliveryState = .notAsked
             let waiting = queuedRequests
             queuedRequests.removeAll()
+            defer { runAfterResolution() }
             guard isQuiet(), !waiting.isEmpty else { return }
             queuedRequests = waiting
             deliveryState = .resolvingAuthorization
-            center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
                 DispatchQueue.main.async {
                     self?.completeAuthorization(isAuthorized: granted)
                 }
@@ -366,6 +447,8 @@ final class ReviewNotifications {
     private func completeAuthorization(isAuthorized: Bool) {
         precondition(Thread.isMainThread)
         deliveryState = isAuthorized ? .authorized : .denied
+        didAskForNotice = false
+        defer { runAfterResolution() }
 
         guard isAuthorized else {
             queuedRequests.removeAll()

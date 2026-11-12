@@ -24,6 +24,9 @@ import conchControlProse from "../docs/conch-control-skill.md" with { type: "tex
 /** A `conch_speak` is a confirmation, not a narration; longer is refused, never cut. */
 export const MAX_SPEAK_CHARS = 600;
 
+/** A `conch_notify` body: a line or two on a lock screen. notice-wire.ts `NOTICE_BODY_MAX` is this. */
+export const NOTICE_BODY_MAX_CHARS = 280;
+
 /**
  * The longest the server's `instructions` may be. Claude Code cuts them at 2048 characters
  * (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, 2.1.280) and adds "… [truncated]"; well under that,
@@ -175,6 +178,10 @@ If you can't publish, end your reply with one \`conch:review <summary> | <link>\
     // 2026-10-16, Tyler: "are u showing me the atals pages in conch? if not please do". Atlas has no web view of a page.
     atlas_show:
       "Show the user an Atlas wiki page in their Workdesk. Atlas has no web view of a page, so pass its Atlas path and the Markdown you read or wrote with your Atlas tools: conch saves it to ~/Documents/conch-notes/atlas/<path> and files it as a markdown deliverable keyed atlas:<path> (the same page again is its next version), with a summary naming the path. Use it whenever an Atlas page you read or changed matters to the user. conch never fetches Atlas itself. The result is review_to_front's, plus where the copy is.",
+    // 2026-11-10, Tyler: "we should also add a way for me to let sessions send me messages on my phone via conch that
+    // ping and show notification". When to use it comes first: a ping is for what he asked to hear, never chatter.
+    conch_notify:
+      `Send the user a notification: a ping with sound on their iPhone, even with conch closed there, and one on the Mac; tapping it opens this session. Only when they asked to be told ("ping me when the deploy is done"), or when you are blocked on them and they asked to be pinged when that happens. Never for progress, never to repeat a reply conch already reads aloud. body is one or two short sentences (at most ${NOTICE_BODY_MAX_CHARS} characters); title defaults to your session's name; link, an http(s) URL, rides along. A few per session per hour, and the same words aren't sent twice. The result says where it went and why not elsewhere (push not set up, notifications off): tell the user that.`,
   },
 };
 

@@ -38,6 +38,7 @@ import {
 } from "./settings.ts";
 import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
 import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
+import { NOTICE_BODY_MAX, NOTICE_TITLE_MAX, noticeLinkError, noticeText, requestNotice, type NoticeRequest } from "./notice-wire.ts";
 import { isPageAccess } from "./page-access.ts";
 import { MARK_PIXELS_MAX, MARK_UNITS, scenePixelsToFractions } from "./mark-pixels.ts";
 import { RelabelHints, type LabelSource } from "./label-drift.ts";
@@ -60,6 +61,8 @@ export const CONCH_FORK_REPLY_MS = 45_000;
 
 /** How long `conch_start` waits for the daemon: the same start and the same wait for it to be seen (`startLiveSession`). */
 export const CONCH_START_REPLY_MS = CONCH_FORK_REPLY_MS;
+/** How long `conch_notify` waits: the Mac app's word (a few seconds) and Apple's answer for each phone. */
+export const NOTIFY_REPLY_MS = 30_000;
 import {
   checkLocalFile,
   checkReviewLink,
@@ -906,6 +909,39 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "conch_notify",
+      description: text.tools.conch_notify,
+      inputSchema: {
+        type: "object",
+        properties: {
+          body: {
+            type: "string",
+            minLength: 1,
+            maxLength: NOTICE_BODY_MAX,
+            description: "What the user needs to know, in a sentence or two: \"The deploy finished and the smoke tests pass.\"",
+          },
+          title: {
+            type: "string",
+            minLength: 1,
+            maxLength: NOTICE_TITLE_MAX,
+            description: "Optional. The notification's first line; your session's name when omitted.",
+          },
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. The session a tap opens, by id or label; your own verified session when omitted.",
+          },
+          link: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. An http(s) URL the notification offers to open (a PR, a deployed page).",
+          },
+        },
+        required: ["body"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -1015,6 +1051,8 @@ export interface McpDependencies {
   capturePage?(socketPath: string, message: PageCaptureMessage, timeoutMs?: number): Promise<PageCaptureSend>;
   /** The browser tools' commands to the daemon, held open for their answer (`requestBrowser`). */
   browser?(socketPath: string, message: BrowserMessage, timeoutMs?: number): Promise<BrowserSend>;
+  /** `conch_notify`'s request to the daemon, held open for where it went (`requestNotice`). */
+  notify?(socketPath: string, message: NoticeRequest, timeoutMs?: number): ReturnType<typeof requestNotice>;
   /** `atlas_show`'s copy of a page, written into the copies folder (`writeAtlasCopy`); its absolute path. */
   writeAtlasCopy?(file: string, markdown: string, folder: string): Promise<string>;
   /** A session's newest assistant text and its id (`assistantTail`); absent, `lastAssistantText` is read and has no id. */
@@ -2713,6 +2751,50 @@ export function createMcpToolHandlers(
       const filing = atlasFiling(page.path, summary);
       const filed = await handlers.review_to_front({ summary: filing.summary, link: copy, kind: "markdown", key: filing.key }, meta);
       return { atlasPath: page.path, copy, ...(filed as Record<string, unknown>), source: "Atlas is the source; this is conch's copy of it" };
+    },
+
+    // A notification to the user's phone and Mac (notify-user.ts). Its limits are the daemon's: a few per calling
+    // session an hour, kept by who is calling (`from`), not by the session a tap opens, and no repeats.
+    async conch_notify(argumentsValue, meta) {
+      const args = toolArguments(argumentsValue);
+      allowOnly(args, ["body", "title", "session", "link"]);
+      const body = noticeText(requiredString(args, "body"));
+      const title = optionalString(args, "title");
+      const query = optionalString(args, "session");
+      const link = optionalString(args, "link");
+      if (!body || [...body].length > NOTICE_BODY_MAX) {
+        throw new ToolInputError(`body must be 1–${NOTICE_BODY_MAX} characters; it is not cut for you. Say the short version and leave the rest in your reply.`);
+      }
+      if (title !== undefined && (!noticeText(title) || [...noticeText(title)].length > NOTICE_TITLE_MAX)) {
+        throw new ToolInputError(`title must be 1–${NOTICE_TITLE_MAX} characters`);
+      }
+      if (link !== undefined) {
+        const linkError = noticeLinkError(link);
+        if (linkError) throw new ToolInputError(linkError);
+      }
+      const binding = await callerBinding(config, dependencies, meta);
+      const caller = binding.status === "verified" ? binding.session : undefined;
+      const session = query ? await resolveSession(query, config, dependencies) : caller;
+      const named = session ? noticeText(dependencies.sessionLabel(session, session.cwd)) : "";
+      const sent = await (dependencies.notify ?? requestNotice)(config.socketPath, {
+        kind: "notify-user",
+        title: title === undefined ? [...(named || "conch")].slice(0, NOTICE_TITLE_MAX).join("") : noticeText(title),
+        body,
+        from: caller?.sessionId ?? "unverified",
+        ...(session ? { sessionId: session.sessionId } : {}),
+        ...(link ? { link } : {}),
+      }, NOTIFY_REPLY_MS);
+      if (!sent.ok) {
+        throw new Error(sent.reason === "daemon-down"
+          ? "failed: conch daemon is not running, so nothing was sent"
+          : `failed: conch's daemon didn't answer${sent.diagnostic ? ` (${sent.diagnostic})` : ""}. It may still have gone: don't send it again`);
+      }
+      const reply = sent.reply;
+      if (reply.kind === "notice-error") throw refusal(`refused: ${String(reply.error)}`);
+      if (reply.kind !== "notify-result") throw new Error("ack-unknown: daemon reply did not match the notification");
+      if (reply.outcome === "duplicate" || reply.outcome === "rate-limited") throw refusal(`refused: ${String(reply.said)}`);
+      const { kind: _kind, ...result } = reply;
+      return result;
     },
 
     // Anyone may ask, verified or not: it names what is on screen, and changes nothing.

@@ -1,4 +1,5 @@
 import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
+import { decodeNoticeRequest, type NoticeRequest } from "./notice-wire.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1357,6 +1358,11 @@ export interface ControlServerOptions {
    */
   failureTickets?: Pick<FailureDesk, "list" | "act">;
   /**
+   * Notices (notify-user.ts): an agent's `conch_notify`, Settings › Phone app's push key and test, and the Mac app's
+   * word that it showed one. Absent: the request is answered as unavailable.
+   */
+  notices?(request: NoticeRequest): Promise<unknown>;
+  /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
    */
@@ -1546,6 +1552,25 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           let frame: Buffer;
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "failure-ticket-error", error: "That was too large to send." })); }
+          sock.end(frame);
+          return;
+        }
+        // Notices (notify-user.ts) name no session of their own to resolve: an agent's `conch_notify` (from its MCP
+        // server, which has already said which session it is), Settings › Phone app's APNs key, which goes to the
+        // Keychain and never back out, and the Mac app's answers. The Mac's alone, never a phone's (phone-bridge.ts
+        // `MAC_APP_ONLY_DECODERS`): a key never crosses the relay. No reply or refusal repeats a key.
+        const notice = decodeNoticeRequest(body);
+        if (notice) {
+          let reply: unknown;
+          if (!notice.ok) reply = { kind: "notice-error", error: notice.error };
+          else if (!options.notices) reply = { kind: "notice-error", error: "This conch can't send notices; update it." };
+          else {
+            try { reply = await options.notices(notice.value); }
+            catch (error) { reply = { kind: "notice-error", error: error instanceof Error ? error.message : String(error) }; }
+          }
+          let frame: Buffer;
+          try { frame = encodeControlFrame(JSON.stringify(reply)); }
+          catch { frame = encodeControlFrame(JSON.stringify({ kind: "notice-error", error: "That was too large to send." })); }
           sock.end(frame);
           return;
         }
