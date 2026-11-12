@@ -714,7 +714,7 @@ export class ProcessForest {
 
 export interface ResourceLedgerOptions {
   memory?: LedgerMemory;
-  /** The budget's settings, read at each look (live settings). Absent: a quarter of the cores and of the memory, nothing automatic. */
+  /** The budget's settings, read at each look (live settings). Absent: the settings' defaults, 75% of the cores, 60% of the memory, nothing automatic. */
   budget?(): BudgetSettings;
   /** This Mac's cores and memory. */
   machine?: Machine;
@@ -755,7 +755,7 @@ export class ResourceLedger {
     this.memory = options.memory ?? emptyLedgerMemory();
     for (const [key, owner] of Object.entries(this.memory.owners)) this.treeOwners.set(key, owner);
     this.labelFor = options.labelFor;
-    this.budgetSettings = options.budget ?? (() => ({ cpuPercent: 25, memoryPercent: 25, autoBackground: false }));
+    this.budgetSettings = options.budget ?? (() => ({ cpuPercent: 75, memoryPercent: 60, autoBackground: false }));
     this.machine = options.machine ?? { cores: Math.max(1, cpus().length), memory: totalmem() };
   }
 

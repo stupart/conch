@@ -749,14 +749,16 @@ export const SETTING_DESCRIPTORS = [
   {
     // The load budget (resource-ledger.ts), Tyler, 2026-11-11: "Long term u should prob be setting the 'budget' for how
     // much continuous load agents can use in conch." The share of this Mac's cores everything agents run may keep busy,
-    // averaged over five minutes: their sessions, what those run, and what they left running. A quarter leaves the Mac
-    // to its person; the night of the ledger, agents' leftovers alone held two VMs at 20 GB and more. Read live. Not
-    // one agents may set (`AGENT_TUNABLE_SETTINGS`): it is the limit on them.
+    // averaged over five minutes: their sessions, what those run, and what they left running. Read live. Not one agents
+    // may set (`AGENT_TUNABLE_SETTINGS`): it is the limit on them.
+    // 2026-11-12: 75%, from a quarter. Tyler, seeing a quarter of 18 cores: "why do they just 4.5 cores?" and "maybe
+    // give it 75%?". Agents' builds and gates are most of what the Mac is for; the budget is there to name the sessions
+    // when they take nearly all of it, and 75% still leaves him a quarter. Memory has its own (below).
     key: "agent-budget-cpu",
     field: "agentBudgetCpu",
     env: "CONCH_AGENT_BUDGET_CPU",
     kind: "integer",
-    default: 25,
+    default: 75,
     parse: numberParser(share, "a whole percentage of this Mac's cores, 1 to 100"),
     bounds: share,
     apply: "live",
@@ -764,11 +766,14 @@ export const SETTING_DESCRIPTORS = [
   },
   {
     // The same budget's memory: the share of this Mac's memory (as Activity Monitor counts it) agents may hold.
+    // 2026-11-12: 60%, from a quarter. Asked whether memory should go to 75% like the cores, or somewhere between,
+    // Tyler: "or 60%". Below the cores' share because memory doesn't share out over time as CPU does: what a VM or a
+    // simulator holds stays held, and the Mac swaps once it is gone.
     key: "agent-budget-memory",
     field: "agentBudgetMemory",
     env: "CONCH_AGENT_BUDGET_MEMORY",
     kind: "integer",
-    default: 25,
+    default: 60,
     parse: numberParser(share, "a whole percentage of this Mac's memory, 1 to 100"),
     bounds: share,
     apply: "live",
