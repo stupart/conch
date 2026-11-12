@@ -12,20 +12,44 @@ import Foundation
 // shows: two checkouts of the same repo, a subagent whose own folder differs from its
 // parent's, and a daemon too old to send `cwd` at all.
 
-/// One folder's worth of sessions, in the order the rows arrived in.
+/// One folder's worth of sessions, in the order the rows arrived in, or one running team's (`team`).
 public struct SessionFolder: Equatable, Sendable, Identifiable {
     /// The folder's path. Empty when the folder is unknown — the daemon is older than `cwd`,
     /// or this session has none — and a group with an empty id is drawn without a header.
+    /// A team's group is `team:<its id>`, which no path can be.
     public let id: String
     /// What the header shows: the shortest tail of the path no other folder here shares, so
-    /// two checkouts of one repo don't both read `conch`.
+    /// two checkouts of one repo don't both read `conch`. A team's group shows the team's name.
     public let name: String
     public let sessionIDs: [String]
+    /// Present on a running team's group (2026-11-12, Teams.swift): the sidebar draws `TeamHeader` for it, its task under
+    /// its name, rather than a folder's header.
+    public let team: TeamGroup?
 
-    public init(id: String, name: String, sessionIDs: [String]) {
+    /// What a group is: the sessions in one folder, or one running team's members. `feat/sidebar-organise` (custom
+    /// groups, in progress) can add its own kind here: a team is one kind of group of sessions, not a folder that lies.
+    public enum Kind: Equatable, Sendable { case folder, team }
+
+    /// A team's group's header: which team, and the task it is on.
+    public struct TeamGroup: Equatable, Sendable {
+        public let id: String
+        public let name: String
+        public let task: String
+
+        public init(id: String, name: String, task: String) {
+            self.id = id
+            self.name = name
+            self.task = task
+        }
+    }
+
+    public var kind: Kind { team == nil ? .folder : .team }
+
+    public init(id: String, name: String, sessionIDs: [String], team: TeamGroup? = nil) {
         self.id = id
         self.name = name
         self.sessionIDs = sessionIDs
+        self.team = team
     }
 }
 
@@ -47,6 +71,24 @@ public enum SessionGrouping {
         }
     }
 
+    /// A running team, as the sidebar groups its members (Teams.swift `sidebarTeams`): its members' sessions, lead first.
+    public struct Team: Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var task: String
+        public var memberSessionIDs: [String]
+
+        public init(id: String, name: String, task: String, memberSessionIDs: [String]) {
+            self.id = id
+            self.name = name
+            self.task = task
+            self.memberSessionIDs = memberSessionIDs
+        }
+    }
+
+    /// A team's group's id: never a path, so a team and a folder never share a slot in the stored order.
+    public static func teamGroupID(_ teamID: String) -> String { "team:\(teamID)" }
+
     /// Where the Mac reader keeps the order Tyler dragged the folders into: their paths, newline-joined.
     public static let orderKey = "conch.folderOrder"
 
@@ -64,7 +106,12 @@ public enum SessionGrouping {
     /// another one started) under its parent's, the home folder named "Home" rather than the account's name, and the
     /// folders in the order the reader dragged them into, then as they arrived. The sidebar draws these, and the lagoon
     /// is sent their names (`LagoonSnapshot.folders`, 2026-10-13), so the two can never group a session differently.
-    public static func sidebar(_ sessions: [Session], home: String, order: [String]) -> [SessionFolder] {
+    ///
+    /// A running team's members are drawn in their team's group, not their folders (2026-11-12). Tyler: "would be nice to
+    /// add 'teams' to conch settings to where we can set up team structures with specialized agents, rules for how
+    /// they'll work together, and a hierarchy and then i can spin up or pass tasks to team types." A team's builders each
+    /// work in a worktree of their own, so grouped by folder one team scattered across as many headers as it had members.
+    public static func sidebar(_ sessions: [Session], home: String, order: [String], teams: [Team] = []) -> [SessionFolder] {
         let grouped = folders(for: sessions.map {
             ($0.id, workFolder(cwd: $0.cwd, workDirs: $0.workDirs), $0.parentSessionId ?? $0.startedBySessionId)
         })
@@ -75,7 +122,66 @@ public enum SessionGrouping {
             guard folder.id == home else { return folder }
             return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
         }
-        return ordered(grouped, by: order)
+        return ordered(teams.isEmpty ? grouped : withTeams(grouped, sessions: sessions, teams: teams), by: order)
+    }
+
+    /// The folders with each running team's members, and whatever runs under them, taken out into the team's own group.
+    ///
+    /// A team's group holds its members in the team's order, lead first, each followed by its own subagents and the
+    /// sessions it started (a child belongs where its parent belongs, as in a folder). It takes the slot its first
+    /// session would have had, so a team appears where its lead's row was rather than jumping to the top, and is
+    /// dragged and ordered as a folder is. A team none of whose members is listed draws nothing; a folder left empty
+    /// once its team members leave it goes too.
+    static func withTeams(_ folders: [SessionFolder], sessions: [Session], teams: [Team]) -> [SessionFolder] {
+        let arrival = Dictionary(sessions.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let parentOf = Dictionary(sessions.compactMap { session in
+            (session.parentSessionId ?? session.startedBySessionId).map { (session.id, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        // Each listed member's team: the first team to name a session has it.
+        var teamOfMember: [String: Int] = [:]
+        for (index, team) in teams.enumerated() {
+            for member in team.memberSessionIDs where arrival[member] != nil && teamOfMember[member] == nil {
+                teamOfMember[member] = index
+            }
+        }
+        guard !teamOfMember.isEmpty else { return folders }
+        // Which member each session runs under, itself included: up its parents, bounded by what was already seen.
+        func anchor(_ id: String) -> String? {
+            var current = id
+            var seen: Set<String> = [id]
+            while true {
+                if teamOfMember[current] != nil { return current }
+                guard let parent = parentOf[current], arrival[parent] != nil, seen.insert(parent).inserted else { return nil }
+                current = parent
+            }
+        }
+        var under: [String: [String]] = [:]
+        var inTeam: Set<String> = []
+        for session in sessions {
+            guard let member = anchor(session.id) else { continue }
+            inTeam.insert(session.id)
+            if member != session.id { under[member, default: []].append(session.id) }
+        }
+        let teamGroups: [SessionFolder] = teams.enumerated().compactMap { index, team in
+            let members = team.memberSessionIDs.filter { teamOfMember[$0] == index }
+            guard !members.isEmpty else { return nil }
+            var seen: Set<String> = []
+            let ids = members.flatMap { [$0] + (under[$0] ?? []) }.filter { seen.insert($0).inserted }
+            return SessionFolder(
+                id: teamGroupID(team.id), name: team.name, sessionIDs: ids,
+                team: SessionFolder.TeamGroup(id: team.id, name: team.name, task: team.task)
+            )
+        }
+        let remaining = folders.compactMap { folder -> SessionFolder? in
+            let ids = folder.sessionIDs.filter { !inTeam.contains($0) }
+            guard !ids.isEmpty else { return nil }
+            return ids.count == folder.sessionIDs.count ? folder : SessionFolder(id: folder.id, name: folder.name, sessionIDs: ids)
+        }
+        // Every group where its first session arrived, as folders always were.
+        let first = { (group: SessionFolder) in group.sessionIDs.compactMap { arrival[$0] }.min() ?? Int.max }
+        return (remaining + teamGroups).enumerated()
+            .sorted { first($0.element) == first($1.element) ? $0.offset < $1.offset : first($0.element) < first($1.element) }
+            .map(\.element)
     }
 
     /// The rows, grouped by folder, in the order the daemon sent them.
