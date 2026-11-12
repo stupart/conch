@@ -540,7 +540,7 @@ describe("the capture and the published state use it", () => {
     const { soxCaptureArgs, narrationSoxArgs } = await import("../src/listen.ts");
     const { isConchSox } = await import("../src/sox-orphan.ts");
     const app = "/Users/tester/Downloads/conch 2.app/Contents/Helpers/sox";
-    const capture = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2, soxBin: app }, "/tmp/conch-normal-1-2.raw", 2);
+    const capture = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, soxBin: app }, "/tmp/conch-normal-1-2.raw", 2);
     expect(capture[0]).toBe(app);
     expect(isConchSox(capture.join(" "))).toBeTrue();
     const wav = "/Users/tester/.cache/conch/canvas/0f8fad5b-d9cb-469f-a165-70867728950e/narration.wav";
@@ -548,7 +548,7 @@ describe("the capture and the published state use it", () => {
     expect(narration[0]).toBe(app);
     expect(isConchSox(narration.join(" "))).toBeTrue();
     // A config without one (older callers, tests) still spawns bare `sox` from PATH.
-    expect(soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 }, "/tmp/conch-normal-1-2.raw", 2)[0]).toBe("sox");
+    expect(soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-normal-1-2.raw", 2)[0]).toBe("sox");
   });
 
   test("the published state carries the engine status, as a copy", async () => {

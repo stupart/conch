@@ -72,8 +72,9 @@ export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
  * anything else — even another sox — is not ours to kill.
  */
 export function isConchSox(command: string): boolean {
-  // The pre-roll stage is optional: a daemon from before it may have left one.
-  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?(channels 1 remix 1 1 delay 0 [0-9.]+ )?silence -l 1 0\.15 /.test(command)
+  // The pre-roll stage and `-l` are optional: a daemon from before conch ended
+  // captures itself (2026-11-11) may have left one of its recorders behind.
+  return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?(channels 1 remix 1 1 delay 0 [0-9.]+ )?silence (-l )?1 0\.15 /.test(command)
     || /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t wav \/.*\/\.cache\/conch\/canvas\/[0-9A-Fa-f-]{36}\/narration\.wav (gain \S+ )?trim 0 \d+$/.test(command);
 }
 
