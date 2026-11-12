@@ -20,7 +20,10 @@ import { join } from "node:path";
  */
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
-const drawable = Bun.which("swiftc") !== null
+// 2026-11-11: it compiles the app's Swift and drives it offscreen, about 70 s of it, so it runs in ci-local's `harness`
+// stage (CONCH_APP_HARNESS=1) beside the app builds, when Swift changed, not in every bun test a push runs. Its swiftc
+// keeps to the gate's share of cores (CONCH_GATE_JOBS).
+const drawable = process.env.CONCH_APP_HARNESS === "1" && Bun.which("swiftc") !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 
 type Json = Record<string, any>;
@@ -29,7 +32,8 @@ let root = "";
 let harnessError = "";
 
 async function swiftc(args: string[]): Promise<void> {
-  const compile = Bun.spawn(["swiftc", "-swift-version", "5", ...args], { stdout: "pipe", stderr: "pipe", cwd: root });
+  const jobs = String(Math.max(2, Math.min(8, Number(process.env.CONCH_GATE_JOBS) || navigator.hardwareConcurrency || 4)));
+  const compile = Bun.spawn(["swiftc", "-swift-version", "5", "-j", jobs, ...args], { stdout: "pipe", stderr: "pipe", cwd: root });
   const [code, stderr] = await Promise.all([compile.exited, new Response(compile.stderr).text()]);
   if (code !== 0) throw new Error(`swiftc failed:\n${stderr}`);
 }

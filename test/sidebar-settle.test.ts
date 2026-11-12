@@ -27,9 +27,9 @@ import { join } from "node:path";
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
 const read = (path: string) => readFileSync(repo(path), "utf8");
-// About a minute of compiling and driving SwiftUI, so it runs in ci-local's `mac` stage (CONCH_SIDEBAR_SETTLE=1), not in
-// every `bun test` a push runs. The source checks below always run.
-const drawable = process.env.CONCH_SIDEBAR_SETTLE === "1" && Bun.which("swiftc") !== null
+// About a minute of compiling and driving SwiftUI, so it runs in ci-local's `harness` stage (CONCH_APP_HARNESS=1; the
+// `mac` stage's until 2026-11-11), not in every `bun test` a push runs. The source checks below always run.
+const drawable = process.env.CONCH_APP_HARNESS === "1" && Bun.which("swiftc") !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 
 type Phase = Record<string, number | string>;
@@ -44,7 +44,8 @@ function patch(text: string, file: string, from: string, to: string): string {
 }
 
 async function swiftc(args: string[]): Promise<void> {
-  const jobs = String(Math.max(2, Math.min(8, navigator.hardwareConcurrency || 4)));
+  // 2026-11-11: within the gate's share when it runs this (CONCH_GATE_JOBS, scripts/ci-local.sh), not 8 of its cores.
+  const jobs = String(Math.max(2, Math.min(8, Number(process.env.CONCH_GATE_JOBS) || navigator.hardwareConcurrency || 4)));
   const compile = Bun.spawn(["swiftc", "-swift-version", "5", "-j", jobs, ...args], { stdout: "pipe", stderr: "pipe", cwd: root });
   const [code, stderr] = await Promise.all([compile.exited, new Response(compile.stderr).text()]);
   if (code !== 0) throw new Error(`swiftc failed:\n${stderr.split("\n").filter((line) => line.includes("error:")).slice(0, 30).join("\n")}`);
