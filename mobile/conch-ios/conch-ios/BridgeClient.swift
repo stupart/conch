@@ -375,7 +375,7 @@ final class BridgeClient: ObservableObject {
         return InjectOutcome.decode(status: response.status, body: response.body)
     }
 
-    /// Send one file (a picture, a video, its recording, a contact sheet), in pieces, and get
+    /// Send one file (a picture, a video, its contact sheet), in pieces, and get
     /// back the path it landed at.
     ///
     /// Chunked because a relay frame caps at 192 KiB. The path comes back rather
@@ -450,24 +450,6 @@ final class BridgeClient: ObservableObject {
     private static let uploadTries = 4
     /// Sends an upload may make, a piece: past this it is going round, not getting there.
     private static let uploadSendsPerPiece = 3
-
-    /// A recording's words, each with when it was said (`/transcript`): what the model reads in
-    /// place of watching the video. Nil when the Mac couldn't make them out; the video goes without.
-    func transcript(of path: String) async -> [CanvasStoryboard.Said]? {
-        do {
-            // Whisper takes seconds, more when it has to start: the Mac keeps the answer alive meanwhile.
-            let response = try await perform(authorizedRequest(method: "GET", path: Self.route("/transcript", ["path": path])), within: .seconds(150))
-            guard response.status == 200,
-                  let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
-                  let segments = decoded["segments"] as? [[String: Any]] else { return nil }
-            return segments.compactMap { segment in
-                guard let start = segment["start"] as? Double, let end = segment["end"] as? Double, let text = segment["text"] as? String else { return nil }
-                return CanvasStoryboard.Said(start: start, end: end, text: text)
-            }
-        } catch {
-            return nil
-        }
-    }
 
     /// Claim (or hand back) the voice. While the phone holds it the Mac stays
     /// quiet — otherwise you hear conch from the next room and from your ear at

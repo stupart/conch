@@ -23,7 +23,6 @@ import { decodeBrowserOpenRequest } from "./browser-open.ts";
 import { decodeNarrationRequest } from "./narration.ts";
 import { decodePracticeRequest } from "./practice.ts";
 import { decodeSetupRequest } from "./setup.ts";
-import { decodeVideoTranscriptRequest } from "./video-transcript.ts";
 import { checkLocalFile } from "./snippet.ts";
 import { tempFolders } from "./temp-folders.ts";
 import { breadcrumb } from "./loop-watchdog.ts";
@@ -106,8 +105,6 @@ export interface PhoneBridgeDependencies {
   sessionPid?(sessionId: string): number | undefined;
   /** Take a snapshot of a held deliverable the phone can't draw (`createPreviewRequester`). */
   requestPreview?(sessionId: string, reviewId: string): Promise<PreviewAnswer>;
-  /** A recording's words, each with when it was said (`transcribeWavSegments`), for `/transcript`. */
-  transcribe?(wavPath: string): Promise<{ segments: Array<{ start: number; end: number; text: string }>; error?: string }>;
   /** The phone's first-run setup (`phone-setup.ts`). Without it `/setup-stage` is unknown, as on an older Mac. */
   setup?: PhoneSetupHooks;
   /** Push to the phone (notify-user.ts). Without it `/push` and `/push-token` are unknown, as on an older Mac. */
@@ -184,10 +181,9 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
 
 /**
  * What only the Mac app sends: Show's narration (its lease is a local connection held open, which a
- * phone never holds), the words of a video dropped on its composer (the phone has `/transcript`),
- * its answer to a window snapshot the daemon asked it for, what it saw on screen, first-run setup
- * (an agent's official installer, conch's hooks written into an agent's own settings, the
- * microphone check, a voice sample, a download retried) and setup's practice turn. A
+ * phone never holds), its answer to a window snapshot the daemon asked it for, what it saw on
+ * screen, first-run setup (an agent's official installer, conch's hooks written into an agent's own
+ * settings, the microphone check, a voice sample, a download retried) and setup's practice turn. A
  * phone forwarding one would be speaking as the Mac app: a paired phone could run `curl … | bash`
  * on the Mac, rewrite `~/.claude/settings.json`, or stop a practice the Mac is running.
  *
@@ -219,7 +215,6 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeNarrationRequest,
   decodeSetupRequest,
   decodePracticeRequest,
-  decodeVideoTranscriptRequest,
   // Failure tickets hold every session's names, folders and words, and Fix starts a session: the Mac's (failure-tickets.ts).
   decodeFailureTicketRequest,
   // Notices (notify-user.ts): an APNs key goes from the Mac app to the Keychain and never through a phone or the relay,
@@ -483,14 +478,10 @@ export class PhoneBridgeApplication {
   readonly #token: string;
   readonly #pairing = new PairingWindow();
   readonly #stateSinks = new Map<PhoneStateSink, "phone" | "observer">();
-  #transcribing = false;
-  /** How often a transcript still being made says so (`/transcript`); shorter only in tests. */
-  readonly #keepaliveMs: number;
 
-  constructor(dependencies: PhoneBridgeDependencies, options: { token: string; transcriptKeepaliveMs?: number }) {
+  constructor(dependencies: PhoneBridgeDependencies, options: { token: string }) {
     this.#dependencies = dependencies;
     this.#token = options.token;
-    this.#keepaliveMs = options.transcriptKeepaliveMs ?? TRANSCRIPT_KEEPALIVE_MS;
   }
 
   offerPairingCode(code: PairingCode): void {
@@ -697,48 +688,6 @@ export class PhoneBridgeApplication {
         const served = await servableFile(requested, this.#dependencies.getState() as ServableState | null,
           this.#dependencies.uploadsDirectory);
         return served.ok ? fileResponse(req, served.real) : new Response(served.reason, { status: served.status });
-      })();
-    }
-
-    // The words of a video the phone is sending, from the recording of its sound it uploaded
-    // (`phone-uploads.ts`), timed, since the model can't watch the video. A GET: the relay runs
-    // POSTs one at a time, and a transcription's seconds would hold every control behind it.
-    if (url.pathname === "/transcript" && req.method === "GET") {
-      return (async () => {
-        const { transcribe, uploadsDirectory } = this.#dependencies;
-        if (!transcribe || !uploadsDirectory) return Response.json({ error: "this Mac can't transcribe" }, { status: 503 });
-        const real = await ownUpload(url.searchParams.get("path") ?? "", uploadsDirectory);
-        if (!real?.endsWith(".wav")) return Response.json({ error: "not a recording the phone sent" }, { status: 403 });
-        // One at a time: whisper is the voice loop's too.
-        if (this.#transcribing) return Response.json({ error: "another recording is being transcribed" }, { status: 429 });
-        this.#transcribing = true;
-        const words = transcribe(real).catch((error) => ({ segments: [], error: String(error) }));
-        // Answered at once, and kept alive: the phone's relay link calls a request that shows no
-        // progress for 30 s stalled and reconnects, and whisper cold can take longer. A space every
-        // ten seconds until the words come; JSON allows it before the value.
-        let alive: ReturnType<typeof setInterval> | undefined;
-        return new Response(new ReadableStream({
-          start: (controller) => {
-            // The phone can go before the words come: backgrounded, its relay rekeyed, its wait run out. Its answer is
-            // closed then, and writing to a closed answer throws, from a timer, which ended the daemon.
-            const send = (text: string): boolean => {
-              try {
-                controller.enqueue(new TextEncoder().encode(text));
-                return true;
-              } catch {
-                clearInterval(alive);
-                return false;
-              }
-            };
-            alive = setInterval(() => send(" "), this.#keepaliveMs);
-            void words.then(({ segments, error }) => {
-              clearInterval(alive);
-              this.#transcribing = false;
-              if (send(JSON.stringify(error && !segments.length ? { error } : { segments }))) controller.close();
-            });
-          },
-          cancel: () => clearInterval(alive),
-        }), { headers: { "content-type": "application/json" } });
       })();
     }
 
@@ -993,9 +942,6 @@ interface HeldReview {
   roots?: unknown;
 }
 
-/** How often a transcript still being made says it is (`/transcript`). */
-const TRANSCRIPT_KEEPALIVE_MS = 10_000;
-
 /** The parts of the published state `/file` decides by. */
 interface ServableState {
   rows?: Array<{
@@ -1142,7 +1088,7 @@ async function servableFile(
 
 export function createPhoneBridgeApplication(
   dependencies: PhoneBridgeDependencies,
-  options: { token: string; transcriptKeepaliveMs?: number },
+  options: { token: string },
 ): PhoneBridgeApplication {
   return new PhoneBridgeApplication(dependencies, options);
 }

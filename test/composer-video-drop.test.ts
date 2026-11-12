@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeUploadId } from "../src/phone-uploads.ts";
-import { VIDEO_TRANSCRIPT_KIND } from "../src/video-transcript.ts";
 
 /**
  * A video dropped on the Mac's composer. Tyler, 2026-10-11: "we should be able to attach videos via drag and drop and
@@ -236,11 +235,11 @@ describe("what a drop becomes", () => {
 });
 
 describe("what a video sends", () => {
-  test("the message is the phone's: paths, then each video's contact sheet and words, then his words", () => {
+  test("the message is the phone's: paths, then each video's contact sheet, then his words", () => {
     expect(composer).toContain("VideoAttachment.message(text: draft, attachments: attachments) { videos.block(for: $0) }");
     expect(video).toContain("return brief.block(video: url.path)");
     expect(readFileSync(join(root, "design/ConchDesign/Sources/ConchDesign/VideoAttachment.swift"), "utf8"))
-      .toContain("VideoStoryboard.prompt(frames, said: said, length: length, sheet: sheet, video: video, from: .mac)");
+      .toContain("VideoStoryboard.prompt(frames, length: length, sheet: sheet, video: video, from: .mac)");
   });
 
   test("it doesn't send until every video is ready, and the button says why", () => {
@@ -250,17 +249,13 @@ describe("what a video sends", () => {
     expect(composer).toContain('.help(messageUnavailableReason ?? videoReadiness ?? "Send to \\(sessionLabel)")');
   });
 
-  test("made ready in order: its sound, its words from the daemon, then its frames, into conch's uploads", () => {
+  test("made ready in order: its frames, into conch's uploads, and never its sound", () => {
     const prepare = between(video, "    static func prepare(_ url: URL) async -> VideoAttachment.Status {", "\n    }\n");
     const order = [
       "asset.loadTracks(withMediaType: .video)",
-      "VideoStoryboard.speech(of: url)",
-      'save(speech, as: "\\(id).wav")',
-      "said = await transcript(of: wav)",
-      "FileManager.default.removeItem(at: wav)",
-      "VideoStoryboard.sheet(of: url, said: said, length: min(length, VideoStoryboard.longest))",
+      "VideoStoryboard.sheet(of: url, length: min(length, VideoStoryboard.longest))",
       'save(sheet.jpeg, as: "\\(id).jpg")',
-      "return .ready(VideoAttachment.Brief(frames: sheet.frames, said: said, length: length, sheet: file.path))",
+      "return .ready(VideoAttachment.Brief(frames: sheet.frames, length: length, sheet: file.path))",
     ].map((step) => prepare.indexOf(step));
     expect(order.every((at) => at >= 0), JSON.stringify(order)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -268,11 +263,13 @@ describe("what a video sends", () => {
     for (const why of ["There's no video in it", "conch can't read this video", "conch couldn't take frames from it"]) {
       expect(prepare).toContain(`.failed("${why}")`);
     }
-    // The daemon's folder (`new PhoneUploads(join(CONCH_DATA, "uploads"))`) and its request, by name.
+    // Its sound is never read, written or sent to the daemon for whisper (Tyler, 2026-11-12: "maybe we remove that
+    // functionality? its not v useful and it feels concerning").
+    for (const gone of ["withMediaType: .audio", ".wav", "video-transcript", "transcript(of:", "speech(of:"]) expect(video).not.toContain(gone);
+    // The daemon's folder (`new PhoneUploads(join(CONCH_DATA, "uploads"))`), by name.
     expect(video).toContain('appendingPathComponent(".cache/conch/uploads", isDirectory: true)');
     expect(readFileSync(join(root, "src/daemon.ts"), "utf8")).toContain('new PhoneUploads(join(CONCH_DATA, "uploads"))');
-    expect(video).toContain(`ConchSocketClient().request(["kind": "${VIDEO_TRANSCRIPT_KIND}", "path": wav.path], timeout: reading)`);
-    // Named as the uploads folder names things, so the daemon transcribes it and the receipt and `/file` know it.
+    // Named as the uploads folder names things, so the receipt and `/file` know it.
     expect(prepare).toContain('let id = "mac-\\(UUID().uuidString)"');
     expect(sanitizeUploadId(`mac-${crypto.randomUUID().toUpperCase()}`)).not.toBeNull();
     expect(video).toContain("files.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600])");

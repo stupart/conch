@@ -10,10 +10,13 @@ import UniformTypeIdentifiers
 /// ways it failed. A screen recording's floating thumbnail, a video from Photos or one from a browser is a PROMISED file,
 /// a movie the source writes once the drop is taken; the composer took files, image bytes and promised images only, so
 /// the drop was refused and nothing on screen said so. A video from Finder did attach, and went as its bare path, which
-/// no agent can watch. So a video now goes as the phone's does (`VideoStoryboard`): a contact sheet of its frames and
-/// its words, timed, which an agent reads at once, and the file itself, for people. Its sound and frames are pulled by
-/// the phone's own code (`VideoFrames.swift`), whisper reads the sound in the daemon (`src/video-transcript.ts`), and
-/// the files land beside the phone's uploads, so the same receipt (`SentReceipt`) stands for it in the conversation.
+/// no agent can watch. So a video now goes as the phone's does (`VideoStoryboard`): a contact sheet of its frames, which
+/// an agent reads at once, and the file itself, for people. Its frames are pulled by the phone's own code
+/// (`VideoFrames.swift`), and the sheet lands beside the phone's uploads, so the same receipt (`SentReceipt`) stands for
+/// it in the conversation.
+///
+/// Not its sound: that was read off and transcribed by the daemon's whisper until Tyler, 2026-11-12, after the test
+/// suite's beeps: "maybe we remove that functionality? its not v useful and it feels concerning".
 ///
 /// Made ready as it is attached, not at Send: a video that can't be read says so on its tile, before anything goes.
 @MainActor
@@ -52,7 +55,7 @@ final class ComposerVideos: ObservableObject {
         }
         statuses[url] = .preparing
         Task {
-            // Off the main thread: reading two minutes of sound and pulling frames is seconds of work.
+            // Off the main thread: pulling a dozen frames is seconds of work.
             let status = await Task.detached(priority: .userInitiated) { await ComposerVideoPrep.prepare(url) }.value
             statuses[url] = status
         }
@@ -93,13 +96,11 @@ final class ComposerVideos: ObservableObject {
     }
 }
 
-/// The work of making a video ready, off the main thread: whether it is one, its sound, its words, its contact sheet.
+/// The work of making a video ready, off the main thread: whether it is one, and its contact sheet.
 enum ComposerVideoPrep {
     /// conch's uploads folder (`PhoneUploads`, `~/.cache/conch/uploads`): where the phone's video lands, and so where
-    /// the daemon transcribes from and the receipt and the phone's `/file` look for a contact sheet. Swept after a day.
+    /// the receipt and the phone's `/file` look for a contact sheet. Swept after a day.
     static let uploads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/conch/uploads", isDirectory: true)
-    /// Reading two minutes of voice: the warm server, else the cold one once (`CanvasNarration.reading`).
-    static let reading: TimeInterval = 150
 
     static func prepare(_ url: URL) async -> VideoAttachment.Status {
         guard FileManager.default.fileExists(atPath: url.path) else { return .failed("It isn't there any more") }
@@ -115,39 +116,11 @@ enum ComposerVideoPrep {
         guard length.isFinite, length > 0 else { return .failed("conch can't read this video") }
         // Names the uploads folder takes (`sanitizeUploadId`), marked as the Mac's.
         let id = "mac-\(UUID().uuidString)"
-        var said: [CanvasStoryboard.Said] = []
-        // Without words it goes on, as the phone's does: its frames every three seconds instead of where he spoke.
-        if let speech = try? await VideoStoryboard.speech(of: url), let wav = try? save(speech, as: "\(id).wav") {
-            said = await transcript(of: wav)
-            try? FileManager.default.removeItem(at: wav)
-        }
-        guard let sheet = await VideoStoryboard.sheet(of: url, said: said, length: min(length, VideoStoryboard.longest)) else {
+        guard let sheet = await VideoStoryboard.sheet(of: url, length: min(length, VideoStoryboard.longest)) else {
             return .failed("conch couldn't take frames from it")
         }
         guard let file = try? save(sheet.jpeg, as: "\(id).jpg") else { return .failed("conch couldn't save its frames") }
-        return .ready(VideoAttachment.Brief(frames: sheet.frames, said: said, length: length, sheet: file.path))
-    }
-
-    /// What was said in the recording at `wav`, timed, from the daemon's whisper; nothing when it can't say.
-    static func transcript(of wav: URL) async -> [CanvasStoryboard.Said] {
-        let outcome = await ConchSocketClient().request(["kind": "video-transcript", "path": wav.path], timeout: reading)
-        guard case let .reply(data) = outcome, let reply = try? JSONDecoder().decode(Transcript.self, from: data) else {
-            NSLog("conch: no words for a video: %@", String(describing: outcome))
-            return []
-        }
-        if let error = reply.error { NSLog("conch: no words for a video: %@", error) }
-        return (reply.segments ?? []).map { CanvasStoryboard.Said(start: $0.start, end: $0.end, text: $0.text) }
-    }
-
-    private struct Transcript: Decodable {
-        struct Segment: Decodable {
-            let start: Double
-            let end: Double
-            let text: String
-        }
-
-        let segments: [Segment]?
-        let error: String?
+        return .ready(VideoAttachment.Brief(frames: sheet.frames, length: length, sheet: file.path))
     }
 
     /// A file in the uploads folder, for Tyler alone (the folder 0700, the file 0600), never over anything there.

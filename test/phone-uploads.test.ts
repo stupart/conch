@@ -87,11 +87,11 @@ describe("images arriving from the phone in pieces", () => {
   });
 });
 
-// Tyler (09-25): "vise versa if possible": the phone's own recordings, to the Mac. A video, its sound for whisper, and
-// the contact sheet of its frames arrive by the same pieces as a picture; every rule that keeps that safe is here.
-describe("videos and their recordings, by the same pieces", () => {
-  const { chmodSync, existsSync, lstatSync, statSync, symlinkSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
-  const { MAX_PENDING_BYTES, MAX_PENDING_UPLOADS, RECORDING_MAX_BYTES, VIDEO_MAX_BYTES } = require("../src/phone-uploads.ts") as typeof import("../src/phone-uploads.ts");
+// Tyler (09-25): "vise versa if possible": the phone's own recordings, to the Mac. A video and the contact sheet of its
+// frames arrive by the same pieces as a picture; every rule that keeps that safe is here.
+describe("videos and their contact sheets, by the same pieces", () => {
+  const { chmodSync, existsSync, lstatSync, readdirSync, statSync, symlinkSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { MAX_PENDING_BYTES, MAX_PENDING_UPLOADS, VIDEO_MAX_BYTES } = require("../src/phone-uploads.ts") as typeof import("../src/phone-uploads.ts");
   const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from("ftypisom")]);
   /** A WAV header: 16 kHz mono 16-bit unless told otherwise. */
   const wav = (rate = 16_000, channels = 1, bits = 16, body = Buffer.alloc(32)) => {
@@ -112,12 +112,7 @@ describe("videos and their recordings, by the same pieces", () => {
       const uploads = new PhoneUploads(dir);
       expect(await uploads.accept(piece("fakepng01", 0, 1, "png", "not a png at all"))).toEqual({ error: "not a image: its bytes don't match .png" });
       expect(await uploads.accept(piece("fakemp401", 0, 1, "mp4", "RIFFxxxxWAVEfmt "))).toMatchObject({ error: expect.stringMatching(/not a video/) });
-      for (const [rate, channels, bits] of [[44_100, 1, 16], [16_000, 2, 16], [16_000, 1, 32]] as const) {
-        expect(await uploads.accept(piece(`badwav${rate}${channels}${bits}`, 0, 1, "wav", wav(rate, channels, bits))))
-          .toMatchObject({ error: expect.stringMatching(/not a recording/) });
-      }
       expect(await uploads.accept(piece("goodmp401", 0, 1, "mp4", MP4))).toMatchObject({ path: join(dir, "goodmp401.mp4") });
-      expect(await uploads.accept(piece("goodwav01", 0, 1, "wav", wav()))).toMatchObject({ path: join(dir, "goodwav01.wav") });
       // A first chunk resent as something else ends the upload rather than slipping in.
       expect(await uploads.accept(piece("swapped01", 0, 2, "mp4", MP4))).toMatchObject({ missing: [1] });
       expect(await uploads.accept(piece("swapped01", 0, 2, "mp4", "garbage bytes here"))).toMatchObject({ error: expect.stringMatching(/not a video/) });
@@ -128,14 +123,28 @@ describe("videos and their recordings, by the same pieces", () => {
     }
   });
 
-  test("each kind has its own cap: a video 48 MB, a recording 8 MB", async () => {
+  test("a video has its own cap: 48 MB", async () => {
     const dir = scratch();
     try {
       const uploads = new PhoneUploads(dir);
       await uploads.accept(piece("bigvideo1", 0, 2, "mp4", MP4));
       expect(await uploads.accept(piece("bigvideo1", 1, 2, "mp4", Buffer.alloc(VIDEO_MAX_BYTES)))).toEqual({ error: "video too large" });
-      await uploads.accept(piece("bigsound1", 0, 2, "wav", wav()));
-      expect(await uploads.accept(piece("bigsound1", 1, 2, "wav", Buffer.alloc(RECORDING_MAX_BYTES)))).toEqual({ error: "recording too large" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A video's sound went up as a WAV for whisper until Tyler, 2026-11-12: "maybe we remove that functionality? its not v
+  // useful and it feels concerning". A recording is no longer anything the Mac takes, even one shaped as whisper's was;
+  // an older phone that sends one gets this, and sends its video without words, as it does when whisper is busy.
+  test("a recording is refused, whatever its shape", async () => {
+    const dir = scratch();
+    try {
+      const uploads = new PhoneUploads(dir);
+      for (const [rate, channels, bits] of [[16_000, 1, 16], [44_100, 1, 16]] as const) {
+        expect(await uploads.accept(piece(`sound${rate}${channels}${bits}`, 0, 1, "wav", wav(rate, channels, bits)))).toEqual({ error: "unsupported upload type" });
+      }
+      expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

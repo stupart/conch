@@ -12,7 +12,6 @@ import {
 } from "../src/phone-bridge.ts";
 import { decodePracticeRequest, PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { decodeSetupRequest, SETUP_REQUEST_KINDS } from "../src/setup.ts";
-import { decodeVideoTranscriptRequest, VIDEO_TRANSCRIPT_KIND } from "../src/video-transcript.ts";
 import { decodeNoticeRequest, NOTICE_REQUEST_KINDS } from "../src/notice-wire.ts";
 
 // D1 (review 2026-09-28): the phone's /control forwarded setup's and the practice's requests to the daemon, so a paired
@@ -65,8 +64,6 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     // the review pane's sign-ins is never a phone's to ask for.
     "page-capture": { url: "https://acme.dev", roots: [], viewport: { width: 1440, height: 900 } },
     "page-capture-answer": { request: "r", path: "/tmp/x.png" },
-    // A video dropped on the Mac's composer: its words, from the recording the app wrote. The phone has `/transcript`.
-    [VIDEO_TRANSCRIPT_KIND]: { path: "/Users/t/.cache/conch/uploads/mac-1.wav" },
     // The logins inventory: who this Mac is signed in as, everywhere, and asking for it runs the Mac's CLIs.
     "login-inventory": { action: "refresh" },
     // "Update now": a phone can't run an upgrade on the Mac (agent-updates.ts).
@@ -77,7 +74,7 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "notify-user": { title: "Deploy", body: "It's live.", from: "s1" },
     "notice-answer": { id: "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b", outcome: "shown" },
   };
-  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
+  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
   return kinds.flatMap((kind) => [
     { kind, body: { kind, ...(shaped[kind] ?? {}) } },
     { kind, body: { kind, agent: "gemini", seconds: -1, voice: "", what: "everything", canvasId: "nope" } },
@@ -106,10 +103,8 @@ describe("every request the control server takes before a session is one side's 
     expect(MAC_APP_ONLY_DECODERS.decodeSetupRequest).toBe(decodeSetupRequest);
     expect(MAC_APP_ONLY_DECODERS.decodePracticeRequest).toBe(decodePracticeRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeNarrationRequest).toBe(decodeNarrationRequest);
-    expect(MAC_APP_ONLY_DECODERS.decodeVideoTranscriptRequest).toBe(decodeVideoTranscriptRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeNoticeRequest).toBe(decodeNoticeRequest);
     for (const kind of NOTICE_REQUEST_KINDS) expect(decodeNoticeRequest({ kind }), kind).not.toBeNull();
-    expect(decodeVideoTranscriptRequest({ kind: VIDEO_TRANSCRIPT_KIND })).not.toBeNull();
     // Each kind derived from a decoder is one that decoder takes.
     for (const kind of SETUP_REQUEST_KINDS) expect(decodeSetupRequest({ kind }), kind).not.toBeNull();
     for (const kind of PRACTICE_REQUEST_KINDS) expect(decodePracticeRequest({ kind }), kind).not.toBeNull();
