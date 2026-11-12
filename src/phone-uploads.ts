@@ -21,8 +21,10 @@ import { dirname, join } from "node:path";
  * What an upload may be, and how big, each told by its first bytes rather than its name: a file
  * that says `.png` and is anything else is refused. Images are what Claude accepts (HEIC, which is
  * what an iPhone shoots, is not among them). A video is what the phone transcodes to, H.264 in an
- * MP4; a recording is its sound, 16 kHz mono 16-bit PCM, the only shape whisper is handed.
- * Tyler (09-25): "vise versa if possible": the phone's own recordings, to the Mac.
+ * MP4. Tyler (09-25): "vise versa if possible": the phone's own recordings, to the Mac.
+ *
+ * No WAV: a video's sound went up as one for whisper until Tyler, 2026-11-12: "maybe we remove that
+ * functionality? its not v useful and it feels concerning". A video now goes as its frames.
  */
 interface UploadKind {
   noun: string;
@@ -34,8 +36,6 @@ const at = (bytes: Uint8Array, text: string, offset: number) => [...text].every(
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** Ten seconds of 1080p would pass it; 720p H.264 runs two minutes (Show's longest) well under it. */
 export const VIDEO_MAX_BYTES = 48 * 1024 * 1024;
-/** 16 kHz mono 16-bit is 32 KB a second: two minutes is under 4 MB. */
-export const RECORDING_MAX_BYTES = 8 * 1024 * 1024;
 const UPLOAD_KINDS: Readonly<Record<string, UploadKind>> = {
   jpg: { noun: "image", cap: 5 * 1024 * 1024, is: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
   png: { noun: "image", cap: 5 * 1024 * 1024, is: (b) => PNG.every((byte, i) => b[i] === byte) },
@@ -43,17 +43,8 @@ const UPLOAD_KINDS: Readonly<Record<string, UploadKind>> = {
   webp: { noun: "image", cap: 5 * 1024 * 1024, is: (b) => at(b, "RIFF", 0) && at(b, "WEBP", 8) },
   // ISO base media: an `ftyp` box first.
   mp4: { noun: "video", cap: VIDEO_MAX_BYTES, is: (b) => at(b, "ftyp", 4) },
-  wav: { noun: "recording", cap: RECORDING_MAX_BYTES, is: isSpeechWav },
 };
 const ALLOWED_EXTENSIONS = new Set([...Object.keys(UPLOAD_KINDS), "jpeg"]);
-
-/** A canonical WAV header for 16 kHz mono 16-bit PCM, and nothing else. */
-function isSpeechWav(b: Uint8Array): boolean {
-  if (b.length < 44 || !at(b, "RIFF", 0) || !at(b, "WAVE", 8) || !at(b, "fmt ", 12)) return false;
-  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
-  return view.getUint16(20, true) === 1 && view.getUint16(22, true) === 1
-    && view.getUint32(24, true) === 16_000 && view.getUint16(34, true) === 16;
-}
 
 /**
  * 5 MB is the per-image API limit. A 1568px image lands far under it; this
@@ -123,7 +114,7 @@ export function sanitizeExtension(raw: string): string | null {
 
 /**
  * A file in conch's uploads folder, as its real path, or null: one the phone sent (conch named and wrote it, above), or
- * one the Mac app wrote there beside them for a video dropped on its composer (its sound and contact sheet,
+ * one the Mac app wrote there beside them for a video dropped on its composer (its contact sheet,
  * `ComposerVideo.swift`). A hidden folder the publish rule refuses, so under that rule alone every picture Tyler sends
  * from the phone would vanish from his own side of the conversation. Directly in the folder, a plain file, nothing
  * executable, and never a link out of it.

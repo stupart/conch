@@ -1368,7 +1368,7 @@ struct SessionView: View {
     }
 
     /// Each attachment as the lines it adds to the message: a picture's path, or a video's whole
-    /// block (its contact sheet, its words, timed, and the video itself: `VideoMessage`).
+    /// block (its contact sheet and the video itself: `VideoMessage`).
     private func uploadPaths(_ pending: [PendingAttachment]) async -> [String]? {
         var paths: [String] = []
         for attachment in pending {

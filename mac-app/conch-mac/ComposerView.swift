@@ -786,8 +786,8 @@ struct ComposerView: View {
     /// message, so an attachment is literally its own absolute path on a line.
     /// Leading rather than trailing because a trailing path after a long
     /// message reads as an afterthought and is easier for a model to skim past.
-    /// Neither can watch a video, so a video goes as the phone's does: its contact sheet, its frames and words, timed,
-    /// and its path, for people (`VideoAttachment.message`, `ComposerVideos`).
+    /// Neither can watch a video, so a video goes as the phone's does: a contact sheet of its frames, timed, and its
+    /// path, for people (`VideoAttachment.message`, `ComposerVideos`).
     private var composed: String {
         VideoAttachment.message(text: draft, attachments: attachments) { videos.block(for: $0) }
     }
@@ -1247,9 +1247,9 @@ private struct VideoTile<Remove: View>: View {
         case let .ready(brief)?:
             let frames = "\(brief.frames.count) frame\(brief.frames.count == 1 ? "" : "s")"
             let read = VideoStoryboard.isCut(brief.length) ? " The agent reads its \(VideoAttachment.caption(length: brief.length))." : ""
-            return "\(url.path)\nGoes as a contact sheet of \(frames)\(brief.said.isEmpty ? "" : " and what was said, timed").\(read)"
+            return "\(url.path)\nGoes as a contact sheet of \(frames), without its sound.\(read)"
         default:
-            return "\(url.path)\nGetting it ready for the agent: its frames and what was said"
+            return "\(url.path)\nGetting its frames ready for the agent"
         }
     }
 }

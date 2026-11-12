@@ -162,7 +162,6 @@ import { CONCH_VERSION } from "./version.ts";
 import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, transcriptMark, setPromptCursorSink } from "./snippet.ts";
 import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
-import { createVideoTranscripts } from "./video-transcript.ts";
 import { createPreviewRequester, previewFolder, PreviewLimiter, WindowPreviews, type PreviewRequest } from "./review-preview.ts";
 import { captureFolder, createPageCaptureService, PageCaptures, pruneCaptures, withCaptureRequests } from "./page-capture.ts";
 import { accessCheckedLink, checkAnonymously, checkPageAccess, discardCapture, type AccessCheck } from "./page-access.ts";
@@ -2481,9 +2480,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           uploadsDirectory: phoneUploads.directory,
           portListeners,
           sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,
-          // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
-          // The words of a video the phone is sending, timed, from its recording (`/transcript`).
-          transcribe: (wavPath) => transcribeWavSegments(cfg, wavPath),
           setup: {
             report: (report) => phoneSetup.report(report),
             exchange: (event) => phoneSetup.exchange(event),
@@ -2502,6 +2498,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
               return { ready: notifier.ready() };
             },
           },
+          // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
           requestPreview: createPreviewRequester({
             held: (sessionId) => {
               const state = ledger.sessionStates.get(sessionId);
@@ -4856,9 +4853,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Resolving can wait on a port lookup now; whatever goes wrong there is logged, never thrown at the daemon.
     onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),
     narration,
-    // A video dropped on the Mac app's composer: its words, from the recording the app wrote beside the phone's
-    // uploads, by the whisper the phone's `/transcript` uses.
-    videoTranscripts: createVideoTranscripts({ uploads: phoneUploads.directory, transcribe: (wav) => transcribeWavSegments(cfg, wav) }),
     onReviewPreview: (message) => windowPreviews.answer(message),
     failureTickets: failureDesk,
     notices: handleNoticeRequest,

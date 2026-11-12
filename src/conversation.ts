@@ -416,6 +416,8 @@ const STAMP = String.raw`\[\d+:\d{2}\]`;
 const SHOW_FRAME = new RegExp(`^${STAMP} (.+?) — (.*)$`);
 const VIDEO_FRAME = new RegExp(`^${STAMP} frame \\d{2,} — `);
 const SPOKEN = new RegExp(`^${STAMP} (.*)$`);
+/** What a video's message says of its sound (`VideoStoryboard.unheard`). */
+const VIDEO_UNHEARD = "No transcript: conch sends a video's frames, not its sound.";
 
 type ReceiptBlock = { end: number; receipt: SentReceipt };
 
@@ -489,12 +491,16 @@ function canvasShow(lines: readonly string[], start: number): ReceiptBlock | nul
 
 /**
  * A video from the phone or the Mac's composer (`VideoStoryboard.prompt`): "[video] Tyler sent a video from his phone
- * (0:42).", its contact sheet and a line a frame, what he said, timed, and the video. The contact sheet is conch's,
+ * (0:42).", its contact sheet and a line a frame, that its sound isn't sent, and the video. The contact sheet is conch's,
  * in its uploads folder, either way. From the phone the video is one it uploaded there too; from the Mac it is the file
  * he dropped, wherever it is, and one longer than two minutes says how much of it was read.
+ *
+ * Until 2026-11-12 a video's sound was transcribed, and its message said "frames and words" and ended with what he said,
+ * timed, in place of the line about its sound. Those messages are still in every conversation sent before then, so they
+ * are read too, and their words are the receipt's detail.
  */
 function sentVideo(lines: readonly string[], start: number): ReceiptBlock | null {
-  const sent = /^\[video\] Tyler sent a video from his (phone|Mac) \((\d+:\d{2})\)\.(?: The frames and words below are its first \d+:\d{2}\.)?$/
+  const sent = /^\[video\] Tyler sent a video from his (phone|Mac) \((\d+:\d{2})\)\.(?: The frames(?: and words)? below are its first \d+:\d{2}\.)?$/
     .exec(lines[start]!);
   const sheet = sent
     ? /^Contact sheet: (.+) — (\d+) frames?, left to right and down, each stamped with its time:$/.exec(lines[start + 1] ?? "")
@@ -507,6 +513,8 @@ function sentVideo(lines: readonly string[], start: number): ReceiptBlock | null
   const words: string[] = [];
   if (lines[at] === "What he said:") {
     for (let line; (line = SPOKEN.exec(lines[at + 1] ?? "")); at += 1) words.push(line[1]!);
+    at += 1;
+  } else if (lines[at] === VIDEO_UNHEARD) {
     at += 1;
   }
   const video = /^The video itself, for people \(agents can't watch video\): (.+)$/.exec(lines[at] ?? "")?.[1];

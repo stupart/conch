@@ -41,7 +41,6 @@ import type { ResumableSessionsRead } from "./resumable.ts";
 import { validateScreenObservation, type ScreenObservation } from "./screen-context.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
 import { decodeNarrationRequest, type Narration, type NarrationReply } from "./narration.ts";
-import { decodeVideoTranscriptRequest, type VideoTranscriptReply, type VideoTranscripts } from "./video-transcript.ts";
 import type { AgentInstall } from "./agent-install.ts";
 import type { TerminalFocusReply, TerminalScreenReply } from "./terminal-mirror.ts";
 import type { SessionAppOpenReply } from "./session-app-open.ts";
@@ -1359,8 +1358,6 @@ export interface ControlServerOptions {
   onScreenObservation?(observation: ScreenObservation): void;
   /** Show's narration (narration.ts): a `narration-start` that is taken keeps its connection open, as the lease. */
   narration?: Narration;
-  /** The words of a video dropped on the Mac app's composer (video-transcript.ts), from the recording it wrote. */
-  videoTranscripts?: VideoTranscripts;
   /**
    * Failure tickets (failure-tickets.ts): Settings › Failures' list and its actions, and `conch failures`. Absent: the
    * request is answered as unavailable.
@@ -1735,17 +1732,6 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               ? await options.narration.stop(narration.canvasId)
               : await options.narration.cancel(narration.canvasId);
           }
-          sock.end(JSON.stringify(reply) + "\n");
-          return;
-        }
-        // A video's words for the Mac app's composer (video-transcript.ts): names a recording, not a session, and is
-        // answered once whisper has read it.
-        const videoTranscript = decodeVideoTranscriptRequest(body);
-        if (videoTranscript) {
-          let reply: VideoTranscriptReply;
-          if ("error" in videoTranscript) reply = { kind: "video-transcript-error", error: videoTranscript.error };
-          else if (!options.videoTranscripts) reply = { kind: "video-transcript-error", error: "this conch can't transcribe" };
-          else reply = await options.videoTranscripts.handle(videoTranscript);
           sock.end(JSON.stringify(reply) + "\n");
           return;
         }

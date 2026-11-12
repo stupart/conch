@@ -6,34 +6,32 @@ import UniformTypeIdentifiers
 /// Tyler, 2026-10-11: "we should be able to attach videos via drag and drop and based i just tried and it failed." A
 /// screen recording's thumbnail, a video from Photos, one from QuickTime or a browser arrives as a promised file the
 /// composer refused, so nothing happened at all; one from Finder went as its bare path, which an agent can't watch. So a
-/// video goes as the phone's does: a contact sheet of its frames and its words, timed, and the file itself, for people.
+/// video goes as the phone's does: a contact sheet of its frames, and the file itself, for people.
 /// This is the pure part: what a video on the composer is, what it says while it gets ready, and the message it makes.
 /// The work itself is the Mac app's (`ComposerVideo.swift`), on `VideoFrames.swift`'s code, the phone's own.
 public enum VideoAttachment {
-    /// What an agent is sent for a video, once its frames and words are read.
+    /// What an agent is sent for a video, once its frames are pulled.
     public struct Brief: Equatable, Sendable {
         public let frames: [CanvasStoryboard.Moment]
-        public let said: [CanvasStoryboard.Said]
-        /// The whole video's length, in seconds; its frames and words cover at most `VideoStoryboard.longest` of it.
+        /// The whole video's length, in seconds; its frames cover at most `VideoStoryboard.longest` of it.
         public let length: Double
         /// The contact sheet's path.
         public let sheet: String
 
-        public init(frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String) {
+        public init(frames: [CanvasStoryboard.Moment], length: Double, sheet: String) {
             self.frames = frames
-            self.said = said
             self.length = length
             self.sheet = sheet
         }
 
         /// The message's block for the video at `video`, in the phone's words but from the Mac.
         public func block(video: String) -> String {
-            VideoStoryboard.prompt(frames, said: said, length: length, sheet: sheet, video: video, from: .mac)
+            VideoStoryboard.prompt(frames, length: length, sheet: sheet, video: video, from: .mac)
         }
     }
 
     public enum Status: Equatable, Sendable {
-        /// Its sound being read, its words transcribed, its frames pulled.
+        /// Its frames being pulled.
         case preparing
         case ready(Brief)
         /// Why it can't go, in the chip's words.

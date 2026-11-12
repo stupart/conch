@@ -6,12 +6,14 @@ import UniformTypeIdentifiers
 
 // A video from the phone, to the session: Tyler (09-25): "vise versa if possible", the phone's own recordings, to the
 // Mac. The model can't watch video, so the video goes for people and, beside it, what the model can read: a contact
-// sheet of its frames and its words, timed, as a Show's storyboard does (`VideoStoryboard`, in the shared package).
+// sheet of its frames, as a Show's storyboard does (`VideoStoryboard`, in the shared package).
 //
-// The phone does the AVFoundation work, since it has the video open anyway: it transcodes, writes the sound as whisper
-// takes it, and pulls the frames, the last two by `VideoFrames.swift` in the shared package, which the Mac's composer
-// runs on a video dropped there too. The Mac transcribes (`/transcript`), because whisper is there. The words come back
-// before the frames are chosen, since where he finished saying something is where a frame is worth taking.
+// The phone does the AVFoundation work, since it has the video open anyway: it transcodes, and pulls the frames with
+// `VideoFrames.swift` in the shared package, which the Mac's composer runs on a video dropped there too.
+//
+// Not its words. Its sound was written out for the Mac's whisper (`/transcript`), and the words chose the frames, until
+// Tyler, 2026-11-12, after the Mac's test suite beeped at him: "maybe we remove that functionality? its not v useful and
+// it feels concerning". With nothing to wait for from the Mac, the sheet is drawn as the video is attached.
 
 /// A video picked in Photos, copied to a file the app owns: Photos' own file is gone once the import returns.
 struct PickedMovie: Transferable {
@@ -27,35 +29,37 @@ struct PickedMovie: Transferable {
     }
 }
 
-/// A video made ready to send, and the ids its video and its sound upload under: kept across a Retry, so the Mac is
-/// asked only for what it hasn't got (`BridgeClient.upload`). Not its contact sheet's, which is drawn again each time
-/// (`VideoMessage.send`).
+/// A video made ready to send, its contact sheet, and the ids the two upload under: kept across a Retry, so the Mac is
+/// asked only for what it hasn't got (`BridgeClient.upload`).
 struct PreparedVideo {
     let video: URL
-    /// Its sound as whisper takes it; nil for a video with none.
-    let recording: URL?
     /// Seconds.
     let length: Double
     let poster: UIImage?
+    /// The frames on the sheet, and the sheet as a JPEG (`VideoStoryboard.sheet`).
+    let frames: [CanvasStoryboard.Moment]
+    let sheet: Data
     let videoId = ImageUpload.newUploadID()
-    let recordingId = ImageUpload.newUploadID()
+    let sheetId = ImageUpload.newUploadID()
 
-    /// Its files, gone: the transcode (up to 46 MB) and its sound, in the phone's temp folder, once it leaves the
-    /// composer. Nothing else deletes them.
+    /// Its file, gone: the transcode (up to 46 MB), in the phone's temp folder, once it leaves the composer. Nothing
+    /// else deletes it.
     func discard() {
-        for file in [video, recording].compactMap({ $0 }) { try? FileManager.default.removeItem(at: file) }
+        try? FileManager.default.removeItem(at: video)
     }
 }
 
 enum VideoPrepError: LocalizedError {
     case noVideo
     case unreadable
+    case noFrames
     case tooLarge
 
     var errorDescription: String? {
         switch self {
         case .noVideo: "That file has no video in it."
         case .unreadable: "iPhone couldn't read that video."
+        case .noFrames: "iPhone couldn't take frames from that video."
         case .tooLarge: "That video is too large to send, even made smaller."
         }
     }
@@ -72,9 +76,12 @@ enum VideoPrep {
     static func prepare(_ source: URL) async throws -> PreparedVideo {
         let video = try await transcode(source)
         let length = try await AVURLAsset(url: video).load(.duration).seconds
-        let recording = try? await recording(of: source)
+        guard let sheet = await VideoStoryboard.sheet(of: video, length: length) else {
+            try? FileManager.default.removeItem(at: video)
+            throw VideoPrepError.noFrames
+        }
         let poster = try? await VideoStoryboard.frames(of: video, edge: 192).image(at: .zero).image
-        return PreparedVideo(video: video, recording: recording, length: length, poster: poster.map(UIImage.init(cgImage:)))
+        return PreparedVideo(video: video, length: length, poster: poster.map(UIImage.init(cgImage:)), frames: sheet.frames, sheet: sheet.jpeg)
     }
 
     /// H.264 in an MP4, the short edge at most 720, the first two minutes at most (a Show's longest), its sound AAC mono.
@@ -182,36 +189,18 @@ enum VideoPrep {
             }
         }
     }
-
-    /// Its sound as whisper takes it, in a WAV in the phone's temp folder (`VideoStoryboard.speech`, the Mac's code too).
-    /// Nil with no sound.
-    static func recording(of source: URL) async throws -> URL? {
-        guard let wav = try await VideoStoryboard.speech(of: source) else { return nil }
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-        try wav.write(to: out)
-        return out
-    }
 }
 
 enum VideoMessage {
-    /// Everything a video sends, in order: its sound (its words choose the frames), then the contact sheet, then the
-    /// video; and the message they make (`VideoStoryboard.prompt`). Nil when the sheet or the video doesn't go: half a
-    /// video is worse than none, and the attachment stays for the Retry. The words are the one piece it goes without:
-    /// with none, the frames are taken every three seconds.
+    /// Everything a video sends, in order: the contact sheet, then the video; and the message they make
+    /// (`VideoStoryboard.prompt`). Nil when either doesn't go: half a video is worse than none, and the attachment stays
+    /// for the Retry, which sends the same sheet and video under the same ids.
     @MainActor
     static func send(_ video: PreparedVideo, bridge: BridgeClient) async -> String? {
-        var said: [CanvasStoryboard.Said] = []
-        if let recording = video.recording, let data = try? Data(contentsOf: recording),
-           let path = await bridge.upload(data: data, ext: "wav", id: video.recordingId) {
-            said = await bridge.transcript(of: path) ?? []
-        }
-        guard let sheet = await VideoStoryboard.sheet(of: video.video, said: said, length: video.length),
-              // A new id each time: the sheet is drawn again from the words this attempt has, which a Retry can have
-              // when the last one didn't. Under the last one's id the Mac joined the two, or handed back the old sheet.
-              let sheetPath = await bridge.upload(data: sheet.jpeg, ext: "jpg", id: ImageUpload.newUploadID()),
+        guard let sheetPath = await bridge.upload(data: video.sheet, ext: "jpg", id: video.sheetId),
               let data = try? Data(contentsOf: video.video, options: .mappedIfSafe),
               let videoPath = await bridge.upload(data: data, ext: "mp4", id: video.videoId)
         else { return nil }
-        return VideoStoryboard.prompt(sheet.frames, said: said, length: video.length, sheet: sheetPath, video: videoPath)
+        return VideoStoryboard.prompt(video.frames, length: video.length, sheet: sheetPath, video: videoPath)
     }
 }

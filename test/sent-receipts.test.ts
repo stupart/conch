@@ -57,10 +57,9 @@ const videoMessage = [
   "[video] Tyler sent a video from his phone (0:09).",
   `Contact sheet: ${join(uploads, "sheet123.jpg")} — 3 frames, left to right and down, each stamped with its time:`,
   "[00:00] frame 01 — the start",
-  '[00:02] frame 02 — "this button should be blue" · the screen changed',
+  "[00:03] frame 02 — the screen changed",
   "[00:08] frame 03 — the end",
-  "What he said:",
-  "[00:01] this button should be blue",
+  "No transcript: conch sends a video's frames, not its sound.",
   `The video itself, for people (agents can't watch video): ${join(uploads, "video123.mp4")}`,
 ].join("\n");
 
@@ -69,8 +68,21 @@ const macVideo = "/Users/tyler/Desktop/Screen Recording 2026-10-11 at 1.12.58\u2
 const macVideoMessage = (length = "0:04", cut = "") => [
   `[video] Tyler sent a video from his Mac (${length}).${cut}`,
   `Contact sheet: ${join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg")} — 2 frames, left to right and down, each stamped with its time:`,
-  '[00:00] frame 01 — "watch the footer" · the start',
+  "[00:00] frame 01 — the start",
   "[00:03] frame 02 — the end",
+  "No transcript: conch sends a video's frames, not its sound.",
+  `The video itself, for people (agents can't watch video): ${macVideo}`,
+].join("\n");
+
+/**
+ * A video's message before 2026-11-12, when its sound was transcribed: what he said at a frame, then everything he said,
+ * timed. Every conversation from before then still holds these.
+ */
+const transcribedVideoMessage = (cut = "") => [
+  `[video] Tyler sent a video from his Mac (5:12).${cut}`,
+  `Contact sheet: ${join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg")} — 2 frames, left to right and down, each stamped with its time:`,
+  '[00:00] frame 01 — "watch the footer" · the start',
+  "[01:59] frame 02 — where the frames stop",
   "What he said:",
   "[00:00] watch the footer",
   `The video itself, for people (agents can't watch video): ${macVideo}`,
@@ -132,7 +144,6 @@ describe("what Tyler sent through conch is a receipt, not the message", () => {
     expect(items[1]!.receipt).toEqual({
       kind: "video",
       title: "Sent a video · 0:09",
-      detail: "“this button should be blue”",
       thumb: join(uploads, "sheet123.jpg"),
       open: join(uploads, "video123.mp4"),
     });
@@ -148,14 +159,27 @@ describe("what Tyler sent through conch is a receipt, not the message", () => {
     expect(items[1]!.receipt).toEqual({
       kind: "video",
       title: "Sent a video · 0:04",
-      detail: "“watch the footer”",
       thumb: join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg"),
       open: macVideo,
     });
-    expect(items.map((item) => item.text).join("\n")).not.toMatch(/Contact sheet|frame 0|What he said|for people/);
+    expect(items.map((item) => item.text).join("\n")).not.toMatch(/Contact sheet|frame 0|No transcript|for people/);
     // Longer than two minutes, it says how much was read; still the one receipt, at its whole length.
-    const long = rows(macVideoMessage("5:12", " The frames and words below are its first 2:00."));
+    const long = rows(macVideoMessage("5:12", " The frames below are its first 2:00."));
     expect(long.map((item) => item.receipt?.title)).toEqual(["Sent a video · 5:12"]);
+  });
+
+  test("a video sent before its sound stopped being transcribed is still its receipt, its words the detail", () => {
+    for (const cut of ["", " The frames and words below are its first 2:00."]) {
+      const items = rows(transcribedVideoMessage(cut));
+      expect(items.map((item) => item.receipt)).toEqual([{
+        kind: "video",
+        title: "Sent a video · 5:12",
+        detail: "“watch the footer”",
+        thumb: join(uploads, "mac-0F3C1A2B-4D5E-4F60-8A7B-9C0D1E2F3A4B.jpg"),
+        open: macVideo,
+      }]);
+      expect(items.map((item) => item.text).join("\n")).not.toMatch(/Contact sheet|frame 0|What he said|for people/);
+    }
   });
 
   test("a Mac video is a receipt only with conch's own contact sheet and a real path to the video", () => {
@@ -324,10 +348,12 @@ describe("the parser reads the formats the apps write", () => {
     expect(show).toContain('(words.isEmpty ? "" : "\\"\\(words)\\" · ") + caption(moment, first: first)');
     const video = read("design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift");
     expect(video).toContain('var heading = "[video] Tyler sent a video from his \\(sender.rawValue) (\\(CanvasStoryboard.clock(length)))."');
-    expect(video).toContain('if cut { heading += " The frames and words below are its first \\(CanvasStoryboard.clock(longest))." }');
+    expect(video).toContain('if cut { heading += " The frames below are its first \\(CanvasStoryboard.clock(longest))." }');
     expect(video).toContain('case mac = "Mac"');
     expect(video).toContain('"Contact sheet: \\(sheet) — \\(frames.count) frame\\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",');
-    expect(video).toContain('if !spoken.isEmpty { lines += ["What he said:"] + spoken }');
+    expect(video).toContain('public static let unheard = "No transcript: conch sends a video\'s frames, not its sound."');
+    expect(video).toContain("lines.append(unheard)");
+    expect(read("src/conversation.ts")).toContain('const VIDEO_UNHEARD = "No transcript: conch sends a video\'s frames, not its sound.";');
     expect(video).toContain('lines.append("The video itself, for people (agents can\'t watch video): \\(video)")');
     // Where conch keeps them. The Mac's canvas and Show, which wrote into ~/.cache/conch/canvas, went with the
     // overlays on 2026-11-11; the parser still reads that folder, so a receipt sent before then keeps its row.

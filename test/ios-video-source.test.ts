@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { PhoneUploads } from "../src/phone-uploads.ts";
 
 /**
- * The phone's side of sending a video (phone-uploads.test.ts and phone-video.test.ts have the Mac's). Tyler (09-25):
- * "vise versa if possible": the phone's own recordings, to the Mac. The iOS app has no test target, so the Foundation
- * pieces run under `swift`, against the Mac's own validator where they meet it, and the rest is read. Its sound and its
- * contact sheet are pulled by the shared package (`VideoFrames.swift`), which the Mac's composer runs too, and which
- * `swift test` runs on real movies (VideoFramesTests).
+ * The phone's side of sending a video (phone-uploads.test.ts has the Mac's). Tyler (09-25): "vise versa if possible":
+ * the phone's own recordings, to the Mac. The iOS app has no test target, so the Foundation pieces run under `swift`,
+ * against the Mac's own validator where they meet it, and the rest is read. Its contact sheet is pulled by the shared
+ * package (`VideoFrames.swift`), which the Mac's composer runs too, and which `swift test` runs on real movies
+ * (VideoFramesTests). Never its sound (2026-11-12).
  */
 const root = join(import.meta.dir, "..");
 const ios = (name: string): string => readFileSync(join(root, "mobile/conch-ios/conch-ios", name), "utf8");
@@ -36,26 +36,6 @@ function runSwift(lines: string[], dir: string): string[] {
 }
 
 describe("the pieces the Mac checks", () => {
-  test.skipIf(!swift)("the phone's WAV header is the one shape the Mac accepts as a recording", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "conch-ios-video-"));
-    try {
-      const header = between(frames, "    public static func wavHeader(pcmBytes: Int) -> Data {", "\n    }\n") + "\n    }\n";
-      runSwift([
-        `enum Probe {\n${header}\n}`,
-        "let pcm = Data(repeating: 7, count: 32_000)",
-        'try! (Probe.wavHeader(pcmBytes: pcm.count) + pcm).write(to: URL(fileURLWithPath: "speech.wav"))',
-        'print("ok")',
-      ], dir);
-      const uploads = new PhoneUploads(join(dir, "uploads"));
-      const bytes = readFileSync(join(dir, "speech.wav"));
-      expect(bytes.length).toBe(44 + 32_000);
-      expect(await uploads.accept({ uploadId: "phonewav01", index: 0, total: 1, extension: "wav", data: bytes.toString("base64") }))
-        .toMatchObject({ path: join(dir, "uploads", "phonewav01.wav") });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 60_000);
-
   test.skipIf(!swift)("a piece asked for by its number is the same piece the sequence sends", () => {
     const dir = mkdtempSync(join(tmpdir(), "conch-ios-video-"));
     try {
@@ -143,16 +123,26 @@ describe("resumable, as the Mac answers", () => {
     // The ids a message uploads under are kept with it, so a Retry resumes the same uploads.
     expect(session).toContain("let uploadId = ImageUpload.newUploadID()");
     expect(session).toContain("await bridge.upload(data: data, ext: ext, id: attachment.uploadId)");
-    for (const id of ["videoId", "recordingId"]) expect(video).toContain(`let ${id} = ImageUpload.newUploadID()`);
+    for (const id of ["videoId", "sheetId"]) expect(video).toContain(`let ${id} = ImageUpload.newUploadID()`);
     expect(bridge).not.toContain("func uploadImage(");
   });
 });
 
-describe("a Retry sends the contact sheet it made, not pieces of the last one", () => {
+describe("a Retry sends the same sheet and video, under the same ids", () => {
+  /** What the stand-ins need of the shared package: a moment, and a prompt that names the sheet it was given. */
+  const STORYBOARD = [
+    "enum CanvasStoryboard { struct Moment {} }",
+    "enum VideoStoryboard {",
+    "    static func prompt(_ frames: [CanvasStoryboard.Moment], length: Double, sheet: String, video: String) -> String { sheet }",
+    "}",
+  ];
+  const SHEET = Buffer.from([0xff, 0xd8, 0xff, ...Array<number>(21).fill(0xaa)]);
+
   /**
-   * `VideoMessage.send` twice, as the composer's Retry runs it, with a stand-in bridge. The first time the Mac has no
-   * words for it (whisper busy, the link down) and the video doesn't go; the second time it has words, so the sheet's
-   * frames, and its bytes, differ. What each attempt uploaded, by extension, id and bytes.
+   * `VideoMessage.send` twice, as the composer's Retry runs it, with a stand-in bridge: the first time the video doesn't
+   * go (the link dropped), the second time it does. What each attempt uploaded, by extension, id and bytes. The sheet
+   * was drawn once, when the video was attached (`VideoPrep.prepare`); until 2026-11-12 it was drawn again each attempt
+   * from the words that attempt had, under a new id.
    */
   function attempts(): Array<{ attempt: number; ext: string; id: string; bytes: Buffer }> {
     const dir = mkdtempSync(join(tmpdir(), "conch-ios-sheet-"));
@@ -161,14 +151,7 @@ describe("a Retry sends the contact sheet it made, not pieces of the last one", 
       const message = between(video, "enum VideoMessage {", "\n}\n") + "\n}\n";
       const newId = between(ios("ImageUpload.swift"), "    static func newUploadID() -> String {", "\n    }\n") + "\n    }\n";
       const out = runSwift([
-        "enum CanvasStoryboard { struct Said { let start: Double; let end: Double; let text: String }; struct Moment {} }",
-        "enum VideoStoryboard {",
-        "    static func prompt(_ frames: [CanvasStoryboard.Moment], said: [CanvasStoryboard.Said], length: Double, sheet: String, video: String) -> String { sheet }",
-        "    // Its frames are chosen by the words: with none, a frame every three seconds; with some, where they end.",
-        "    static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async -> (frames: [CanvasStoryboard.Moment], jpeg: Data)? {",
-        "        ([CanvasStoryboard.Moment()], Data([0xff, 0xd8, 0xff] + [UInt8](repeating: said.isEmpty ? 0xaa : 0xbb, count: 21)))",
-        "    }",
-        "}",
+        ...STORYBOARD,
         `enum ImageUpload {\n${newId}\n}`,
         prepared,
         "@MainActor final class BridgeClient {",
@@ -177,21 +160,18 @@ describe("a Retry sends the contact sheet it made, not pieces of the last one", 
         '        print(attempt, ext, id, data.base64EncodedString())',
         '        return ext == "mp4" && attempt == 1 ? nil : "/mac/\\(id).\\(ext)"',
         "    }",
-        "    func transcript(of path: String) async -> [CanvasStoryboard.Said]? {",
-        '        attempt == 1 ? nil : [CanvasStoryboard.Said(start: 0, end: 1, text: "look here")]',
-        "    }",
         "}",
         message,
-        'let movie = URL(fileURLWithPath: "clip.mp4"), sound = URL(fileURLWithPath: "clip.wav")',
-        'try! Data("ftyp".utf8).write(to: movie); try! Data("RIFF".utf8).write(to: sound)',
-        "let prepared = PreparedVideo(video: movie, recording: sound, length: 3, poster: nil)",
+        'let movie = URL(fileURLWithPath: "clip.mp4")',
+        'try! Data("ftyp".utf8).write(to: movie)',
+        `let prepared = PreparedVideo(video: movie, length: 3, poster: nil, frames: [CanvasStoryboard.Moment()], sheet: Data(base64Encoded: "${SHEET.toString("base64")}")!)`,
         "let bridge = BridgeClient()",
         "bridge.attempt = 1",
         'print("sent", await VideoMessage.send(prepared, bridge: bridge) ?? "nil")',
         "bridge.attempt = 2",
         'print("sent", await VideoMessage.send(prepared, bridge: bridge) ?? "nil")',
       ], dir);
-      expect(out.filter((line) => line.startsWith("sent "))).toEqual(["sent nil", expect.stringMatching(/^sent \/mac\/\w+\.jpg$/)]);
+      expect(out.filter((line) => line.startsWith("sent "))).toEqual(["sent nil", expect.stringMatching(/^sent \/mac\/[\w-]+\.jpg$/)]);
       return out.filter((line) => !line.startsWith("sent ")).map((line) => {
         const [attempt, ext, id, bytes] = line.split(" ");
         return { attempt: Number(attempt), ext: ext!, id: id!, bytes: Buffer.from(bytes!, "base64") };
@@ -213,36 +193,27 @@ describe("a Retry sends the contact sheet it made, not pieces of the last one", 
     }
   }
 
-  test.skipIf(!swift)("the second sheet arriving after half of the first is the second sheet, whole", async () => {
+  test.skipIf(!swift)("each attempt sends the sheet drawn when it was attached, and the video, each under its own id", () => {
     const sent = attempts();
-    const [first, second] = [1, 2].map((attempt) => sent.find((one) => one.attempt === attempt && one.ext === "jpg")!);
-    expect(first!.bytes.equals(second!.bytes)).toBe(false);
+    for (const ext of ["jpg", "mp4"]) {
+      const each = sent.filter((one) => one.ext === ext);
+      expect(each.map((one) => one.attempt)).toEqual([1, 2]);
+      expect(each[0]!.id).toBe(each[1]!.id);
+      expect(each[0]!.bytes.equals(each[1]!.bytes)).toBe(true);
+    }
+    expect(sent.find((one) => one.ext === "jpg")!.bytes.equals(SHEET)).toBe(true);
+    // Nothing else goes: no recording of its sound.
+    expect(new Set(sent.map((one) => one.ext))).toEqual(new Set(["jpg", "mp4"]));
+  }, 60_000);
+
+  test.skipIf(!swift)("a sheet half sent when the link dropped is finished by the Retry, not begun again", async () => {
+    const [first, second] = attempts().filter((one) => one.ext === "jpg");
     const dir = mkdtempSync(join(tmpdir(), "conch-ios-sheet-mac-"));
     try {
       const uploads = new PhoneUploads(dir);
       expect(await toMac(uploads, first!.id, first!.bytes, 2)).toBeUndefined();
       const landed = await toMac(uploads, second!.id, second!.bytes);
-      expect(readFileSync(landed!).equals(second!.bytes)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 60_000);
-
-  test.skipIf(!swift)("the second sheet after the first one landed is the second sheet, not the first handed back", async () => {
-    const sent = attempts();
-    const [first, second] = [1, 2].map((attempt) => sent.find((one) => one.attempt === attempt && one.ext === "jpg")!);
-    const dir = mkdtempSync(join(tmpdir(), "conch-ios-sheet-mac-"));
-    try {
-      const uploads = new PhoneUploads(dir);
-      await toMac(uploads, first!.id, first!.bytes);
-      const landed = await toMac(uploads, second!.id, second!.bytes);
-      expect(readFileSync(landed!).equals(second!.bytes)).toBe(true);
-      // What doesn't change between attempts keeps its id, so the Mac isn't sent it twice.
-      for (const ext of ["wav", "mp4"]) {
-        const ids = sent.filter((one) => one.ext === ext).map((one) => one.id);
-        expect(ids.length).toBe(2);
-        expect(ids[0]).toBe(ids[1]!);
-      }
+      expect(readFileSync(landed!).equals(SHEET)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -250,22 +221,22 @@ describe("a Retry sends the contact sheet it made, not pieces of the last one", 
 });
 
 describe("a video's files go with it", () => {
-  // The transcode (up to 46 MB) and its sound, in the phone's temp folder, were never deleted: not once sent, not when
-  // removed from the composer, not when the composer was already full.
-  test.skipIf(!swift)("discarding a prepared video deletes its transcode and its sound", () => {
+  // The transcode (up to 46 MB), in the phone's temp folder, was never deleted: not once sent, not when removed from the
+  // composer, not when the composer was already full.
+  test.skipIf(!swift)("discarding a prepared video deletes its transcode", () => {
     const dir = mkdtempSync(join(tmpdir(), "conch-ios-discard-"));
     try {
       const prepared = between(video, "struct PreparedVideo {", "\n}\n").replace("let poster: UIImage?", "let poster: Data?") + "\n}\n";
       const out = runSwift([
+        "enum CanvasStoryboard { struct Moment {} }",
         "enum ImageUpload { static func newUploadID() -> String { UUID().uuidString } }",
         prepared,
-        'let movie = URL(fileURLWithPath: "clip.mp4"), sound = URL(fileURLWithPath: "clip.wav"), other = URL(fileURLWithPath: "other.mp4")',
-        'for file in [movie, sound, other] { try! Data("x".utf8).write(to: file) }',
-        "PreparedVideo(video: movie, recording: sound, length: 3, poster: nil).discard()",
-        "PreparedVideo(video: other, recording: nil, length: 3, poster: nil).discard()",
-        "print([movie, sound, other].map { FileManager.default.fileExists(atPath: $0.path) })",
+        'let movie = URL(fileURLWithPath: "clip.mp4"), other = URL(fileURLWithPath: "other.mp4")',
+        'for file in [movie, other] { try! Data("x".utf8).write(to: file) }',
+        "PreparedVideo(video: movie, length: 3, poster: nil, frames: [], sheet: Data()).discard()",
+        "print([movie, other].map { FileManager.default.fileExists(atPath: $0.path) })",
       ], dir);
-      expect(out).toEqual(["[false, false, false]"]);
+      expect(out).toEqual(["[false, true]"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -307,40 +278,41 @@ describe("made ready on the phone", () => {
     expect(transcode).toContain("picture.transform = transform");
   });
 
-  test("its sound as whisper takes it, and its frames chosen by the Show's own rule, by the code the Mac runs too", () => {
-    // The phone writes the shared code's WAV to its temp folder; nothing of its own decides the shape.
-    const recording = between(video, "    static func recording(of source: URL) async throws -> URL? {", "\n    }\n");
-    expect(recording).toContain("guard let wav = try await VideoStoryboard.speech(of: source) else { return nil }");
-    const speech = between(frames, "    public static func speech(of source: URL) async throws -> Data? {", "\n    }\n");
-    for (const setting of ["AVSampleRateKey: 16_000,", "AVNumberOfChannelsKey: 1,", "AVLinearPCMBitDepthKey: 16,", "AVLinearPCMIsFloatKey: false,"]) {
-      expect(speech).toContain(setting);
-    }
-    expect(speech).toContain("CMTime(seconds: longest, preferredTimescale: 600)");
-    const sheet = between(frames, "    public static func sheet(of video: URL, said: [CanvasStoryboard.Said], length: Double) async", "\n    }\n");
-    expect(sheet).toContain("let looks = moments(said: said, length: length)");
+  test("its frames chosen by the Show's own rule, without words, by the code the Mac runs too, as it is attached", () => {
+    const prepare = between(video, "    static func prepare(_ source: URL) async throws -> PreparedVideo {", "\n    }\n");
+    expect(prepare).toContain("guard let sheet = await VideoStoryboard.sheet(of: video, length: length) else {");
+    expect(prepare).toContain("throw VideoPrepError.noFrames");
+    const sheet = between(frames, "    public static func sheet(of video: URL, length: Double) async", "\n    }\n");
+    expect(sheet).toContain("let looks = moments(length: length)");
     expect(sheet).toContain("let kept = CanvasStoryboard.keep(looks, prints: prints)");
     expect(sheet).toContain("guard let sheet = contactSheet(pulled), let jpeg = jpeg(sheet) else { return nil }");
     // Nothing of it is left behind in the app to drift from the Mac's.
-    for (const gone of ["static func wavHeader(", "static func sheet(", "static func generator(", "CGImageDestinationCreateWithData"]) {
+    for (const gone of ["static func sheet(", "static func generator(", "CGImageDestinationCreateWithData"]) {
       expect(video).not.toContain(gone);
     }
   });
 
-  test("sent in order: the words first, which choose the frames; then the sheet; then the video; one message", () => {
+  // Tyler, 2026-11-12: "maybe we remove that functionality? its not v useful and it feels concerning". The video keeps
+  // its sound, for people; nothing reads it off for the Mac's whisper.
+  test("never its sound: no recording written, uploaded or transcribed, on the phone or in the shared code", () => {
+    for (const gone of ["VideoStoryboard.speech", 'appendingPathExtension("wav")', 'ext: "wav"', "recordingId", "bridge.transcript("]) {
+      expect(video).not.toContain(gone);
+    }
+    for (const gone of ["func speech(", "func wavHeader(", "withMediaType: .audio", "AVAssetReaderTrackOutput"]) expect(frames).not.toContain(gone);
+    expect(bridge).not.toContain("func transcript(of path: String)");
+    expect(bridge).not.toContain('"/transcript"');
+    expect(ios("DirectHTTPTransport.swift")).not.toContain("/transcript");
+  });
+
+  test("sent in order: the sheet, then the video; one message", () => {
     const send = between(video, "    static func send(_ video: PreparedVideo, bridge: BridgeClient) async -> String? {", "\n    }\n");
     const order = [
-      'await bridge.upload(data: data, ext: "wav", id: video.recordingId)',
-      "said = await bridge.transcript(of: path) ?? []",
-      "await VideoStoryboard.sheet(of: video.video, said: said, length: video.length)",
-      'await bridge.upload(data: sheet.jpeg, ext: "jpg", id: ImageUpload.newUploadID())',
+      'await bridge.upload(data: video.sheet, ext: "jpg", id: video.sheetId)',
       'await bridge.upload(data: data, ext: "mp4", id: video.videoId)',
-      "return VideoStoryboard.prompt(sheet.frames, said: said, length: video.length, sheet: sheetPath, video: videoPath)",
+      "return VideoStoryboard.prompt(video.frames, length: video.length, sheet: sheetPath, video: videoPath)",
     ].map((step) => send.indexOf(step));
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    const words = between(bridge, "    func transcript(of path: String) async -> [CanvasStoryboard.Said]? {", "\n    }\n");
-    expect(words).toContain('authorizedRequest(method: "GET", path: Self.route("/transcript", ["path": path]))');
-    expect(ios("DirectHTTPTransport.swift")).toContain('request.path.hasPrefix("/transcript?") ? 150');
   });
 
   test("the composer takes videos, one at a time, prepared as they are attached", () => {

@@ -6,7 +6,6 @@ import XCTest
 final class VideoAttachmentTests: XCTestCase {
     private let brief = VideoAttachment.Brief(
         frames: [CanvasStoryboard.Moment(at: 0.1, kind: .look), CanvasStoryboard.Moment(at: 3.95, kind: .end)],
-        said: [CanvasStoryboard.Said(start: 0.5, end: 1.5, text: "watch this")],
         length: 4,
         sheet: "/c/uploads/mac-1.jpg"
     )
