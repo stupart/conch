@@ -91,9 +91,11 @@ export function whisperThreads(hw: TranscriptionHardware = transcriptionHardware
  * always on Intel, whose GPUs whisper.cpp's Metal backend does not target, and
  * after a Metal run has failed (seashell 3ad4765).
  */
-export function whisperComputeArgs(options: { cpu?: boolean; hardware?: TranscriptionHardware } = {}): string[] {
+export function whisperComputeArgs(options: { cpu?: boolean; hardware?: TranscriptionHardware; threads?: number } = {}): string[] {
   const hw = options.hardware ?? transcriptionHardware();
-  return ["-t", String(whisperThreads(hw)), ...(options.cpu || !hw.appleSilicon ? ["-ng"] : [])];
+  // Fewer, never more: a caller asks for fewer while seashell records (seashell-activity.ts).
+  const threads = Math.max(1, Math.min(whisperThreads(hw), options.threads ?? Number.POSITIVE_INFINITY));
+  return ["-t", String(threads), ...(options.cpu || !hw.appleSilicon ? ["-ng"] : [])];
 }
 
 /**

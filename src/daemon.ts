@@ -91,7 +91,7 @@ import { hostname, tmpdir, totalmem } from "node:os";
 import { deviceExecutionCatalog } from "./execution-model.ts";
 import { installAccountUsage, uninstallAccountUsage, clearAccountUsage, readAccountUsage, repairAccountUsage } from "./claude-account-usage.ts";
 import { loadDeviceId } from "./device-identity.ts";
-import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
+import { clearIdentity, startedByFromEnv, writeIdentity } from "./daemon-identity.ts";
 import {
   AudioHolder,
   AudioOutbox,
@@ -119,6 +119,8 @@ import { SpeechManager } from "./speech-manager.ts";
 import { ServerSupervisor } from "./server-supervisor.ts";
 import { reapOrphanedWhisper, recordSpawnedWhisper } from "./whisper-orphan.ts";
 import { reapOrphanedSox } from "./sox-orphan.ts";
+import { microphoneAttribution, microphoneRecorders } from "./microphone-helper.ts";
+import { seashellActivity } from "./seashell-activity.ts";
 import { PauseOriginLedger } from "./pause-origin.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import { ManagedTtsWorker, TTS_WORKER_HEALTH_CHECK_MS } from "./tts-worker.ts";
@@ -4395,6 +4397,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     ttsSupervisor?.close();
     voiceEnv?.close(); // kills a setup step in flight; the next start resumes it
     speechEngine.close(); // a model download in flight keeps its `.part`; the next start resumes it
+    microphoneRecorders.close(); // a permission question still on screen goes with the daemon
     ttsWorker.close();
     // Preserve the synchronous audio cancellation above, then drain accepted journal writes before exit.
     await records.close();
@@ -4540,6 +4543,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   writeIdentity(undefined, { socketPath: cfg.socketPath });
   // Only the socket's owner fetches models: a daemon that lost the race exited above.
   void speechEngine.start();
+  // conch Microphone (microphone-helper.ts): under the app's (or the terminal's) Microphone permission, as sox was; under
+  // launchd, from its installed copy under its own, asked for now. Only the socket's owner does, so two never both ask.
+  microphoneRecorders.setLog(log);
+  // While seashell records a meeting, conch's whisper work stays small and behind it (seashell-activity.ts).
+  seashellActivity.setLog(log);
+  void microphoneRecorders.start(cfg.microphoneHelper || null, microphoneAttribution(startedByFromEnv()))
+    .catch((error) => log(`conch Microphone check failed: ${error}`));
   recordsMayStart = true;
   if (!shuttingDown) void records.setEnabled(cfg.recordsEnabled);
   syncPhoneBridge();

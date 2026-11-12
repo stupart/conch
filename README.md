@@ -244,7 +244,8 @@ install the new one, check it works, then `/plugin uninstall conch@blueprint-stu
 ## Credits
 
 Built on [seashell](https://github.com/stupart/seashell)'s local-first speech-to-text engine. conch.app carries
-whisper.cpp, sox, tmux, uv and the silero VAD model, with their licences.
+seashell's microphone recorder (as conch Microphone), whisper.cpp, sox, tmux, uv and the silero VAD model, with their
+licences.
 
 conch is a small open experiment from [Blueprint Studio](https://blueprintstudio.ai). We build AI products that feel
 good to use.

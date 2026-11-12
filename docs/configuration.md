@@ -28,6 +28,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `listen-window` | `CONCH_LISTEN_WINDOW_SECS` | `30` | Seconds the mic waits for you to start talking |
 | `hold-submit-delay` | `CONCH_HOLD_SUBMIT_SECS` | `8` | Silence before held dictation is sent |
 | `mic-gain` | `CONCH_MIC_GAIN_DB` | `0` | Software gain on conch's capture, -20 to 30 dB, without changing the macOS input volume |
+| `recorder` | `CONCH_RECORDER` | `native` | What records the microphone: `native` is conch Microphone, seashell's recorder built into conch.app, which records at the device's own rate and changes nothing on it; `sox` is the old recorder. conch uses sox by itself until macOS has allowed conch Microphone |
 | `barge-threshold` | `CONCH_BARGE_THRESHOLD_PCT` | `0` | Mic level that interrupts reading; `0` turns barge-in off |
 | `vocabulary` | `CONCH_VOCABULARY` | empty | Names and terms dictation should spell as written, comma-separated — `conch set vocabulary "Seashell, Atlas, Lagoon"`. conch always adds Claude Code, Codex and conch, and the folder names of the projects your open sessions work in |
 | `whisper-idle-unload` | `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | Minutes without a transcription before the warm whisper-server (about 628 MB) is unloaded; it reloads when a mic is about to open. `0` keeps it loaded |
@@ -113,8 +114,16 @@ yourself (`conch daemon`) or the launchd service.
 | `CONCH_NO_MOUSE` | unset | `1` keeps the terminal dashboard from capturing the mouse |
 | `CONCH_TMUX` | the app's | The tmux conch hosts sessions in |
 
-**Speech engine paths.** conch.app carries whisper.cpp (`whisper-cli`, `whisper-server`), sox and the silero VAD model;
+**Speech engine paths.** conch.app carries whisper.cpp (`whisper-cli`, `whisper-server`), conch Microphone (seashell's
+native recorder, installed once into `~/Library/Application Support/conch/Runtime` so macOS keeps its Microphone
+permission across app updates), sox and the silero VAD model;
 the whisper model is downloaded on first run into `~/.cache/conch/models`. An existing [seashell](https://github.com/stupart/seashell)
 install (its checkout at `~/whisper-cli`, or its Homebrew formula) is found and its model reused. To point at something
-else, set `CONCH_WHISPER_CLI`, `CONCH_WHISPER_SERVER`, `CONCH_WHISPER_MODEL`, `CONCH_VAD_MODEL`, `CONCH_SOX` or
+else, set `CONCH_WHISPER_CLI`, `CONCH_WHISPER_SERVER`, `CONCH_WHISPER_MODEL`, `CONCH_VAD_MODEL`, `CONCH_MICROPHONE`, `CONCH_SOX` or
 `CONCH_SEASHELL_ROOT`; they win over the app's own copies (`src/speech-engine.ts`).
+
+**While seashell records a meeting** (its `.background-watch.json` says `recording`), conch keeps its own transcription
+small and behind seashell's: no live previews while you dictate (the final text still arrives when you stop), and a
+cold `whisper-cli` run gets half the threads at a lower CPU priority. conch does not send its audio to seashell's
+whisper-server or read seashell's microphone stream: neither is published for another app to use
+(`src/seashell-activity.ts`).

@@ -11,6 +11,7 @@ import { recordTelemetry, round } from "./telemetry.ts";
 import { transcriptionPrompt } from "./vocabulary.ts";
 import { transcriptionHardware, whisperComputeArgs, whisperVadArgs } from "./whisper-args.ts";
 import type { TranscriptionEngine } from "./diagnostics.ts";
+import { seashellActivity, type TranscriptionPolicy } from "./seashell-activity.ts";
 
 /**
  * Two transcription paths:
@@ -56,6 +57,8 @@ export interface TranscribePcmOptions {
    * (`transcribePcm`). The final transcription hears every piece afresh.
    */
   pieceCache?: Map<string, string>;
+  /** How small and how far behind a cold run is (seashell-activity.ts); read live when absent. */
+  policy?: TranscriptionPolicy;
 }
 
 const HALLUCINATION_BLOCKLIST = new Set([
@@ -621,14 +624,18 @@ async function runWhisperCliOnce(
   timestamps: boolean,
   cpu: boolean,
 ): Promise<{ raw: string; code: number } | { error: string }> {
+  // While seashell records a meeting, a cold run takes half the threads and
+  // waits behind the meeting for the CPU (seashell-activity.ts).
+  const policy = options.policy ?? seashellActivity.policy();
   const command =
     [
+      ...(policy.coldNice > 0 ? ["/usr/bin/nice", "-n", String(policy.coldNice)] : []),
       cfg.whisperCli,
       "-m", cfg.whisperModel,
       ...whisperVadArgs(cfg.vadModel),
       "-f", wavPath,
       "-l", "en",
-      ...whisperComputeArgs({ cpu }),
+      ...whisperComputeArgs({ cpu, threads: policy.coldThreads }),
       ...(timestamps ? [] : ["-nt"]),
       "-np",
       ...contextArgs(cfg),

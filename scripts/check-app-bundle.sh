@@ -1,7 +1,7 @@
 #!/bin/bash
 # Verify that a built conch.app carries everything it needs to run with nothing
-# else installed: its daemon, seashell's speech engine and the tmux its sessions
-# run in, each signed like the app, with the entitlements each needs, for the
+# else installed: its daemon, seashell's speech engine, conch Microphone (seashell's
+# recorder) and the tmux its sessions run in, each signed like the app, with the entitlements each needs, for the
 # app's own architectures.
 #
 #   scripts/check-app-bundle.sh <conch.app> <bundled|checkout>
@@ -27,7 +27,7 @@ source_declared="$(/usr/libexec/PlistBuddy -c 'Print :ConchDaemonSource' "$APP/C
   || fail "$APP declares ConchDaemonSource '$source_declared', expected '$EXPECT_SOURCE'"
 
 app_archs="$(lipo -archs "$APP/Contents/MacOS/conch-mac" | tr ' ' '\n' | sort | xargs)"
-for helper in conch-daemon whisper-cli whisper-server sox tmux; do
+for helper in conch-daemon whisper-cli whisper-server sox conch-microphone tmux; do
   path="$HELPERS/$helper"
   [[ -x "$path" ]] || fail "$path is missing — its Embed build phase did not run"
   codesign --verify --strict "$path" || fail "$path is not validly signed"
@@ -43,6 +43,13 @@ entitlements "$HELPERS/conch-daemon" | grep -q 'com.apple.security.cs.allow-jit'
   || fail "$HELPERS/conch-daemon lacks com.apple.security.cs.allow-jit (JavaScriptCore and bun:ffi need it)"
 entitlements "$HELPERS/sox" | grep -q 'com.apple.security.device.audio-input' \
   || fail "$HELPERS/sox lacks com.apple.security.device.audio-input (it would record silence)"
+entitlements "$HELPERS/conch-microphone" | grep -q 'com.apple.security.device.audio-input' \
+  || fail "$HELPERS/conch-microphone lacks com.apple.security.device.audio-input (it would record silence)"
+# macOS keeps conch Microphone's permission by this identifier and the name in its Info.plist.
+codesign -dv "$HELPERS/conch-microphone" 2>&1 | grep -qx 'Identifier=ai.blueprintstudio.conch.microphone' \
+  || fail "$HELPERS/conch-microphone is not signed as ai.blueprintstudio.conch.microphone"
+otool -s __TEXT __info_plist -v "$HELPERS/conch-microphone" | grep -q '<key>ConchHelperProtocol</key>' \
+  || fail "$HELPERS/conch-microphone has no embedded Info.plist with ConchHelperProtocol"
 
 vad="$RESOURCES/models/ggml-silero-v6.2.0.bin"
 [[ -f "$vad" ]] || fail "$vad is missing"
@@ -50,7 +57,7 @@ echo "$VAD_SHA256  $vad" | shasum -a 256 -c - >/dev/null || fail "$vad is not th
 for notice in ThirdParty/whisper.cpp/LICENSE ThirdParty/sox/LICENSE.GPL ThirdParty/sox/sox-14.4.2.tar.gz \
   ThirdParty/silero-vad/LICENSE ThirdParty/bun/LICENSE.md ThirdParty/tmux/NOTICE ThirdParty/tmux/COPYING \
   ThirdParty/tmux/LICENSE.compat ThirdParty/tmux/LICENSE.libevent ThirdParty/tmux/COPYING.jemalloc \
-  ThirdParty/tmux/LICENSE.utf8proc.md; do
+  ThirdParty/tmux/LICENSE.utf8proc.md ThirdParty/seashell/LICENSE ThirdParty/seashell/NOTICE; do
   [[ -f "$RESOURCES/$notice" ]] || fail "$RESOURCES/$notice is missing"
 done
 
@@ -60,10 +67,12 @@ if tr ' ' '\n' <<<"$app_archs" | grep -qx "$(uname -m)"; then
   [[ "$reported" == "conch $version" ]] || fail "the bundled daemon reports '$reported', expected 'conch $version'"
   "$HELPERS/whisper-cli" --help >/dev/null 2>&1 || fail "$HELPERS/whisper-cli does not run"
   "$HELPERS/sox" -h 2>/dev/null | grep -q 'AUDIO DEVICE DRIVERS: coreaudio' || fail "$HELPERS/sox has no CoreAudio driver"
+  # The recorder's own conversion over 336 synthetic input shapes; it opens no microphone.
+  "$HELPERS/conch-microphone" --mix-check --no-disclaim >/dev/null || fail "$HELPERS/conch-microphone failed its --mix-check"
   [[ "$(env -i PATH=/usr/bin:/bin "$HELPERS/tmux" -V)" == "tmux $TMUX_VERSION" ]] || fail "$HELPERS/tmux does not report tmux $TMUX_VERSION"
 fi
 # Only the system is linked dynamically: a Mac without Homebrew has nothing else.
 outside="$(otool -L "$HELPERS/tmux" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/Library/Frameworks/|/usr/lib/)' || true)"
 [[ -z "$outside" ]] || fail "$HELPERS/tmux links a library outside the system: $outside"
 
-echo "✓ $APP carries its daemon (conch $version), speech engine and tmux $TMUX_VERSION ($app_archs), signed; daemon source: $EXPECT_SOURCE"
+echo "✓ $APP carries its daemon (conch $version), speech engine, conch Microphone and tmux $TMUX_VERSION ($app_archs), signed; daemon source: $EXPECT_SOURCE"

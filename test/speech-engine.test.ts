@@ -304,6 +304,7 @@ function engineAt(root: string, overrides: Partial<SpeechEngine> = {}): SpeechEn
     whisperServer: found("/app/whisper-server"),
     whisperModel: { path: join(root, "models", "whisper.bin"), source: "missing", found: false },
     vadModel: found("/app/vad.bin"),
+    microphone: found("/app/conch-microphone"),
     sox: found("/app/sox"),
     ...overrides,
   };
@@ -371,11 +372,12 @@ describe("the daemon fetches what the app cannot carry, and says where it stands
     const last = h.statuses.at(-1)!;
     expect(last.state).toBe("ready");
     expect(last.parts.model.source).toBe("conch");
-    expect(last.parts.capture).toEqual({ source: "conch.app", path: "/app/sox" });
+    // conch Microphone records when the app carries it; sox is its fallback (microphone-helper.ts).
+    expect(last.parts.capture).toEqual({ source: "conch.app", path: "/app/conch-microphone" });
     // Which tmux conch's own sessions run in, and from where — published beside the engine.
     expect(last.parts.tmux).toEqual({ found: true, path: "/app/Contents/Helpers/tmux", source: "conch.app" });
     expect(last.daemon).toEqual({ version: "9.9.9", path: "/app/conch-daemon" });
-    expect(describeSpeechEngine(last)).toStartWith("Speech engine: ready — whisper from the app, model from conch's download, capture from the app");
+    expect(describeSpeechEngine(last)).toStartWith("Speech engine: ready — whisper from the app, model from conch's download, capture from the app's conch Microphone");
     // Written with our pid, for `conch doctor`.
     expect(JSON.parse(readFileSync(join(root, "speech-engine.json"), "utf8")).pid).toBe(process.pid);
   });
@@ -490,17 +492,25 @@ describe("the daemon fetches what the app cannot carry, and says where it stands
     expect(await h.manager.modelReady()).toBeFalse();
   });
 
-  test("no whisper at all, or no sox, is off — and says what carries them", async () => {
+  test("no whisper at all, or nothing to record with, is off — and says what carries them", async () => {
     const root = scratch();
     const missing = { path: "/nowhere", source: "missing" as const, found: false };
     const noWhisper = harness(root, { engine: engineAt(root, { whisperCli: missing, whisperServer: missing }) });
     await noWhisper.manager.start();
     expect(noWhisper.statuses.at(-1)).toMatchObject({ state: "off", reason: "no whisper" });
     expect(await noWhisper.manager.modelReady()).toBeFalse();
-    const noSox = harness(scratch(), { engine: engineAt(root, { sox: { path: "sox", source: "missing", found: false }, whisperModel: { path: "/m", source: "seashell", found: true } }) });
+    // sox alone missing is not "off": conch Microphone records.
+    const onlyNative = harness(scratch(), { engine: engineAt(root, { sox: { path: "sox", source: "missing", found: false }, whisperModel: { path: "/m", source: "seashell", found: true } }) });
+    await onlyNative.manager.start();
+    expect(onlyNative.statuses.at(-1)).toMatchObject({ state: "ready" });
+    const noSox = harness(scratch(), { engine: engineAt(root, {
+      sox: { path: "sox", source: "missing", found: false },
+      microphone: { path: "", source: "missing", found: false },
+      whisperModel: { path: "/m", source: "seashell", found: true },
+    }) });
     await noSox.manager.start();
     expect(noSox.statuses.at(-1)).toMatchObject({ state: "off", reason: "no sox" });
-    expect(noSox.statuses.at(-1)!.detail).toContain("the conch app carries one");
+    expect(noSox.statuses.at(-1)!.detail).toContain("the conch app carries conch Microphone and sox");
     // whisper-server can still load: transcription does not need the mic.
     expect(await noSox.manager.modelReady()).toBeTrue();
   });

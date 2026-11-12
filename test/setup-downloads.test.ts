@@ -47,6 +47,7 @@ function engine(root: string): SpeechEngine {
     whisperServer: found("/app/whisper-server"),
     whisperModel: { path: join(root, "models", "whisper.bin"), source: "missing", found: false },
     vadModel: found("/app/vad.bin"),
+    microphone: found("/app/conch-microphone"),
     sox: found("/app/sox"),
   };
 }
