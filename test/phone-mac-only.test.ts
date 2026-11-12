@@ -13,6 +13,7 @@ import {
 import { decodePracticeRequest, PRACTICE_REQUEST_KINDS } from "../src/practice.ts";
 import { decodeSetupRequest, SETUP_REQUEST_KINDS } from "../src/setup.ts";
 import { decodeVideoTranscriptRequest, VIDEO_TRANSCRIPT_KIND } from "../src/video-transcript.ts";
+import { decodeNoticeRequest, NOTICE_REQUEST_KINDS } from "../src/notice-wire.ts";
 
 // D1 (review 2026-09-28): the phone's /control forwarded setup's and the practice's requests to the daemon, so a paired
 // phone could run an agent's installer (`curl … | bash`) on the Mac, rewrite `~/.claude/settings.json`, or stop a
@@ -70,8 +71,13 @@ function macOnlyBodies(): Array<{ kind: string; body: Record<string, unknown> }>
     "login-inventory": { action: "refresh" },
     // "Update now": a phone can't run an upgrade on the Mac (agent-updates.ts).
     "agent-updates": { action: "update-now", backend: "claude" },
+    // Notices (notify-user.ts): an APNs key goes from the Mac app to the Keychain, never through a phone or the relay; a
+    // phone sends itself no notices, and only the Mac app says it showed one.
+    "push-setup": { action: "set", keyId: "ABCDE12345", teamId: "FGHIJ67890", key: "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg" },
+    "notify-user": { title: "Deploy", body: "It's live.", from: "s1" },
+    "notice-answer": { id: "0f3c1a2b-4d5e-4f60-8a7b-9c0d1e2f3a4b", outcome: "shown" },
   };
-  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS];
+  const kinds = [...SETUP_REQUEST_KINDS, ...PRACTICE_REQUEST_KINDS, ...narrationKinds(), VIDEO_TRANSCRIPT_KIND, ...MAC_APP_ONLY_KINDS, ...NOTICE_REQUEST_KINDS];
   return kinds.flatMap((kind) => [
     { kind, body: { kind, ...(shaped[kind] ?? {}) } },
     { kind, body: { kind, agent: "gemini", seconds: -1, voice: "", what: "everything", canvasId: "nope" } },
@@ -101,6 +107,8 @@ describe("every request the control server takes before a session is one side's 
     expect(MAC_APP_ONLY_DECODERS.decodePracticeRequest).toBe(decodePracticeRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeNarrationRequest).toBe(decodeNarrationRequest);
     expect(MAC_APP_ONLY_DECODERS.decodeVideoTranscriptRequest).toBe(decodeVideoTranscriptRequest);
+    expect(MAC_APP_ONLY_DECODERS.decodeNoticeRequest).toBe(decodeNoticeRequest);
+    for (const kind of NOTICE_REQUEST_KINDS) expect(decodeNoticeRequest({ kind }), kind).not.toBeNull();
     expect(decodeVideoTranscriptRequest({ kind: VIDEO_TRANSCRIPT_KIND })).not.toBeNull();
     // Each kind derived from a decoder is one that decoder takes.
     for (const kind of SETUP_REQUEST_KINDS) expect(decodeSetupRequest({ kind }), kind).not.toBeNull();
@@ -215,6 +223,7 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
         } as never,
         onScreenObservation: () => { reached.push("screen-observation"); },
         onReviewPreview: async () => { reached.push("review-preview"); return { ok: true }; },
+        notices: async (request) => { reached.push(request.kind); return { kind: "push-status", devices: [] }; },
       });
       servers.push(server);
       expect(await server.start()).toBe(true);
@@ -226,6 +235,10 @@ describe("the phone's /control refuses them all, and forwards nothing", () => {
       // The same socket, asked directly as the Mac app asks it: setup answers. The refusal is the phone bridge's.
       await forwardToDaemonSocket(socketPath, JSON.stringify({ kind: "setup-status" }));
       expect(reached).toEqual(["setup-status"]);
+      // And the Mac app's push setup, the same way.
+      expect(JSON.parse(await forwardToDaemonSocket(socketPath, JSON.stringify({ kind: "push-setup", action: "status" }))))
+        .toEqual({ kind: "push-status", devices: [] });
+      expect(reached).toEqual(["setup-status", "push-setup"]);
     });
   });
 });

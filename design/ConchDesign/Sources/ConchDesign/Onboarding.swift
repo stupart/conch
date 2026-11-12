@@ -53,8 +53,9 @@ public enum PhoneSetupStage: String, CaseIterable, Codable, Sendable, Comparable
     case tour
     case finished
 
-    /// The rows the Mac shows while the phone sets itself up. No notifications row: the iPhone app sends none yet, so its
-    /// setup doesn't ask for them (decision 11); `notifications` stays in the enum for when it does.
+    /// The rows the Mac shows while the phone sets itself up. No notifications row: setup doesn't ask for them, since a
+    /// phone gets notices only once its Mac has a push key (decision 11); the ledger offers them then (`PushOffer`).
+    /// `notifications` stays in the enum for when setup does.
     public static let mirrored: [PhoneSetupStage] = [.paired, .microphone, .tour]
 
     public var title: String {

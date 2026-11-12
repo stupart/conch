@@ -60,6 +60,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// Pages the daemon is waiting on this app to draw for an agent's `conch_capture` (`PageCaptureRequests`). Only ever
     /// on this Mac's own sessions file, never sent to a phone or another Mac; absent whenever none is waiting.
     let captureRequests: [CaptureRequest]
+    /// Notices for this Mac to post (daemon notify-user.ts, `NoticeDelivery`): a session or conch telling Tyler something.
+    /// Only ever on this Mac's own sessions file; the phone gets its own from Apple. Absent whenever none is waiting.
+    let notices: [ConchNotice]
     /// The Workbench, conch's in-app browser (src/browser-workbench.ts; `WorkbenchStore`): its profiles and tabs, nil from
     /// a daemon without one (which says nothing about tabs, so nothing is closed), and the commands agents are waiting
     /// on. Only ever on this Mac's own sessions file.
@@ -269,6 +272,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case showing
         case previewRequests
         case captureRequests
+        case notices
         case browserProfiles
         case browserTabs
         case browserRequests
@@ -302,6 +306,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing: Showing? = nil,
         previewRequests: [PreviewRequest] = [],
         captureRequests: [CaptureRequest] = [],
+        notices: [ConchNotice] = [],
         browserProfiles: [BrowserProfile]? = nil,
         browserTabs: [BrowserTab]? = nil,
         browserRequests: [BrowserRequest] = [],
@@ -334,6 +339,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.showing = showing
         self.previewRequests = previewRequests
         self.captureRequests = captureRequests
+        self.notices = notices
         self.browserProfiles = browserProfiles
         self.browserTabs = browserTabs
         self.browserRequests = browserRequests
@@ -387,6 +393,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         showing = try? container.decodeIfPresent(Showing.self, forKey: .showing)
         previewRequests = Self.decodeLossyArray(PreviewRequest.self, from: container, forKey: .previewRequests)
         captureRequests = Self.decodeLossyArray(CaptureRequest.self, from: container, forKey: .captureRequests)
+        notices = Self.decodeLossyArray(ConchNotice.self, from: container, forKey: .notices)
         browserProfiles = container.contains(.browserProfiles) ? Self.decodeLossyArray(BrowserProfile.self, from: container, forKey: .browserProfiles) : nil
         browserTabs = container.contains(.browserTabs) ? Self.decodeLossyArray(BrowserTab.self, from: container, forKey: .browserTabs) : nil
         browserRequests = Self.decodeLossyArray(BrowserRequest.self, from: container, forKey: .browserRequests)

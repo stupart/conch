@@ -21,6 +21,8 @@ final class ReviewNotifications {
     func authorization(_ done: @escaping (ConchPermissionStatus) -> Void) { done(.notAsked) }
     func register(window: NSWindow) {}
     func postOnce(for item: ReviewItem) {}
+    /// A notice (NoticeDelivery.swift): never posted here, and never answered.
+    func post(notices: [ConchNotice], answer: @escaping (String, String, String?) -> Void) {}
 }
 
 enum DebugSnapshot {

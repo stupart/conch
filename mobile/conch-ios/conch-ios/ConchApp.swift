@@ -3,6 +3,8 @@ import SwiftUI
 
 @main
 struct ConchApp: App {
+    /// Apple's push token comes to an app delegate and nowhere else (PushNotifications.swift).
+    @UIApplicationDelegateAdaptor(ConchPhoneAppDelegate.self) private var appDelegate
     #if DEBUG
     /// `-conchFixture <abs path to published-state JSON>`: render that instead
     /// of pairing, for `scripts/ui-snapshot.sh ios`. Launch arguments land in
@@ -125,6 +127,8 @@ struct ConchApp: App {
                     bridge.enterForeground()
                     telemetry.start()
                     Task { await bridge.claimAudio(true) }
+                    // iOS Settings may have turned conch's notifications on or off while it was away.
+                    Task { await PushNotifications.shared.refresh() }
                 case .background:
                     // Nothing to measure while suspended, and a timer that
                     // survives backgrounding is the drain it claims to watch.
@@ -253,6 +257,11 @@ struct ConchApp: App {
             // A report of the phone's setup the Mac hasn't heard: after a drop, or the "done" a phone that set itself up
             // before owes a newly paired Mac.
             Task { await setup?.sync(created) }
+            // Whether this Mac can push, and this phone's token for it (PushNotifications.swift).
+            Task { @MainActor in
+                guard let install = setup?.install else { return }
+                await PushNotifications.shared.connected(created, install: install)
+            }
         }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.

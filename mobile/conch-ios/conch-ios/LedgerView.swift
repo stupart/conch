@@ -38,6 +38,8 @@ struct LedgerView: View {
     @State private var showingSessionActionError = false
     /// The Mac's natural voices, said only when it matters (`NaturalVoicesNotices`).
     @StateObject private var voicesNotice = VoicesNoticeModel()
+    /// Notices from the Mac (PushNotifications.swift): the offer to turn them on, one that came in front, and a tap's way in.
+    @ObservedObject private var push = PushNotifications.shared
     /// The open session. DEBUG seeds it from a launch argument, so the
     /// snapshot script can photograph a session without anyone tapping.
     @State private var path: [String] = {
@@ -98,6 +100,16 @@ struct LedgerView: View {
                                     .font(Type.caption)
                                     .foregroundStyle(Palette.caution)
                             }
+                            .listRowBackground(Palette.bg)
+                            .listRowSeparator(.hidden)
+                        }
+                        // Notifications, offered once the Mac can push and iOS hasn't been asked: never at launch, and
+                        // never before the Mac could send one (PushOffer).
+                        if push.showsOffer, bridge.isConnected {
+                            PushOfferRow(
+                                onTurnOn: { Task { await push.turnOn() } },
+                                onDismiss: { withAnimation { push.dismissOffer() } }
+                            )
                             .listRowBackground(Palette.bg)
                             .listRowSeparator(.hidden)
                         }
@@ -328,6 +340,33 @@ struct LedgerView: View {
         .tint(Palette.micOpen)
         .onChange(of: bridge.state) { _, next in
             speech.consider(state: next)
+        }
+        // A notice that came with the app in front: in the app's own banner, not a second system one (PushNotifications).
+        .overlay(alignment: .top) {
+            if let banner = push.banner {
+                NoticeBannerView(
+                    banner: banner,
+                    onOpen: { push.open(banner.route) },
+                    onOpenLink: { push.openLink($0, route: banner.route) },
+                    onDismiss: { withAnimation { if push.banner?.id == banner.id { push.banner = nil } } }
+                )
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: push.banner)
+        // A tapped notice: the session it's about, or Settings for an account to sign in again.
+        .onChange(of: push.pendingRoute, initial: true) { _, route in
+            guard let route else { return }
+            push.pendingRoute = nil
+            switch route {
+            case let .session(id):
+                showingSettings = false
+                path = [id]
+            case .providers:
+                path = []
+                showingSettings = true
+            case .app:
+                break
+            }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(bridge: bridge, onPairAgain: {
