@@ -321,7 +321,7 @@ describe("conch resources", () => {
   });
 
   test("the budget, each session's load, then the list grouped as the Mac app groups it", () => {
-    const budget = { cpuPercent: 25, memoryPercent: 25, autoBackground: false, cores: 8, cpuLimit: 200, memoryLimit: 8 * 1024 ** 3, cpu: 410, sustained: true, memory: 15 * 1024 ** 3, level: "red" as const, over: ["s1"], reason: "agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB" };
+    const budget = { cpuSetting: "25%", memorySetting: "8 GB", cpuText: "25% of 8 cores (2)", memoryText: "8 GB (25% of 32 GB)", memoryTotal: 32 * 1024 ** 3, autoBackground: false, cores: 8, cpuLimit: 200, memoryLimit: 8 * 1024 ** 3, cpu: 410, sustained: true, memory: 15 * 1024 ** 3, level: "red" as const, over: ["s1"], reason: "agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB" };
     const lines = renderResources({
       v: 1, sampledAt: T0, asking: 1, budget,
       sessions: [
@@ -336,7 +336,7 @@ describe("conch resources", () => {
       ],
     }, T0);
     const text = lines.join("\n");
-    expect(lines[0]).toBe("[red] Budget (25% of 8 cores, 25% of memory): agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB · over: infra");
+    expect(lines[0]).toBe("[red] Budget (25% of 8 cores (2); 8 GB (25% of 32 GB)): agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB · over: infra");
     expect(text).toContain("  [red] infra                  4.0 cores · 13.0 GB · 1 left running  over the agents' budget");
     expect(text).toContain("old prototype (ended)");
     expect(text).toContain("* not yet five minutes of looks");

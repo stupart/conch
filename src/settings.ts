@@ -1,3 +1,5 @@
+import { cpus, totalmem } from "node:os";
+import { parseCpuBudget, parseMemoryBudget, type Machine } from "./resource-load.ts";
 import { accountToolsRequestError, isAccountToolsReply, type AccountToolsRequest, type AccountToolsReply } from "./account-tools.ts";
 import { isLoginInventoryReply, loginInventoryRequestError, type LoginInventoryReply, type LoginInventoryRequest } from "./login-inventory.ts";
 import { agentUpdatesRequestError, isAgentUpdatesReply, type AgentUpdatesReply, type AgentUpdatesRequest } from "./agent-updates-wire.ts";
@@ -255,7 +257,8 @@ const micGain = { min: -20, max: 30, minInclusive: true, maxInclusive: true } sa
 const haikuTimeout = { min: 1, max: 60, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const positiveInteger = { min: 1, minInclusive: true, integer: true } satisfies SettingBounds;
 const zeroableInteger = { min: 0, minInclusive: true, integer: true } satisfies SettingBounds;
-const share = { min: 1, max: 100, minInclusive: true, maxInclusive: true, integer: true } satisfies SettingBounds;
+/** This Mac, for the budget's settings: an amount is checked against what it has. */
+const thisMac = (): Machine => ({ cores: Math.max(1, cpus().length), memory: totalmem() });
 
 export const SETTING_DESCRIPTORS = [
   {
@@ -754,15 +757,17 @@ export const SETTING_DESCRIPTORS = [
     // 2026-11-12: 75%, from a quarter. Tyler, seeing a quarter of 18 cores: "why do they just 4.5 cores?" and "maybe
     // give it 75%?". Agents' builds and gates are most of what the Mac is for; the budget is there to name the sessions
     // when they take nearly all of it, and 75% still leaves him a quarter. Memory has its own (below).
+    // 2026-11-12: a share or an amount, Tyler: "should we make it 14 cores and 100GB just to be cleaner?" The default stays
+    // a share, since conch runs on Macs of every size (resource-load.ts `parseCpuBudget`).
     key: "agent-budget-cpu",
     field: "agentBudgetCpu",
     env: "CONCH_AGENT_BUDGET_CPU",
-    kind: "integer",
-    default: 75,
-    parse: numberParser(share, "a whole percentage of this Mac's cores, 1 to 100"),
-    bounds: share,
+    kind: "string",
+    default: "75%",
+    parse: (raw) => parseCpuBudget(raw, thisMac()),
+    bounds: null,
     apply: "live",
-    help: "the share of this Mac's cores agents may keep busy, averaged over 5 minutes, before conch says which sessions are over (Settings › Resources)",
+    help: "the CPU agents may keep busy, averaged over 5 minutes, before conch says which sessions are over (Settings › Resources): a share of this Mac's cores, like 75%, or a number of cores, like 14",
   },
   {
     // The same budget's memory: the share of this Mac's memory (as Activity Monitor counts it) agents may hold.
@@ -772,12 +777,12 @@ export const SETTING_DESCRIPTORS = [
     key: "agent-budget-memory",
     field: "agentBudgetMemory",
     env: "CONCH_AGENT_BUDGET_MEMORY",
-    kind: "integer",
-    default: 60,
-    parse: numberParser(share, "a whole percentage of this Mac's memory, 1 to 100"),
-    bounds: share,
+    kind: "string",
+    default: "60%",
+    parse: (raw) => parseMemoryBudget(raw, thisMac()),
+    bounds: null,
     apply: "live",
-    help: "the share of this Mac's memory agents may hold before conch says which sessions are over (Settings › Resources)",
+    help: "the memory agents may hold before conch says which sessions are over (Settings › Resources): a share of this Mac's memory, like 60%, or an amount, like 100 GB (GiB, as Activity Monitor counts)",
   },
   {
     // Off, and it ships off. On, while agents are over their CPU budget, conch moves a process an agent left running

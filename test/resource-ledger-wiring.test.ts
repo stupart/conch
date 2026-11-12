@@ -35,7 +35,7 @@ describe("the daemon", () => {
 
   test("the budget is read live from the settings, and the automatic step is the sampler's alone, behind its setting", () => {
     expect(between(daemon, "const resourceLedger = new ResourceLedger({", "\n  });\n"))
-      .toContain("budget: () => ({ cpuPercent: cfg.agentBudgetCpu, memoryPercent: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground })");
+      .toContain("budget: () => ({ cpu: cfg.agentBudgetCpu, memory: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground })");
     const sampler = read("src/resource-sampler.ts");
     // The one call that changes anything without a request: lowering priority, and only what the ledger names.
     expect(sampler.match(/controlResource\(entry, "lower"/g)).toHaveLength(1);

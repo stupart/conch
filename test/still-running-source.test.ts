@@ -63,7 +63,9 @@ describe("the Mac app", () => {
     expect(page).toContain("lowerSession: ResourceRequests.lowerSession");
     expect(page).toContain("setBudget: ResourceRequests.setBudget");
     // The budget's settings have names in General too.
-    expect(settings).toContain('"agent-budget-cpu": "Agents\' CPU budget (% of cores)"');
+    expect(settings).toContain('"agent-budget-cpu": "Agents\' CPU budget (75% or 14 cores)"');
+    // A setting written as words gets a field in General, so "14 cores" can be typed there too.
+    expect(settings).toContain('case "string":\n            StringSettingControl(entry: setting.entry, onSet: onSet)');
   });
 
   test("a row's second line says what it left running", () => {

@@ -11,8 +11,17 @@ import SwiftUI
 // heavy leftover's priority while agents are over budget, is a setting that ships off.
 
 public enum ResourcesPage {
-    /// The budget's choices, as a share of the Mac.
-    public static let budgetChoices = [10, 25, 40, 50, 75, 100]
+    /// The CPU budget's choices: shares, then whole cores this Mac has (2026-11-12, "14 cores and 100GB"). Any other value
+    /// is the setting's own field in General, or `conch set agent-budget-cpu 14`.
+    public static func cpuChoices(cores: Int) -> [String] {
+        [25, 50, 75, 90, 100].map { "\($0)%" } + [2, 4, 8, 12, 14, 16, 24, 32].filter { $0 <= cores }.map { "\($0) cores" }
+    }
+
+    /// The memory budget's: shares, then amounts in GB (GiB) this Mac has.
+    public static func memoryChoices(total bytes: Double) -> [String] {
+        let gb = bytes / 1_073_741_824
+        return [25, 50, 60, 75, 90].map { "\($0)%" } + [8, 16, 32, 64, 96, 100, 128, 192].filter { Double($0) <= gb + 0.05 }.map { "\($0) GB" }
+    }
 
     /// How the thresholds read, under the list.
     public static let thresholds = "A session, with everything it runs and left running, is yellow at a core or 4 GB for five minutes, red at three cores or 12 GB, or over the budget. Something it left running is yellow at half a core or 2 GB, or past its time; red at two cores or 8 GB, or a day past its time."
@@ -126,10 +135,10 @@ public struct ResourcesPageView: View {
                 }
             }
             bar(title: "CPU", detail: ResourcesPage.cpuLine(budget), fraction: ResourcesPage.fraction(budget.cpu, of: budget.cpuLimit), level: level) {
-                budgetPicker(value: budget.cpuPercent, unit: "of \(budget.cores) cores") { .cpuPercent($0) }
+                budgetPicker(label: budget.cpuText, current: budget.cpuSetting, choices: ResourcesPage.cpuChoices(cores: budget.cores)) { .cpu($0) }
             }
             bar(title: "Memory", detail: ResourcesPage.memoryLine(budget), fraction: ResourcesPage.fraction(budget.memory, of: budget.memoryLimit), level: level) {
-                budgetPicker(value: budget.memoryPercent, unit: "of memory") { .memoryPercent($0) }
+                budgetPicker(label: budget.memoryText, current: budget.memorySetting, choices: ResourcesPage.memoryChoices(total: budget.memoryTotal)) { .memory($0) }
             }
             if let over = ResourcesPage.overLine(resources) {
                 Text(over)
@@ -180,13 +189,14 @@ public struct ResourcesPageView: View {
         .accessibilityLabel("\(title): \(detail)")
     }
 
-    private func budgetPicker(value: Int, unit: String, request: @escaping (Int) -> ResourceBudgetRequest) -> some View {
+    /// The setting in its own unit with the other beside it ("14 cores (78% of 18)"), and a menu of shares and amounts.
+    private func budgetPicker(label: String, current: String, choices: [String], request: @escaping (String) -> ResourceBudgetRequest) -> some View {
         Menu {
-            ForEach(ResourcesPage.budgetChoices, id: \.self) { choice in
-                Button("\(choice)% \(unit)") { send(key: "budget") { await setBudget(request(choice)) } }
+            ForEach(choices, id: \.self) { choice in
+                Button(choice == current ? "\(choice) ✓" : choice) { send(key: "budget") { await setBudget(request(choice)) } }
             }
         } label: {
-            Text("\(value)% \(unit)").font(.system(size: 11.5))
+            Text(label).font(.system(size: 11.5))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

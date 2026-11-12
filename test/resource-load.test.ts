@@ -1,5 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { budgetOf, CpuHistory, loadLevel, resourceLevel, RESOURCE_THRESHOLDS, SESSION_THRESHOLDS, type SessionUsage } from "../src/resource-load.ts";
+import {
+  budgetOf,
+  cpuBudgetText,
+  cpuLimitOf,
+  CpuHistory,
+  loadLevel,
+  memoryBudgetText,
+  memoryLimitOf,
+  parseCpuBudget,
+  parseMemoryBudget,
+  resourceLevel,
+  RESOURCE_THRESHOLDS,
+  SESSION_THRESHOLDS,
+  type SessionUsage,
+} from "../src/resource-load.ts";
+import { getSettingDescriptor } from "../src/settings.ts";
 import { processKey, ProcessForest, ResourceLedger, withStillRunning, type Evidence, type LedgerSession, type ProcessRow } from "../src/resource-ledger.ts";
 import { controlResource, controlSession, ResourceSampler } from "../src/resource-sampler.ts";
 
@@ -38,14 +53,90 @@ describe("sustained, not one look", () => {
   });
 });
 
+describe("the budget's settings: a share, or an amount", () => {
+  // Tyler (2026-11-12): "should we make it 14 cores and 100GB just to be cleaner?" on an 18-core, 128 GB Mac.
+  const mac = { cores: 18, memory: 128 * GB };
+
+  test("CPU: a share, or a number of cores, kept in its own unit", () => {
+    expect(parseCpuBudget("75%", mac)).toEqual({ ok: true, value: "75%" });
+    expect(parseCpuBudget(" 75 % ", mac)).toEqual({ ok: true, value: "75%" });
+    expect(parseCpuBudget("14", mac)).toEqual({ ok: true, value: "14 cores" });
+    expect(parseCpuBudget("14 cores", mac)).toEqual({ ok: true, value: "14 cores" });
+    expect(parseCpuBudget("13.5 Cores", mac)).toEqual({ ok: true, value: "13.5 cores" });
+    expect(parseCpuBudget("1 core", mac)).toEqual({ ok: true, value: "1 core" });
+    expect(parseCpuBudget(14, mac)).toEqual({ ok: true, value: "14 cores" });
+    expect(parseCpuBudget("18", mac)).toEqual({ ok: true, value: "18 cores" });
+  });
+
+  test("CPU: zero, more than the Mac has, or nonsense is refused, and says why", () => {
+    const refused = (raw: unknown) => {
+      const parsed = parseCpuBudget(raw, mac);
+      expect(parsed.ok, String(raw)).toBe(false);
+      return parsed.ok ? "" : parsed.err;
+    };
+    expect(refused("20")).toContain("this Mac has 18 cores, not 20");
+    expect(refused("0")).toContain("0 cores would leave agents nothing");
+    expect(refused("0%")).toContain("more than 0% and at most 100%");
+    expect(refused("120%")).toContain("at most 100%");
+    expect(refused("lots")).toContain("a share of this Mac's 18 cores (like 75%) or a number of cores (like 14), at most 18");
+    refused("-2");
+    refused("14 GB");
+  });
+
+  test("memory: a share, or GB in any of its spellings (GiB), never a bare number", () => {
+    expect(parseMemoryBudget("60%", mac)).toEqual({ ok: true, value: "60%" });
+    for (const raw of ["100GB", "100 GB", "100G", "100 gib", "100 Gb"]) expect(parseMemoryBudget(raw, mac), raw).toEqual({ ok: true, value: "100 GB" });
+    expect(parseMemoryBudget("128 GB", mac)).toEqual({ ok: true, value: "128 GB" });
+    const err = (raw: unknown) => {
+      const parsed = parseMemoryBudget(raw, mac);
+      expect(parsed.ok, String(raw)).toBe(false);
+      return parsed.ok ? "" : parsed.err;
+    };
+    expect(err("200 GB")).toContain("this Mac has 128 GB, not 200");
+    expect(err("0 GB")).toContain("0 GB would leave agents nothing");
+    expect(err("100")).toContain("an amount in GB (like 100 GB; GiB, as Activity Monitor counts), at most 128 GB");
+    expect(err(100)).toContain("not \"100\"");
+    err("101%");
+  });
+
+  test("shown in the unit it was set in, the other beside it", () => {
+    expect(cpuBudgetText("14 cores", mac)).toBe("14 cores (78% of 18)");
+    expect(cpuBudgetText("75%", mac)).toBe("75% of 18 cores (13.5)");
+    expect(memoryBudgetText("100 GB", mac)).toBe("100 GB (78% of 128 GB)");
+    expect(memoryBudgetText("60%", mac)).toBe("60% of 128 GB (76.8 GB)");
+    expect(cpuLimitOf("14 cores", mac)).toBe(1400);
+    expect(cpuLimitOf("75%", mac)).toBe(1350);
+    expect(memoryLimitOf("100 GB", mac)).toBe(100 * GB);
+    expect(memoryLimitOf("60%", mac)).toBeCloseTo(76.8 * GB, 0);
+    // A kept value from another Mac, bigger than this one: never more than it has.
+    expect(cpuLimitOf("32 cores", mac)).toBe(1800);
+    expect(memoryLimitOf("512 GB", mac)).toBe(128 * GB);
+  });
+
+  test("the settings take both forms, and default to shares, 75% and 60%", () => {
+    const cpu = getSettingDescriptor("agent-budget-cpu");
+    const memory = getSettingDescriptor("agent-budget-memory");
+    if (!cpu.ok || !memory.ok) throw new Error("the budget's settings are missing");
+    expect(cpu.value.default).toBe("75%");
+    expect(memory.value.default).toBe("60%");
+    expect(cpu.value.parse("1 core")).toEqual({ ok: true, value: "1 core" });
+    expect(memory.value.parse("1G")).toEqual({ ok: true, value: "1 GB" });
+    expect(cpu.value.parse("0").ok).toBe(false);
+    expect(cpu.value.help).toContain("a share of this Mac's cores, like 75%, or a number of cores, like 14");
+    expect(memory.value.help).toContain("like 100 GB (GiB, as Activity Monitor counts)");
+  });
+});
+
 describe("the budget", () => {
-  const settings = { cpuPercent: 25, memoryPercent: 25, autoBackground: false };
+  const settings = { cpu: "25%", memory: "25%", autoBackground: false };
   const machine = { cores: 8, memory: 32 * GB };
   const session = (key: string, cpu: number, memory: number): SessionUsage =>
     ({ key, label: key, live: true, cpu, sustained: true, memory, resources: 0, level: "green", reasons: [] });
 
   test("a quarter of 8 cores is 2 cores; under three quarters of it is green, then yellow, then red", () => {
-    expect(budgetOf(settings, machine, [], { cpu: 100, sustained: true, memory: GB })).toMatchObject({ cpuLimit: 200, memoryLimit: 8 * GB, level: "green", over: [] });
+    expect(budgetOf(settings, machine, [], { cpu: 100, sustained: true, memory: GB })).toMatchObject({ cpuLimit: 200, memoryLimit: 8 * GB, level: "green", over: [], cpuText: "25% of 8 cores (2)", memoryText: "25% of 32 GB (8 GB)" });
+    expect(budgetOf({ cpu: "3 cores", memory: "10 GB", autoBackground: false }, machine, [], { cpu: 100, sustained: true, memory: GB }))
+      .toMatchObject({ cpuLimit: 300, memoryLimit: 10 * GB, cpuText: "3 cores (38% of 8)", memoryText: "10 GB (31% of 32 GB)", cpuSetting: "3 cores" });
     expect(budgetOf(settings, machine, [], { cpu: 160, sustained: true, memory: GB }).level).toBe("yellow");
     expect(budgetOf(settings, machine, [], { cpu: 260, sustained: true, memory: GB }).level).toBe("red");
     // CPU that isn't sustained yet doesn't count against it; memory does.
@@ -71,7 +162,7 @@ const evidence = (listeners: Map<number, number[]>): Evidence =>
   ({ listeners, environment: new Map(), vmInstances: new Map(), cwds: new Map(), simulatorNames: new Map() });
 
 describe("what each session uses", () => {
-  function farm(budget = { cpuPercent: 25, memoryPercent: 25, autoBackground: false }) {
+  function farm(budget = { cpu: "25%", memory: "25%", autoBackground: false }) {
     const ledger = new ResourceLedger({ machine: { cores: 8, memory: 16 * GB }, budget: () => budget });
     const claude = proc("claude", 1, { cpu: 20 });
     const shell = proc(SHELL, claude.pid);
@@ -116,7 +207,7 @@ describe("what each session uses", () => {
     const off = farm();
     for (let look = 0; look < 4; look += 1) off.ledger.observe(new ProcessForest(off.table, off.sessions, new Set(), 501), evidence(off.listeners), T0 + look * 30_000, true);
     expect(off.ledger.autoBackgroundCandidates(T0 + 90_000)).toEqual([]);
-    const on = farm({ cpuPercent: 25, memoryPercent: 25, autoBackground: true });
+    const on = farm({ cpu: "25%", memory: "25%", autoBackground: true });
     for (let look = 0; look < 4; look += 1) on.ledger.observe(new ProcessForest(on.table, on.sessions, new Set(), 501), evidence(on.listeners), T0 + look * 30_000, true);
     // The vite (1.5 cores for 5 min, the planner's), never the build (a session's own command) or the unowned server.
     expect(on.ledger.autoBackgroundCandidates(T0 + 90_000).map((entry) => entry.id)).toEqual([`p${on.vite.pid}`]);
@@ -127,7 +218,7 @@ describe("what each session uses", () => {
 
   test("the sampler takes the automatic step itself, with taskpolicy, and says so", async () => {
     const { ledger, table, sessions, shell, vite } = (() => {
-      const made = farm({ cpuPercent: 25, memoryPercent: 25, autoBackground: true });
+      const made = farm({ cpu: "25%", memory: "25%", autoBackground: true });
       return made;
     })();
     const asked: string[] = [];

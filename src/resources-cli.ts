@@ -156,7 +156,7 @@ export function renderResources(resources: PublishedResources, now: number, long
     const over = budget.over.length
       ? ` · over: ${budget.over.map((key) => resources.sessions.find((session) => session.key === key)?.label ?? key).join(", ")}`
       : "";
-    lines.push(`${mark(budget.level, color)} Budget (${budget.cpuPercent}% of ${budget.cores} cores, ${budget.memoryPercent}% of memory): ${budget.reason}${over}`);
+    lines.push(`${mark(budget.level, color)} Budget (${budget.cpuText}; ${budget.memoryText}): ${budget.reason}${over}`);
   }
   const sessions = (resources.sessions ?? []).filter((session) => session.key !== "unowned" || session.resources > 0);
   if (sessions.length) {

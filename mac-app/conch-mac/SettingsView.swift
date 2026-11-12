@@ -439,8 +439,8 @@ private struct ConchSettingRowView: View {
         "say-rate": "Fallback voice speed (wpm)",
         "failure-autofix": "Fix new failures on their own",
         "agent-auto-update": "Update Claude Code and Codex automatically",
-        "agent-budget-cpu": "Agents' CPU budget (% of cores)",
-        "agent-budget-memory": "Agents' memory budget (% of memory)",
+        "agent-budget-cpu": "Agents' CPU budget (75% or 14 cores)",
+        "agent-budget-memory": "Agents' memory budget (60% or 100 GB)",
         "agent-auto-background": "Lower the priority of heavy leftovers",
     ]
 
@@ -613,9 +613,47 @@ private struct ConchSettingRowView: View {
             } else {
                 UnsupportedSettingControl(text: "No choices published")
             }
+        case "string":
+            StringSettingControl(entry: setting.entry, onSet: onSet)
         default:
             UnsupportedSettingControl(text: "Unsupported kind: \(setting.entry.kind)")
         }
+    }
+}
+
+/// A setting written as words (2026-11-12): the agents' budget takes "75%" or "14 cores", "60%" or "100 GB". Committed on
+/// Return or on leaving the field, as a number is; the daemon checks it against this Mac and says why when it won't take it.
+private struct StringSettingControl: View {
+    let entry: ConchConfigEntry
+    let onSet: (ConchSettingValue) -> Void
+
+    @State private var draft: String
+    @FocusState private var isEditing: Bool
+
+    init(entry: ConchConfigEntry, onSet: @escaping (ConchSettingValue) -> Void) {
+        self.entry = entry
+        self.onSet = onSet
+        _draft = State(initialValue: entry.value.displayText)
+    }
+
+    var body: some View {
+        TextField("Value", text: $draft)
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.trailing)
+            .frame(width: 120)
+            .focused($isEditing)
+            .onSubmit(commit)
+            .onChange(of: isEditing) { _, editing in
+                if !editing { commit() }
+            }
+            .onChange(of: entry.value) { _, value in draft = value.displayText }
+            .accessibilityLabel("Setting value")
+    }
+
+    private func commit() {
+        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value != entry.value.displayText else { return }
+        onSet(.string(value))
     }
 }
 

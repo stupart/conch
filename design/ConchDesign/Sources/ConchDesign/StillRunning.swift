@@ -192,10 +192,15 @@ public struct ResourceSessionUsage: Decodable, Equatable, Sendable, Identifiable
 /// Agents' load against the budget (src/resource-load.ts `PublishedBudget`; settings `agent-budget-cpu`,
 /// `agent-budget-memory`, `agent-auto-background`).
 public struct ResourceBudget: Decodable, Equatable, Sendable {
-    public let cpuPercent: Int
-    public let memoryPercent: Int
+    /// The settings as kept, "75%" or "14 cores", "60%" or "100 GB", and as said in both units: "14 cores (78% of 18)".
+    public let cpuSetting: String
+    public let memorySetting: String
+    public let cpuText: String
+    public let memoryText: String
     public let autoBackground: Bool
     public let cores: Int
+    /// This Mac's memory, bytes.
+    public let memoryTotal: Double
     /// The budget: per cent of one core, and bytes.
     public let cpuLimit: Double
     public let memoryLimit: Double
@@ -208,12 +213,16 @@ public struct ResourceBudget: Decodable, Equatable, Sendable {
     public let over: [String]
     public let reason: String
 
-    public init(cpuPercent: Int, memoryPercent: Int, autoBackground: Bool, cores: Int, cpuLimit: Double, memoryLimit: Double,
-                cpu: Double, sustained: Bool, memory: Double, level: String, over: [String], reason: String) {
-        self.cpuPercent = cpuPercent
-        self.memoryPercent = memoryPercent
+    public init(cpuSetting: String, memorySetting: String, cpuText: String, memoryText: String, autoBackground: Bool, cores: Int,
+                memoryTotal: Double, cpuLimit: Double, memoryLimit: Double, cpu: Double, sustained: Bool, memory: Double, level: String,
+                over: [String], reason: String) {
+        self.cpuSetting = cpuSetting
+        self.memorySetting = memorySetting
+        self.cpuText = cpuText
+        self.memoryText = memoryText
         self.autoBackground = autoBackground
         self.cores = cores
+        self.memoryTotal = memoryTotal
         self.cpuLimit = cpuLimit
         self.memoryLimit = memoryLimit
         self.cpu = cpu
@@ -264,9 +273,10 @@ public struct ResourceSessionRequest: Encodable, Equatable, Sendable {
 }
 
 /// The budget's settings, through the daemon's own settings (`{kind: "set-config", key, value}`), as Failures' auto-fix is.
+/// Each as words the daemon checks against this Mac: "75%" or "14 cores", "60%" or "100 GB".
 public enum ResourceBudgetRequest: Encodable, Equatable, Sendable {
-    case cpuPercent(Int)
-    case memoryPercent(Int)
+    case cpu(String)
+    case memory(String)
     case autoBackground(Bool)
 
     private enum Keys: String, CodingKey { case kind, key, value }
@@ -275,10 +285,10 @@ public enum ResourceBudgetRequest: Encodable, Equatable, Sendable {
         var container = encoder.container(keyedBy: Keys.self)
         try container.encode("set-config", forKey: .kind)
         switch self {
-        case let .cpuPercent(value):
+        case let .cpu(value):
             try container.encode("agent-budget-cpu", forKey: .key)
             try container.encode(value, forKey: .value)
-        case let .memoryPercent(value):
+        case let .memory(value):
             try container.encode("agent-budget-memory", forKey: .key)
             try container.encode(value, forKey: .value)
         case let .autoBackground(on):

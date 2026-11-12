@@ -755,7 +755,7 @@ export class ResourceLedger {
     this.memory = options.memory ?? emptyLedgerMemory();
     for (const [key, owner] of Object.entries(this.memory.owners)) this.treeOwners.set(key, owner);
     this.labelFor = options.labelFor;
-    this.budgetSettings = options.budget ?? (() => ({ cpuPercent: 75, memoryPercent: 60, autoBackground: false }));
+    this.budgetSettings = options.budget ?? (() => ({ cpu: "75%", memory: "60%", autoBackground: false }));
     this.machine = options.machine ?? { cores: Math.max(1, cpus().length), memory: totalmem() };
   }
 

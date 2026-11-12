@@ -95,8 +95,8 @@ const expected = {
   "agent-auto-update": ["agentAutoUpdate", "CONCH_AGENT_AUTO_UPDATE", "live", true],
   // The load budget (Tyler, 2026-11-11): three quarters of the cores (2026-11-12, "maybe give it 75%?"), 60% of the
   // memory (2026-11-12, "or 60%"), and the one automatic step off.
-  "agent-budget-cpu": ["agentBudgetCpu", "CONCH_AGENT_BUDGET_CPU", "live", 75],
-  "agent-budget-memory": ["agentBudgetMemory", "CONCH_AGENT_BUDGET_MEMORY", "live", 60],
+  "agent-budget-cpu": ["agentBudgetCpu", "CONCH_AGENT_BUDGET_CPU", "live", "75%"],
+  "agent-budget-memory": ["agentBudgetMemory", "CONCH_AGENT_BUDGET_MEMORY", "live", "60%"],
   "agent-auto-background": ["agentAutoBackground", "CONCH_AGENT_AUTO_BACKGROUND", "live", false],
 } as const;
 

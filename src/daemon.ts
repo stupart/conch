@@ -1081,8 +1081,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    */
   const resourceLedger = new ResourceLedger({
     memory: loadResourceMemory(),
-    // The load budget, read at each look: `conch set agent-budget-cpu 40` holds from the next one.
-    budget: () => ({ cpuPercent: cfg.agentBudgetCpu, memoryPercent: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground }),
+    // The load budget, read at each look: `conch set agent-budget-cpu 14` holds from the next one.
+    budget: () => ({ cpu: cfg.agentBudgetCpu, memory: cfg.agentBudgetMemory, autoBackground: cfg.agentAutoBackground }),
     // A session conch never saw live (an orphan's environment names one from before this daemon): conch's own label for
     // it, else the title Claude Code gave its transcript. Asked once per session; the ledger keeps the answer.
     labelFor: (agentSessionId) => {

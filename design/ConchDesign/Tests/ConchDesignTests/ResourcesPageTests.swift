@@ -33,7 +33,8 @@ final class ResourcesPageTests: XCTestCase {
                 .init(key: "old", label: "Landing page", live: false, cpu: 0, memory: 258 * 1_048_576, resources: 1, level: "red", reasons: ["vite :5173: past its time for over a day"]),
                 .init(key: "unowned", label: "Unowned", live: false, cpu: 1, sustained: false, memory: 3.1 * gb, resources: 1, level: "yellow"),
             ],
-            budget: ResourceBudget(cpuPercent: 25, memoryPercent: 25, autoBackground: false, cores: 8, cpuLimit: 200, memoryLimit: 8 * gb,
+            budget: ResourceBudget(cpuSetting: "2 cores", memorySetting: "25%", cpuText: "2 cores (25% of 8)", memoryText: "25% of 32 GB (8 GB)",
+                                   autoBackground: false, cores: 8, memoryTotal: 32 * gb, cpuLimit: 200, memoryLimit: 8 * gb,
                                    cpu: 500, sustained: true, memory: 15 * gb, level: "red", over: ["s1"], reason: "agents are using 5.0 cores of 2.0 cores and 15.0 GB of 8.0 GB")
         )
     }
@@ -71,8 +72,14 @@ final class ResourcesPageTests: XCTestCase {
         XCTAssertEqual(StillRunning.costLine(fixture.items[0]), "133% CPU · 12.0 GB")
         let session = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ResourceSessionRequest(sessionId: "s1", lower: true))) as? [String: String]
         XCTAssertEqual(session, ["kind": "resource-session", "sessionId": "s1", "action": "lower"])
-        let budget = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ResourceBudgetRequest.cpuPercent(40))) as? [String: AnyHashable]
-        XCTAssertEqual(budget, ["kind": "set-config", "key": "agent-budget-cpu", "value": 40])
+        let budget = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ResourceBudgetRequest.cpu("14 cores"))) as? [String: AnyHashable]
+        XCTAssertEqual(budget, ["kind": "set-config", "key": "agent-budget-cpu", "value": "14 cores"])
+        let memory = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ResourceBudgetRequest.memory("100 GB"))) as? [String: AnyHashable]
+        XCTAssertEqual(memory, ["kind": "set-config", "key": "agent-budget-memory", "value": "100 GB"])
+        // Shares and amounts, never more than this Mac has.
+        XCTAssertEqual(ResourcesPage.cpuChoices(cores: 18), ["25%", "50%", "75%", "90%", "100%", "2 cores", "4 cores", "8 cores", "12 cores", "14 cores", "16 cores"])
+        XCTAssertEqual(ResourcesPage.memoryChoices(total: 128 * gb), ["25%", "50%", "60%", "75%", "90%", "8 GB", "16 GB", "32 GB", "64 GB", "96 GB", "100 GB", "128 GB"])
+        XCTAssertEqual(ResourcesPage.memoryChoices(total: 16 * gb).last, "16 GB")
         let auto = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ResourceBudgetRequest.autoBackground(true))) as? [String: AnyHashable]
         XCTAssertEqual(auto, ["kind": "set-config", "key": "agent-auto-background", "value": true])
     }
@@ -81,11 +88,12 @@ final class ResourcesPageTests: XCTestCase {
         let json = #"""
         {"v":1,"sampledAt":1,"asking":0,"items":[],
          "sessions":[{"key":"a","sessionId":"a","label":"x","live":true,"cpu":120,"sustained":true,"memory":1,"resources":0,"level":"yellow","reasons":["1.2 cores for 5 min"]},{"broken":true}],
-         "budget":{"cpuPercent":25,"memoryPercent":25,"autoBackground":false,"cores":8,"cpuLimit":200,"memoryLimit":8,"cpu":120,"sustained":true,"memory":1,"level":"green","over":[],"reason":"r"}}
+         "budget":{"cpuSetting":"14 cores","memorySetting":"100 GB","cpuText":"14 cores (78% of 18)","memoryText":"100 GB (78% of 128 GB)","autoBackground":false,"cores":18,"memoryTotal":137438953472,"cpuLimit":1400,"memoryLimit":107374182400,"cpu":120,"sustained":true,"memory":1,"level":"green","over":[],"reason":"r"}}
         """#
         let resources = try JSONDecoder().decode(PublishedResources.self, from: Data(json.utf8))
         XCTAssertEqual(resources.sessions.map(\.key), ["a"])
-        XCTAssertEqual(resources.budget?.cpuLimit, 200)
+        XCTAssertEqual(resources.budget?.cpuLimit, 1_400)
+        XCTAssertEqual(resources.budget?.cpuText, "14 cores (78% of 18)")
     }
 
     func testTheRowLineCarriesItsLevel() {
