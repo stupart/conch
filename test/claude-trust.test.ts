@@ -119,8 +119,9 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
     // Start, restart, account handoff, bringing back a session its tmux server took with it (background-recovery.ts),
     // a fork (`forkLiveSession`, which sets trustFolder as a restart does), and a failure ticket's fix session
     // (failure-tickets.ts, in conch's own checkout, which is trusted already).
-    // And the restart guard's (`restart-recovery.ts`), which brings sessions back after the Mac restarts: seven.
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(7);
+    // And the restart guard's (`restart-recovery.ts`), which brings sessions back after the Mac restarts, and Restart on
+    // a session whose process is already gone, which resumes it (pid-reuse-after-restart.test.ts): eight.
+    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(8);
     // Every launch goes through launchSession: its own call is the only direct one.
     expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
   });

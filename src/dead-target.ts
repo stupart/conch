@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readProcessIdentity, type ProcessIdentity } from "./process-identity.ts";
+import { lstartSeconds, pidAlive, readProcessIdentity, registryProcessAlive, type ProcessIdentity } from "./process-identity.ts";
 import { attachedJobId } from "./sessions.ts";
 
 /**
@@ -60,6 +60,8 @@ export interface TargetToCheck {
   jobId?: string;
   /** The process the daemon bound to this row, when it bound one. */
   processIdentity?: ProcessIdentity;
+  /** When the registry says the row's process started (`procStart`), for a process the daemon never bound. */
+  procStart?: string;
 }
 
 export interface TargetProbes {
@@ -106,6 +108,12 @@ export async function deadTarget(
     if (now && now.birth !== bound.birth) {
       return { reason: "session-ended", detail: `pid ${pid} is no longer the session's process (started ${bound.birth}, now ${now.birth})` };
     }
+  }
+  // Never bound (the daemon binds only a process on a terminal, running the agent), and the registry's own start time
+  // says the same: a boot ago, one session's 972 became a macOS service with no terminal, and another's 996 a Terminal tab's
+  // login, where a message would have been typed into whatever that tab holds.
+  if (bound?.pid !== pid && target.procStart && !processLive(pid, target.procStart, probes)) {
+    return { reason: "session-ended", detail: `pid ${pid} is no longer the session's process (the registry has it starting ${target.procStart})` };
   }
   const args = await (probes.commandLine ?? commandLineOf)(pid);
   const attached = args ? attachedJobId(args) : undefined;
@@ -167,37 +175,12 @@ function registryJobLiveness(claudeDir: string, jobId: string, probes: TargetPro
   return complete ? { state: "gone", detail: `job ${jobId} has no entry in Claude Code's session registry` } : UNKNOWN;
 }
 
-/** Alive, and still the process that started at `procStart`, when the start is known. */
+/** Alive, and still the process that started at `procStart`, when the start is known (`registryProcessAlive`). */
 function processLive(pid: unknown, procStart: unknown, probes: TargetProbes): boolean {
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
-  if (!(probes.alive ?? pidAlive)(pid)) return false;
-  const expected = typeof procStart === "string" ? lstartSeconds(procStart) : null;
-  if (expected === null) return true;
-  const now = (probes.identity ?? readProcessIdentity)(pid);
-  if (!now) return true;
-  return Math.abs(Math.floor(now.birthTimeMs / 1000) - expected) <= 1;
+  return registryProcessAlive(pid, procStart, { alive: probes.alive ?? pidAlive, identity: probes.identity ?? readProcessIdentity });
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/** `Wed Sep 23 04:39:09 2026`, the UTC `ps -o lstart=` Claude Code records, as epoch seconds. */
-export function lstartSeconds(lstart: string): number | null {
-  const match = /^[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(lstart.trim());
-  if (!match) return null;
-  const month = MONTHS.indexOf(match[1]!);
-  if (month < 0) return null;
-  return Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1000;
-}
-
-/** As Claude Code decides it: only "no such process" is dead. EPERM is someone's live process. */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
+export { lstartSeconds };
 
 async function commandLineOf(pid: number): Promise<string | null> {
   try {

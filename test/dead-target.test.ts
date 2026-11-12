@@ -115,6 +115,18 @@ describe("real processes, a written roster", () => {
     expect(read).toEqual([]);
   });
 
+  test("a live process that is not the one the registry says started then is an ended session", async () => {
+    const other = await standInHost();
+    try {
+      const home = claudeHome({ workers: {} });
+      expect(await deadTarget(home, { pid: other.pid, procStart: "Mon Oct 26 16:32:49 2026" }))
+        .toMatchObject({ reason: "session-ended" });
+      expect(await deadTarget(home, { pid: other.pid, procStart: lstart(other.pid) })).toBeNull();
+    } finally {
+      other.kill();
+    }
+  });
+
   test("a registry entry whose process has exited is an ended session", async () => {
     const gone = await standInHost();
     gone.kill();
@@ -156,6 +168,22 @@ describe("the rules, over probes", () => {
     expect(await deadTarget(claudeHome(), { pid: 300, processIdentity: bound }, probes({ identity: () => bound }))).toBeNull();
     // An identity that cannot be read proves nothing.
     expect(await deadTarget(claudeHome(), { pid: 300, processIdentity: bound }, probes({ identity: () => null }))).toBeNull();
+  });
+
+  // 2026-11-06: a session's registry entry outlived a restart naming pid 972, by then macOS's ImageIOXPCService. The daemon
+  // binds only a process on a terminal running the agent, so nothing was bound, and a message for it was typed at a
+  // process with no terminal. The registry's own start time is the evidence.
+  test("a never-bound pid that came round again is an ended session, by the registry's start time", async () => {
+    const birth = { pid: 300, birth: "1793925696.000001", birthTimeMs: 1793925696000, executable: "/System/ImageIOXPCService", ttyDevice: null };
+    const lastBoot = "Mon Oct 26 16:32:49 2026";
+    expect(await deadTarget(claudeHome(), { pid: 300, procStart: lastBoot }, probes({ identity: () => birth })))
+      .toMatchObject({ reason: "session-ended", detail: "pid 300 is no longer the session's process (the registry has it starting Mon Oct 26 16:32:49 2026)" });
+    // Its own start, to the second: left alone.
+    const own = { ...birth, birth: `${Date.UTC(2026, 9, 26, 16, 32, 49) / 1000}.250000`, birthTimeMs: Date.UTC(2026, 9, 26, 16, 32, 49) + 250 };
+    expect(await deadTarget(claudeHome(), { pid: 300, procStart: lastBoot }, probes({ identity: () => own }))).toBeNull();
+    // A start the kernel won't say, or one the registry didn't give, proves nothing.
+    expect(await deadTarget(claudeHome(), { pid: 300, procStart: lastBoot }, probes({ identity: () => null }))).toBeNull();
+    expect(await deadTarget(claudeHome(), { pid: 300 }, probes({ identity: () => birth }))).toBeNull();
   });
 
   test("only positive evidence refuses: a torn roster, an unreadable one, a failed ps", async () => {

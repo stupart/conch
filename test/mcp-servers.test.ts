@@ -170,6 +170,10 @@ describe("which sessions can't get the current tools", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
     const close = daemon.slice(daemon.indexOf("const closeLiveSession = async"), daemon.indexOf("if (!relaunch) return;"));
     expect(close).toContain("await closeSession(session);\n");
-    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();")).toBeGreaterThan(close.indexOf("await closeSession(session);"));
+    const closed = close.indexOf("await closeSession(session);");
+    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();", closed)).toBeGreaterThan(closed);
+    // A Restart that finds the process already gone resumes it without a close, and drops the verdict there.
+    const gone = close.slice(close.indexOf("if (restart && !session.jobId && session.pid && !registryProcessAlive("), closed);
+    expect(gone).toContain("if (toolsStale.delete(sessionId)) publishedStateWriter.request();");
   });
 });

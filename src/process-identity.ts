@@ -112,6 +112,51 @@ export function sameProcessIdentity(a: ProcessIdentity | null | undefined, b: Pr
     && executableFile(a.executable) === executableFile(b.executable) && a.ttyDevice === b.ttyDevice);
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** `Wed Sep 23 04:39:09 2026`, the UTC `ps -o lstart=` Claude Code records as an entry's `procStart`, as epoch seconds. */
+export function lstartSeconds(lstart: string): number | null {
+  const match = /^[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(lstart.trim());
+  if (!match) return null;
+  const month = MONTHS.indexOf(match[1]!);
+  if (month < 0) return null;
+  return Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1000;
+}
+
+/** As Claude Code decides it: only "no such process" is dead. EPERM is someone's live process. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * Is the process a registry entry names still running: its pid alive, and still the process that started at the entry's
+ * `procStart`, when the entry says when and the kernel can tell. Only positive evidence counts as gone.
+ *
+ * A pid comes round again, and after a restart soonest of all: the Mac hands the low numbers out again, and an entry
+ * the last boot left names whatever holds its number now. On 2026-11-06 two of them did: one session's (972, now macOS's
+ * ImageIOXPCService) and a seashell window's (996, now the `login` of a Terminal tab). Asked only "is 972 alive?",
+ * conch counted both sessions as running, so it did not bring either back after the restart, typed a message for the first
+ * at a process with no terminal, and its Restart was refused, the close finding someone else's process.
+ */
+export function registryProcessAlive(
+  pid: unknown,
+  procStart: unknown,
+  probes: { alive?(pid: number): boolean; identity?: ProcessIdentityProbe } = {},
+): boolean {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  if (!(probes.alive ?? pidAlive)(pid)) return false;
+  const expected = typeof procStart === "string" ? lstartSeconds(procStart) : null;
+  if (expected === null) return true;
+  const now = (probes.identity ?? readProcessIdentity)(pid);
+  if (!now) return true;
+  return Math.abs(Math.floor(now.birthTimeMs / 1000) - expected) <= 1;
+}
+
 export function processMatchesProvider(identity: ProcessIdentity, backend: SessionInfo["backend"]): boolean {
   return new RegExp(`(^|/)${backend ?? "claude"}(?:/|$|-)`).test(identity.executable);
 }
