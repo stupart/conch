@@ -1,4 +1,5 @@
 import { decodeFailureTicketRequest } from "./failure-tickets.ts";
+import { decodeTeamRequest } from "./team-desk.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -200,6 +201,9 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeVideoTranscriptRequest,
   // Failure tickets hold every session's names, folders and words, and Fix starts a session: the Mac's (failure-tickets.ts).
   decodeFailureTicketRequest,
+  // Teams start sessions on this Mac and hold their tasks: the Mac's and its CLI's (team-desk.ts). The phone sees the
+  // teams running in the sessions file, as the sidebar groups them.
+  decodeTeamRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */

@@ -1,4 +1,5 @@
 import type { FailureDigest } from "./failure-tickets.ts";
+import type { TeamSummary } from "./teams.ts";
 import type { PreviewRequest, ReviewPreview } from "./review-preview.ts";
 import type { AccessState, ReviewSnapshot } from "./page-access.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
@@ -556,6 +557,11 @@ export interface PublishedState {
    * Absent from older daemons.
    */
   failures?: FailureDigest;
+  /**
+   * The teams at work (team-desk.ts): each one's name, task and members, by session id, which the Mac sidebar draws under
+   * a header of the team's own instead of their folders. Absent with none, and from older daemons.
+   */
+  teams?: TeamSummary[];
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;

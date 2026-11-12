@@ -46,7 +46,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
+  conch sessions | resumable [query] | start [claude|codex] [options] | team  live | past | open one in Terminal (start --help) | teams of agents (team --help)
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
@@ -742,6 +742,27 @@ switch (command) {
     const { code, lines } = runMcpUsageCli(rest);
     for (const line of lines) (code === 0 ? console.log : console.error)(line);
     if (code) process.exitCode = code;
+    break;
+  }
+  case "team":
+  case "teams": {
+    // Teams (teams.ts, team-desk.ts): start one on a task, pass it another, ask conch for a member. From Tyler's Terminal
+    // or from an agent's shell, which the daemon walks up to its session.
+    const { runTeamCommand, runsInsideAgent } = await import("./team-cli.ts");
+    const { forwardToDaemonSocket } = await import("./phone-bridge.ts");
+    const { teamsConfigDir } = await import("./team-desk.ts");
+    process.exitCode = await runTeamCommand(rest, {
+      request: (line, timeoutMs) => forwardToDaemonSocket(cfg.socketPath, line, timeoutMs),
+      callerPid: process.ppid,
+      fromAgent: runsInsideAgent(process.env),
+      cwd: process.cwd(),
+      configDir: teamsConfigDir(),
+      stdin: () => Bun.stdin.text(),
+      stdinIsTTY: process.stdin.isTTY === true,
+      readFile: (path) => Bun.file(path).text(),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+    });
     break;
   }
   case "failures": {

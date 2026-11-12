@@ -1,4 +1,5 @@
 import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.ts";
+import { decodeTeamRequest, type TeamDesk } from "./team-desk.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1357,6 +1358,11 @@ export interface ControlServerOptions {
    */
   failureTickets?: Pick<FailureDesk, "list" | "act">;
   /**
+   * Teams (team-desk.ts): Settings › Teams' types and running teams, and `conch team`'s starts, tasks and members. Absent:
+   * the request is answered as unavailable.
+   */
+  teams?: Pick<TeamDesk, "handle">;
+  /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
    */
@@ -1546,6 +1552,20 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           let frame: Buffer;
           try { frame = encodeControlFrame(JSON.stringify(reply)); }
           catch { frame = encodeControlFrame(JSON.stringify({ kind: "failure-ticket-error", error: "That was too large to send." })); }
+          sock.end(frame);
+          return;
+        }
+        // Teams (team-desk.ts) name no session: Settings › Teams and `conch team` ask for the types and the teams running,
+        // start one, pass it a task, ask for a member. The Mac app's and the CLI's, never a phone's (phone-bridge.ts
+        // `MAC_APP_ONLY_DECODERS`): a start opens sessions on this Mac. A start a member waits on is answered when it runs.
+        const team = decodeTeamRequest(body);
+        if (team) {
+          const reply = "error" in team
+            ? { kind: "team-error", code: "invalid", error: team.error }
+            : options.teams ? await options.teams.handle(team) : { kind: "team-error", code: "failed", error: "This conch has no teams." };
+          let frame: Buffer;
+          try { frame = encodeControlFrame(JSON.stringify(reply)); }
+          catch { frame = encodeControlFrame(JSON.stringify({ kind: "team-error", code: "failed", error: "That was too large to send." })); }
           sock.end(frame);
           return;
         }
