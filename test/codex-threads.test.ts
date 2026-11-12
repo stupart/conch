@@ -971,6 +971,59 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
   });
 });
 
+describe("a Codex session started and not yet spoken to", () => {
+  // codex-cli 0.167.2 takes a new thread's lock when its window opens, and writes its row, its rollout and its
+  // SessionStart hook only with the first message. Live on 2026-11-12: a background session conch started sat at "Ask
+  // Codex to do anything" holding one lock, with no row anywhere, and conch showed nothing for it.
+  const options = (home: string, processes: Array<{ pid: number; args: string; holds: string[] }>, cwds: Record<number, string>) => ({
+    codexHome: home, now: NOW,
+    ...processTable(home, processes),
+    processCwd: (pids: number[]) => new Map(pids.filter((pid) => cwds[pid]).map((pid) => [pid, cwds[pid]!])),
+  });
+
+  test("is listed from its own process's lock, in that process's folder, typed into through it", async () => {
+    const home = realCodexHome({ threads: [{ id: "spoken", name: "Has a row" }], locks: ["spoken", "fresh"] });
+    try {
+      const { entries } = await readCodexThreads(options(home, [
+        { pid: 300, args: "codex resume spoken", holds: ["spoken"] },
+        { pid: 400, args: "/opt/homebrew/bin/codex --no-daemon -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox", holds: ["fresh"] },
+      ], { 400: "/work/new" }));
+      const fresh = entries.find((row) => row.sessionId === "fresh") as CodexRow;
+      expect(fresh).toMatchObject({ pid: 400, cwd: "/work/new", status: "idle", transcriptPath: "" });
+      expect(fresh.name).toBeUndefined();
+      expect(fresh.noTerminal).toBeUndefined();
+      // The one with a row is listed the usual way, once.
+      expect(entries.filter((row) => row.sessionId === "spoken")).toHaveLength(1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("an app-server's unwritten threads, a headless run's, and a helper a session is starting are not sessions", async () => {
+    const home = realCodexHome({
+      threads: [{ id: "parent" }],
+      edges: [["parent", "helper-with-edge", "open"]],
+      locks: ["parent", "helper", "helper-with-edge", "app-new", "exec-new"],
+    });
+    try {
+      const { entries } = await readCodexThreads(options(home, [
+        // Holds its own thread and one it hasn't written yet: that one may be a helper.
+        { pid: 500, args: "codex --no-daemon", holds: ["parent", "helper"] },
+        { pid: 510, args: "codex --no-daemon", holds: ["helper-with-edge"] },
+        { pid: 600, args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled", holds: ["app-new"] },
+        { pid: 700, args: "codex exec --json fix the tests", holds: ["exec-new"] },
+      ], { 500: "/w", 510: "/w", 600: "/", 700: "/w" }));
+      expect(entries.map((row) => row.sessionId).sort()).toEqual(["parent"]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("with no folder to show it in, it waits for the next pass rather than borrowing one", async () => {
+    const home = realCodexHome({ threads: [], locks: ["fresh"] });
+    try {
+      const { entries } = await readCodexThreads(options(home, [{ pid: 400, args: "codex", holds: ["fresh"] }], {}));
+      expect(entries).toEqual([]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
 describe("a Codex thread is named as Codex names it", () => {
   const names = async (home: string) =>
     Object.fromEntries(((await readCodexThreads({ codexHome: home, now: NOW })).entries as CodexRow[])

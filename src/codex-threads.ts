@@ -32,6 +32,7 @@ import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
 import { pendingApproval, type PendingApproval } from "./approval.ts";
 import { codexTurnError } from "./conversation.ts";
+import { codexCliArgumentOffset, isCodexHeadlessProcess } from "./codex-process.ts";
 
 export interface CodexThreadsOptions {
   /**
@@ -75,6 +76,8 @@ export interface CodexThreadsOptions {
   terminalSessions?: (codexHome: string, servers: ReadonlyMap<string, number>) => Promise<ReadonlyMap<string, number>>;
   /** Desktop ownership, rather than mere existence of its IPC socket. */
   appThreads?: (codexHome: string, threadIds: readonly string[]) => Promise<ReadonlySet<string>>;
+  /** Each pid's working directory, for a session started but not yet spoken to. Injectable: a test's process table. */
+  processCwd?: (pids: number[]) => ReadonlyMap<number, string> | null | Promise<ReadonlyMap<number, string> | null>;
 }
 
 /**
@@ -593,6 +596,80 @@ export async function codexThreadServer(
   if (!holder) return;
   const args = (await (options.processArgs ?? readProcessArgs)([holder]))?.get(holder);
   return args !== undefined && APP_SERVER_ARGS.test(args) ? holder : undefined;
+}
+
+/**
+ * Codex sessions started and not yet spoken to, from the one thing such a session leaves: its own process holding its
+ * thread's writer lock.
+ *
+ * codex-cli 0.167.2 starts a thread when its window opens (`thread/start`, which takes the lock), but writes no
+ * `threads` row and no rollout until the first message, and runs SessionStart hooks inside that first turn
+ * (`codex-rs/core/src/session/turn.rs`), so no hook reports it either. A background session conch started on
+ * 2026-11-12 sat idle at "Ask Codex to do anything" in its pane with no row at all, where a Claude session shows from
+ * the moment it starts.
+ *
+ * Only a lock that is its holder's only lock, held by the interactive CLI itself: not an app-server, which hosts other
+ * windows' threads and the ChatGPT app's empty new chats, not a headless `codex exec`, and not a process that also holds
+ * other threads, where an unwritten one may be a helper it is starting. A thread with a row or a spawn edge is listed
+ * the usual way. Its folder is its process's own (`lsof -d cwd`), since nothing of Codex's has recorded one yet; once
+ * the first message is sent the row is written under the same id, and the session carries on as the same row.
+ */
+async function startedCodexThreads(
+  codexHome: string,
+  state: string,
+  holders: ReadonlyMap<string, number>,
+  options: Pick<CodexThreadsOptions, "processArgs" | "processCwd">,
+): Promise<CodexSessionEntry[]> {
+  const locksHeld = new Map<number, number>();
+  for (const pid of holders.values()) if (pid > 0) locksHeld.set(pid, (locksHeld.get(pid) ?? 0) + 1);
+  const alone = [...holders].filter(([, pid]) => pid > 0 && locksHeld.get(pid) === 1).map(([id]) => id);
+  if (!alone.length) return [];
+  const placeholders = alone.map(() => "?").join(",");
+  const known = new Set(readCodexDatabase(state, (db) => db
+    .query(`SELECT id FROM threads WHERE id IN (${placeholders})`)
+    .all(...alone) as Array<{ id: string }>).map((row) => String(row.id)));
+  try {
+    for (const row of readCodexDatabase(state, (db) => db
+      .query(`SELECT child_thread_id FROM thread_spawn_edges WHERE child_thread_id IN (${placeholders})`)
+      .all(...alone) as Array<{ child_thread_id: string }>)) known.add(String(row.child_thread_id));
+  } catch {
+    // A Codex without spawn edges has no helpers to mistake for a session.
+  }
+  const started = alone.filter((id) => !known.has(id));
+  if (!started.length) return [];
+  const pids = started.map((id) => holders.get(id)!);
+  const args = await (options.processArgs ?? readProcessArgs)(pids);
+  const interactive = started.filter((id) => {
+    const command = args?.get(holders.get(id)!);
+    return command !== undefined && !APP_SERVER_ARGS.test(command) && !isCodexHeadlessProcess(command)
+      && codexCliArgumentOffset(command.trim().split(/\s+/)) !== null;
+  });
+  if (!interactive.length) return [];
+  const cwds = await (options.processCwd ?? readProcessCwd)(interactive.map((id) => holders.get(id)!));
+  return interactive.flatMap((id) => {
+    const pid = holders.get(id)!;
+    const cwd = cwds?.get(pid);
+    // With no folder there is nothing to label it by or start a resume in; the next pass asks again.
+    if (!cwd) return [];
+    let updatedAt = 0;
+    try {
+      updatedAt = statSync(join(codexHome, "thread-writer-locks", `${id}.lock`)).mtimeMs;
+    } catch {}
+    return [{ sessionId: id, cwd, pid, status: "idle" as const, updatedAt, transcriptPath: "" }];
+  });
+}
+
+/** Each pid's working directory from one `lsof`, or null when it can't say. */
+async function readProcessCwd(pids: number[]): Promise<Map<number, string> | null> {
+  const out = await probeCommand(["lsof", "-a", "-p", pids.join(","), "-d", "cwd", "-F", "pn"], [0, 1]);
+  if (out === null) return null;
+  const cwds = new Map<number, string>();
+  let pid = 0;
+  for (const line of out.split("\n")) {
+    if (/^p\d+$/.test(line)) pid = Number(line.slice(1));
+    else if (pid && line.startsWith("n/")) cwds.set(pid, line.slice(1));
+  }
+  return cwds;
 }
 
 /** Each pid's command line from one `ps`, or null when `ps` cannot run. */
@@ -1228,8 +1305,9 @@ async function codexThreadsPass(
         ...(name ? { name } : {}),
       };
     }) as CodexSessionEntry[];
+    const started = await startedCodexThreads(codexHome, state, holders, options);
 
-    return { entries, complete: true, available: true };
+    return { entries: [...entries, ...started], complete: true, available: true };
   } catch (error) {
     // A torn read, a schema change in a future Codex, an unopenable file —
     // report incomplete so liveness logic never concludes a session is GONE on
