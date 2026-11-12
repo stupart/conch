@@ -195,9 +195,12 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         /// The order the reader dragged the sidebar's folders into, by path (`SessionGrouping.orderKey`); none for a
         /// reader that never dragged one, or a host with no sidebar.
         public var folderOrder: [String]
+        /// Tyler's own sidebar groups and order (`SidebarLayout`, 2026-11-12), so a session in one of his groups is under
+        /// that group here too; empty for a reader who never made one.
+        public var layout: SidebarLayout
 
         public init(ts: Double?, paused: Bool, holding: Int, liveState: String?, rows: [Row], conversations: [String: [Item]], dismissed: [String],
-                    seaGlass: Int? = nil, folderOrder: [String] = []) {
+                    seaGlass: Int? = nil, folderOrder: [String] = [], layout: SidebarLayout = .empty) {
             self.ts = ts
             self.paused = paused
             self.holding = holding
@@ -207,6 +210,7 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
             self.dismissed = dismissed
             self.seaGlass = seaGlass
             self.folderOrder = folderOrder
+            self.layout = layout
         }
 
         public struct Row: Equatable, Sendable {
@@ -402,7 +406,8 @@ public struct LagoonSnapshot: Encodable, Equatable, Sendable {
         let statuses: Set<String> = ["working", "waiting", "needs"]
         // The sidebar's own folders (`SessionGrouping.sidebar`), from the rows' own paths, before `~` replaces home in
         // them, and with the same home the sidebar names "Home".
-        let sidebar = SessionGrouping.sidebar(source.rows.map(\.groupedAs), home: home, order: source.folderOrder).filter { !$0.name.isEmpty }
+        let sidebar = SessionGrouping.sidebar(source.rows.map(\.groupedAs), home: home, order: source.folderOrder, layout: source.layout)
+            .filter { !$0.name.isEmpty }
         var folderOf: [String: String] = [:]
         for folder in sidebar {
             for id in folder.sessionIDs where folderOf[id] == nil { folderOf[id] = Self.folderName(folder.name) }

@@ -4,9 +4,9 @@ import SwiftUI
 import XCTest
 @testable import ConchDesign
 
-/// Not in conch's rows (2026-11-12), drawn offscreen and read back by pixel at the sidebar's width: a row is two lines
-/// however long its name, its one button stays on the row (a long name fades, never pushes it off), and a row with
-/// nothing to press draws no button.
+/// Not in conch's rows and the drop line (2026-11-12), drawn offscreen and read back by pixel at the sidebar's width:
+/// a row is two lines however long its name, its one button stays on the row (a long name fades, never pushes it off),
+/// a row with nothing to press draws no button, and the drop line is a thin line in the drop blue.
 ///
 /// `CONCH_SIDEBAR_RENDERS=<dir>` also writes each picture as a PNG at 2x, to look at.
 @MainActor
@@ -96,5 +96,11 @@ final class SidebarOrganiseRenderTests: XCTestCase {
         let plain = try render(ElsewhereRow(profile, onAction: {}))
         let said = try render(ElsewhereRow(profile, message: "Resuming in conch…", onAction: {}), dark: true, name: "elsewhere-row-message-dark")
         XCTAssertEqual(plain.height, said.height)
+    }
+
+    func testTheDropLineIsAThinLineInTheDropBlue() throws {
+        let line = try render(SidebarDropLine(), name: "drop-line")
+        XCTAssertEqual(line.height, 6)
+        XCTAssertGreaterThan(line.blue(columns: 20..<200), 180, "the line runs across the list")
     }
 }

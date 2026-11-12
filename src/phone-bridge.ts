@@ -6,6 +6,7 @@ import { decodePeerMessageRequest } from "./peer-message-send.ts";
 import { decodeResourceRequest } from "./resource-ledger.ts";
 import { decodeTeamRequest } from "./team-desk.ts";
 import { decodeElsewhereRequest } from "./elsewhere.ts";
+import { decodeSidebarGroupsRequest } from "./sidebar-groups.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -232,8 +233,10 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   // Teams start sessions on this Mac and hold their tasks: the Mac's and its CLI's (team-desk.ts). The phone sees the
   // teams running in the sessions file, as the sidebar groups them.
   decodeTeamRequest,
-  // Not in conch's Resume starts a session and its Add reads a folder as an account (elsewhere.ts).
+  // Not in conch's Resume starts a session and its Add reads a folder as an account (elsewhere.ts); the sidebar's groups
+  // are arranged on the Mac and only shown on the phone (sidebar-groups.ts).
   decodeElsewhereRequest,
+  decodeSidebarGroupsRequest,
   // What sessions left running, with their commands and folders, and a Stop: the Mac's (resource-ledger.ts).
   decodeResourceRequest,
 };

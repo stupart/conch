@@ -315,6 +315,7 @@ import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapsho
 import { ParkedJobAttacher } from "./parked-jobs.ts";
 import { claudeSwapRuns } from "./claude-swap-runs.ts";
 import { canonicalDir, elsewhereAccountLabel, elsewhereResumeRequest, ElsewhereWatch, registeredAccount, type ElsewhereRequest } from "./elsewhere.ts";
+import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGroups } from "./sidebar-groups.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
@@ -1882,6 +1883,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     backgroundServersLook.invalidate();
   }
 
+  /** Tyler's sidebar groups and order (sidebar-groups.ts): read once, replaced whole when the Mac app saves a change. */
+  let sidebarLayout: SidebarGroups = readSidebarGroups();
   /** The agents running outside conch (elsewhere.ts), looked for after a registry read, at most every ten seconds. */
   const elsewhere = new ElsewhereWatch({ onChange: () => void renderSessionPanel() });
   function observeElsewhere(infos: readonly SessionInfo[]): void {
@@ -3300,9 +3303,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       // desk is built (the first renders run earlier in startup).
       const teams = teamDeskReady?.published();
       if (teams?.length) lastPublishedPanelState.teams = teams;
-      // The agents running outside conch, for the sidebar's Not in conch (elsewhere.ts), when there are any.
+      // The agents running outside conch, for the sidebar's Not in conch (elsewhere.ts), and Tyler's own groups and order
+      // (sidebar-groups.ts): each only when it says something.
       const outside = elsewhere.published();
       if (outside.length) lastPublishedPanelState.elsewhere = outside;
+      if (hasSidebarGroups(sidebarLayout)) lastPublishedPanelState.sidebarGroups = sidebarLayout;
       // Setup's practice session, first among the rows while it runs, and `features.practice` always (practice.ts).
       if (practice) lastPublishedPanelState = practice.publish(lastPublishedPanelState);
       // Each working row's line, through its throttle: a fresh build carries none until this puts them back.
@@ -4791,6 +4796,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     resources,
     teams: teamDesk,
     elsewhere: { act: actOnElsewhere },
+    sidebarGroups: {
+      save: (layout) => {
+        writeSidebarGroups(layout);
+        sidebarLayout = layout;
+        void renderSessionPanel();
+        return { kind: "sidebar-groups", layout };
+      },
+    },
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,
     pageCapture,

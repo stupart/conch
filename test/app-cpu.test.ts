@@ -142,7 +142,7 @@ describe("a sidebar row is drawn again only when what it shows changed", () => {
   const ledger = section(dashboard, "private struct SessionLedger: View {", "private struct LedgerReveal: Equatable {");
 
   test("each row and agent group is behind its own ==", () => {
-    expect(ledger).toMatch(/DashboardRow\([^]*?state\.rows\.first\(where: \{ \$0\.id == id \}\)\?\.label\s*\}\s*\)\s*\.equatable\(\)/);
+    expect(ledger).toMatch(/DashboardRow\([^]*?state\.rows\.first\(where: \{ \$0\.id == id \}\)\?\.label\s*\},[^]*?onMove: \{ perform\(\$0, on: row\.id\) \}\s*\)\s*\.equatable\(\)/);
     expect(ledger).toMatch(/AgentGroup\(\s*agents: agents,\s*selectedID: selectedSessionID,\s*onSelect: \{ actions\.onSelectSession\(\$0\) \}\s*\)\s*\.equatable\(\)/);
   });
 

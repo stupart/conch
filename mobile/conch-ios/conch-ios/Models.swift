@@ -34,6 +34,8 @@ struct PublishedState: Decodable, Equatable {
     var restore: Restore?
     /// Agents on the Mac that conch has no row for (src/elsewhere.ts): the list's Not in conch, shown, never acted on here.
     var elsewhere: [ElsewhereAgent] = []
+    /// Tyler's own sidebar groups and order, arranged on the Mac (src/sidebar-groups.ts): the list draws them the same.
+    var sidebarGroups: SidebarLayout?
 
     struct Restore: Decodable, Equatable {
         struct Session: Decodable, Equatable {
@@ -432,7 +434,7 @@ struct PublishedState: Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
         case ownerDeviceId, deliveries, sessionSettings, naturalVoices, speechEngine, features, restore
-        case elsewhere
+        case elsewhere, sidebarGroups
     }
 
     init() {}
@@ -491,6 +493,7 @@ struct PublishedState: Decodable, Equatable {
                 if let agent = try? agents.decode(ElsewhereAgent.self) { elsewhere.append(agent) } else { _ = try? agents.decode(AnyIgnored.self) }
             }
         }
+        sidebarGroups = try? c.decodeIfPresent(SidebarLayout.self, forKey: .sidebarGroups)
         // Declared since deliverables were versioned and never read, so everything the daemon gates on
         // it (Background sessions, the viewed state) read as unsupported on every Mac.
         features = try? c.decodeIfPresent(Features.self, forKey: .features)

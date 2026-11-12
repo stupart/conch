@@ -65,11 +65,18 @@ struct LedgerView: View {
 
     /// The rows grouped by the folder they run in — the same rule the Mac list uses
     /// (ConchDesign/SessionGrouping.swift), so two checkouts of one repo are told apart and
-    /// a child belongs wherever its parent does.
+    /// a child belongs wherever its parent does — with Tyler's own groups and order from the
+    /// Mac on top (ConchDesign/SidebarLayout.swift, 2026-11-12): arranged there, drawn the same here.
     private func folders(in state: PublishedState) -> [SessionFolder] {
-        SessionGrouping.folders(
-            for: state.rows.map { ($0.id, $0.workDirs?.first ?? $0.cwd, $0.parentSessionId ?? $0.startedBySessionId) }
+        SessionGrouping.sidebar(
+            state.rows.map {
+                SessionGrouping.Session(id: $0.id, cwd: $0.cwd, workDirs: $0.workDirs, parentSessionId: $0.parentSessionId,
+                                        startedBySessionId: $0.startedBySessionId)
+            },
+            home: "", order: [], layout: state.sidebarGroups ?? .empty
         )
+        // An empty group is the Mac's place to drop a session into; the phone doesn't drag.
+        .filter { !($0.isGroup && $0.sessionIDs.isEmpty) }
     }
 
     private func rows(of folder: SessionFolder, in state: PublishedState) -> [PublishedState.Row] {

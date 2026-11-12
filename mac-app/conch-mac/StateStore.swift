@@ -900,6 +900,23 @@ final class StateStore: ObservableObject {
         return failure
     }
 
+    /// The sidebar's layout after a drag or a Move to (ConchDesign/SidebarLayout.swift), saved by the daemon, which
+    /// publishes it back. Whether it was saved: the ledger shows its own copy until the published one catches up.
+    func saveSidebarGroups(_ layout: SidebarLayout) async -> Bool {
+        let failure: String?
+        switch await socketClient.request(ConchSidebarGroupsRequest(layout: layout), timeout: 3) {
+        case let .reply(data):
+            let reply = try? JSONDecoder().decode(ConchSidebarReply.self, from: data)
+            failure = reply?.kind == "sidebar-groups" ? nil : Self.nonempty(reply?.error) ?? "Unexpected reply from daemon"
+        case .connectFailed:
+            failure = "Daemon not running"
+        case .timeout:
+            failure = "Daemon did not reply"
+        }
+        if let failure { reportAppError(operation: "sidebar-groups", message: failure) }
+        return failure == nil
+    }
+
     func forkSession(_ row: SessionRow) {
         rowMessages[row.id] = "Forking…"
         let socketClient = socketClient
@@ -1696,7 +1713,8 @@ final class StateStore: ObservableObject {
             resources: sourceState.resources,
             // The sidebar's teams (ConchDesign/Teams.swift).
             teams: sourceState.teams,
-            elsewhere: sourceState.elsewhere
+            elsewhere: sourceState.elsewhere,
+            sidebarGroups: sourceState.sidebarGroups
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

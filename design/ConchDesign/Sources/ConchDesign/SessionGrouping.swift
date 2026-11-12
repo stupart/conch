@@ -89,7 +89,8 @@ public enum SessionGrouping {
     /// A team's group's id: never a path, so a team and a folder never share a slot in the stored order.
     public static func teamGroupID(_ teamID: String) -> String { "team:\(teamID)" }
 
-    /// Where the Mac reader keeps the order Tyler dragged the folders into: their paths, newline-joined.
+    /// Where the Mac reader kept the order Tyler dragged the folders into: their paths, newline-joined. The sidebar's
+    /// layout (`SidebarLayout.sections`, the daemon's) holds the order once anything is arranged; this stands in until then.
     public static let orderKey = "conch.folderOrder"
 
     /// That stored order, as paths.
@@ -119,7 +120,8 @@ public enum SessionGrouping {
             // A session started in the home folder headed the list with the account name — "you" — which
             // reads like a project and is not one. Seen on the live window, not in any test: every fixture used a
             // project path.
-            guard folder.id == home else { return folder }
+            // Never the unnamed folder: a phone, which doesn't know the Mac's home, passes none.
+            guard !folder.id.isEmpty, folder.id == home else { return folder }
             return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
         }
         return ordered(teams.isEmpty ? grouped : withTeams(grouped, sessions: sessions, teams: teams), by: order)
@@ -225,6 +227,11 @@ public enum SessionGrouping {
     /// simply appears under its new folder, and a folder keeps its slot as sessions come and
     /// go in it — including across days when it is not on screen at all, since `preferred`
     /// is never pruned to what is visible.
+    ///
+    /// 2026-11-12: rows are dragged now, into Tyler's own groups and within a section
+    /// (SidebarLayout.swift, "would also love to drag and drop for organization"). A folder
+    /// still never takes a session that doesn't run in it: a group is the one place a
+    /// session can be put, and it says so by being a group rather than a path.
     public static func ordered(_ folders: [SessionFolder], by preferred: [String]) -> [SessionFolder] {
         let rank = Dictionary(preferred.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         let chosen = folders.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }

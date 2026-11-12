@@ -345,7 +345,13 @@ struct ConchElsewhereRequest: Encodable, Sendable {
     var host: String? = nil
 }
 
-/// The daemon's answer: `elsewhere-done`, or an error naming what was wrong.
+/// The sidebar's whole layout after a change (src/sidebar-groups.ts), which the daemon saves and publishes.
+struct ConchSidebarGroupsRequest: Encodable, Sendable {
+    let kind = "sidebar-groups"
+    let layout: SidebarLayout
+}
+
+/// The daemon's answer to either: `elsewhere-done` / `sidebar-groups`, or an error naming what was wrong.
 struct ConchSidebarReply: Decodable, Sendable {
     let kind: String
     let error: String?

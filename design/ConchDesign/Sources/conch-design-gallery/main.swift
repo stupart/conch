@@ -1171,6 +1171,7 @@ try renderWorkflowsLibrary()
 try renderStillRunning()
 // Settings › Teams and a team in the sidebar (TeamsGallery.swift).
 try MainActor.assumeIsolated { try renderTeams() }
+try renderSidebarOrganise()
 
 // MARK: - Infinite scroll
 

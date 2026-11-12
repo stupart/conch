@@ -283,6 +283,7 @@ test("Not in conch's actions name a published agent, and are the Mac app's alone
   expect(decodeElsewhereRequest({ kind: "elsewhere", action: "kill", id: "claude:1" })).toHaveProperty("error");
   expect(decodeElsewhereRequest({ kind: "session-start" })).toBeNull();
   expect(isMacAppOnlyRequest({ kind: "elsewhere", action: "resume", id: "claude:4927" })).toBe(true);
+  expect(isMacAppOnlyRequest({ kind: "sidebar-groups", layout: { v: 1, groups: [], placements: {}, rows: {}, sections: [] } })).toBe(true);
 });
 
 test("Resume opens the conversation in the profile it was found in; Add names the folder, never an email", async () => {
