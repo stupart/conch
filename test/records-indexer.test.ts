@@ -320,13 +320,17 @@ test("a batch late in a long session holds the worker's loop briefly, not for a 
     type: n % 2 ? "assistant" : "user", uuid: `line-${n}`, ...(n ? { parentUuid: `line-${n - 1}` } : {}),
     message: { role: n % 2 ? "assistant" : "user", content: `message ${n}` },
   }) + "\n").join(""));
+  // 2026-11-11: CPU time, not the wall clock. A loaded gate parks this process between ticks, so a wall-clock limit
+  // failed here at 304 ms with the walk long fixed. The walk costs CPU: with #422's index taken away a batch spends
+  // 1,000-1,500 ms of it, and with the index 20-30 ms however busy the Mac is.
   let longest = 0;
-  while (f.indexer.status().linesIndexed < lines && longest < 100) {
-    const started = performance.now();
+  while (f.indexer.status().linesIndexed < lines && longest < 250) {
+    const started = process.cpuUsage();
     await f.indexer.tick();
-    longest = Math.max(longest, performance.now() - started);
+    const spent = process.cpuUsage(started);
+    longest = Math.max(longest, (spent.user + spent.system) / 1000);
   }
-  expect(longest).toBeLessThan(100);
+  expect(longest).toBeLessThan(250);
   expect(f.store.counts().items).toBe(lines);
 });
 

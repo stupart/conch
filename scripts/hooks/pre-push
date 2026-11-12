@@ -4,5 +4,7 @@
 #
 # It checks the working tree, not the commits being pushed: an uncommitted fix
 # turns it green and a stray uncommitted edit turns it red. Commit first.
+# A working tree the gate already passed returns at once (build/ci-local/passed/),
+# so pushing right after a green `scripts/ci-local.sh` or `all` runs nothing twice.
 # Wired by scripts/install-hooks.sh, which points core.hooksPath at this directory.
 exec "$(git rev-parse --show-toplevel)/scripts/ci-local.sh"

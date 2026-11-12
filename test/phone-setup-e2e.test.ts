@@ -177,6 +177,16 @@ function localRelay() {
   return server;
 }
 
+/**
+ * The Mac has taken the phone's hello: the key exchange is under way on its side. 2026-11-11: relayPhone can't say so
+ * itself. The Mac also sends a hello of its own as its socket opens, after "phone relay connected" is logged; on a
+ * loaded Mac that one reaches the room after the phone has joined, the phone completes on it, and the Mac has not yet
+ * read the phone's hello, so it still said waiting (both tests below failed that way in gate runs).
+ */
+function macTookHello(m: ReturnType<typeof mac>): Promise<boolean> {
+  return until("the Mac to take the phone's hello", () => m.logs.includes("phone paired — session established"));
+}
+
 /** A phone as the app is one: the scanned code's room and secret, a hello, then requests sealed under the session keys. */
 async function relayPhone(port: number, pairing: RelayPairing) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/room/${pairing.roomId}?role=phone`);
@@ -262,6 +272,7 @@ describe("over the encrypted relay", () => {
 
     const phone = await relayPhone(relayServer.port!, pairing);
     cleanups.push(() => phone.close());
+    await macTookHello(m);
     // The Mac has accepted the phone's hello and answered it; no frame under the new keys yet: in flight.
     expect(m.published()).toEqual({ enabled: true, paired: false, device: null, setup: { stage: "connecting", declined: [] } });
 
@@ -320,6 +331,7 @@ describe("over the encrypted relay", () => {
     await until("the Mac in the room", () => m.logs.includes("phone relay connected"));
     const phone = await relayPhone(relayServer.port!, pairing);
     cleanups.push(() => phone.close());
+    await macTookHello(m);
     expect(m.published().setup.stage).toBe("connecting");
     // The daemon stops before the phone's first frame: that exchange is over, and it never paired.
     relay.stop();

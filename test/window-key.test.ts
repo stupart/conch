@@ -38,7 +38,7 @@ describe("window keys", () => {
 });
 
 describe("two windows on one id, end to end", () => {
-  function registry(): string {
+  function registry(older = 39889, newer = 21210): string {
     const claudeDir = mkdtempSync(join(tmpdir(), "conch-window-"));
     mkdirSync(join(claudeDir, "sessions"), { recursive: true });
     const write = (pid: number, name: string, startedAt: number) =>
@@ -46,11 +46,13 @@ describe("two windows on one id, end to end", () => {
         pid, sessionId: UUID, name, startedAt,
         cwd: "/Users/t", kind: "interactive", entrypoint: "cli",
       }));
-    write(39889, "morrow site", 1_000);
-    write(21210, "morrow-prime", 9_000);
+    write(older, "morrow site", 1_000);
+    write(newer, "morrow-prime", 9_000);
     return claudeDir;
   }
-  const opts = (dir: string) => ({ configDir: join(dir, "conch-config") });
+  // 2026-11-11: both windows are live. The pids are made up, so whether the Mac happens to be running one must not
+  // decide it: with one of them held by a real process the other read as a dead leftover and was dropped.
+  const opts = (dir: string) => ({ configDir: join(dir, "conch-config"), isPidAlive: () => true });
 
   test("each window is addressable, and the session stays live under either name", async () => {
     const dir = registry();
@@ -78,11 +80,13 @@ describe("two windows on one id, end to end", () => {
   });
 
   test("a hook resolves to one window and reports it by key", async () => {
-    const dir = registry();
+    // 2026-11-11: ancestry reads the real process tree, so the windows are pids no process can have. A made-up one
+    // that happened to be this test's shell or terminal would be found as the hook's window instead.
+    const dir = registry(2_147_483_646, 2_147_483_647);
     const found = await findHookWindow(dir, UUID);
     // this test process is no descendant of either fake pid, so ancestry finds
     // nothing and the newest window is the fallback — never a null attribution
-    expect(found?.sessionId).toBe(`${UUID}#21210`);
+    expect(found?.sessionId).toBe(`${UUID}#2147483647`);
     expect(found?.agentSessionId).toBe(UUID);
     rmSync(dir, { recursive: true, force: true });
   });
