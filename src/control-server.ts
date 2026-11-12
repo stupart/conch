@@ -2,6 +2,7 @@ import { decodeFailureTicketRequest, type FailureDesk } from "./failure-tickets.
 import { decodeNoticeRequest, type NoticeRequest } from "./notice-wire.ts";
 import { decodeBugReportRequest, type BugReportReply, type BugReportRequest } from "./bug-report.ts";
 import { decodePeerMessageRequest, type PeerMessageReply, type PeerMessageRequest } from "./peer-message-send.ts";
+import { decodeResourceRequest, type ResourceReply, type ResourceRequest } from "./resource-ledger.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1375,6 +1376,11 @@ export interface ControlServerOptions {
    */
   bugReports?(request: BugReportRequest): BugReportReply;
   /**
+   * The resource ledger (resource-ledger.ts): `conch resources` and the Mac app's Still running, their list, Stop, Keep
+   * and Ask later, and an agent's `conch resources add`. Absent: answered as unavailable.
+   */
+  resources?: { handle(request: ResourceRequest): Promise<ResourceReply> };
+  /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
    */
@@ -1612,6 +1618,21 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               ? await options.peerMessages.send(peerRequest)
               : { kind: "peer-message-refused", code: "unsupported", error: "This conch can't deliver messages between sessions." };
           sock.end(encodeControlFrame(JSON.stringify(reply)));
+          return;
+        }
+        // The resource ledger (resource-ledger.ts) names no session: what sessions left running, and Tyler's word on one.
+        // A stop waits for the stop. The Mac app's and the CLI's alone, never a phone's (phone-bridge.ts
+        // `MAC_APP_ONLY_DECODERS`): stopping something is for someone at the Mac to decide.
+        const resourceRequest = decodeResourceRequest(body);
+        if (resourceRequest) {
+          let reply: ResourceReply;
+          if ("error" in resourceRequest) reply = { kind: "resource-error", error: resourceRequest.error };
+          else if (!options.resources) reply = { kind: "resource-error", error: "This conch has no resource ledger; update it." };
+          else reply = await options.resources.handle(resourceRequest);
+          let frame: Buffer;
+          try { frame = encodeControlFrame(JSON.stringify(reply)); }
+          catch { frame = encodeControlFrame(JSON.stringify({ kind: "resource-error", error: "That was too large to send." })); }
+          sock.end(frame);
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

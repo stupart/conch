@@ -1,4 +1,5 @@
 import type { FailureDigest } from "./failure-tickets.ts";
+import type { PublishedResources } from "./resource-ledger.ts";
 import type { PreviewRequest, ReviewPreview } from "./review-preview.ts";
 import type { AccessState, ReviewSnapshot } from "./page-access.ts";
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
@@ -359,6 +360,11 @@ export interface PublishedSessionRow {
    */
   activity?: RowActivity;
   /**
+   * How many things this live session started are still running (resource-ledger.ts): its row's "3 still running".
+   * Absent at none.
+   */
+  stillRunning?: number;
+  /**
    * The permission prompt a `needs` row is showing, so an app can put Allow /
    * Deny in front of the person rather than only a red mark. `answerable:
    * false` where conch can't press keys at the agent's dialog (Codex).
@@ -565,6 +571,12 @@ export interface PublishedState {
    * Absent from older daemons.
    */
   failures?: FailureDigest;
+  /**
+   * What sessions left running (resource-ledger.ts): every resource with its owner, age, CPU, memory and what conch is
+   * asking about it. The sessions file's alone, written by `writeSessionsFile`; the phone gets each row's
+   * `stillRunning`. Absent from older daemons.
+   */
+  resources?: PublishedResources;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
