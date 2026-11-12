@@ -74,8 +74,9 @@ beforeAll(async () => {
     }
     if (name === "DashboardView.swift") {
       text = patch(text, name,
-        "    var body: some View {\n        Group {\n            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty {",
-        "    var body: some View {\n        Group {\n            let _ = LedgerProbe.ledgerBody()\n            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty {");
+        // Up to the condition's first two terms: a list with nothing but what sessions left running draws too (2026-11-11).
+        "    var body: some View {\n        Group {\n            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty",
+        "    var body: some View {\n        Group {\n            let _ = LedgerProbe.ledgerBody()\n            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty");
       text = patch(text, name,
         "    var body: some View {\n        Group {\n            if isRenaming {\n                rowContent",
         "    var body: some View {\n        Group {\n            let _ = LedgerProbe.rowBody()\n            if isRenaming {\n                rowContent");
