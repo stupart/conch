@@ -31,7 +31,14 @@ export interface McpCallRecord {
   error?: string;
   /** The argument names the call passed, sorted: which knobs agents turn, never what they set them to. */
   args?: string[];
+  /**
+   * How it was called when not as an MCP tool (2026-11-11): `cli`, `conch agent …` in the agent's shell (agent-cli.ts);
+   * `run`, the same command through the `conch_run` tool. `tool` is the handler's either way, so a tool keeps its history.
+   */
+  via?: McpCallVia;
 }
+
+export type McpCallVia = "cli" | "run";
 
 /** What `dispatchJsonRpc` hands its observer about one call; the arguments only so their values can be scrubbed. */
 export interface McpCallObservation {
@@ -43,6 +50,7 @@ export interface McpCallObservation {
   arguments?: unknown;
   /** The call's `params._meta`: a Codex client names its thread there. */
   meta?: unknown;
+  via?: McpCallVia;
 }
 
 export interface McpCaller {
@@ -136,6 +144,7 @@ export function mcpCallRecord(
     outcome: call.outcome,
     ...(call.error ? { error: cleanCallError(call.error, call.arguments, conchHome(), vocabulary) } : {}),
     ...(args ? { args } : {}),
+    ...(call.via ? { via: call.via } : {}),
   };
 }
 
@@ -270,6 +279,8 @@ export function percentile(sorted: readonly number[], q: number): number {
 export interface McpToolUsage {
   tool: string;
   calls: number;
+  /** Of those, how many came through `conch agent` (in a shell, or through `conch_run`) rather than as the MCP tool. */
+  cli: number;
   sessions: number;
   outcomes: Record<McpCallOutcome, number>;
   errors: number;
@@ -295,6 +306,8 @@ export interface McpUsageSummary {
   until: number;
   path: string;
   calls: number;
+  /** Calls through `conch agent` (`via` cli or run). */
+  cli: number;
   errors: number;
   sessions: number;
   outcomes: Record<McpCallOutcome, number>;
@@ -336,6 +349,7 @@ export function summariseMcpCalls(all: readonly McpCallRecord[], options: McpUsa
     return {
       tool,
       calls: calls.length,
+      cli: calls.filter((call) => call.via !== undefined).length,
       sessions: new Set(calls.flatMap((call) => (call.session ? [call.session] : []))).size,
       outcomes,
       errors,
@@ -352,6 +366,7 @@ export function summariseMcpCalls(all: readonly McpCallRecord[], options: McpUsa
     until: options.until ?? Date.now(),
     path: options.path ?? mcpUsagePath(),
     calls: records.length,
+    cli: records.filter((record) => record.via !== undefined).length,
     errors: records.length - outcomes.ok,
     sessions: new Set(records.flatMap((record) => (record.session ? [record.session] : []))).size,
     outcomes,
@@ -381,15 +396,15 @@ export function formatMcpUsage(summary: McpUsageSummary): string[] {
   if (!summary.calls) return [...lines, "no calls recorded in this window"];
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   lines.push(
-    `${summary.calls} calls · ${summary.sessions} sessions · ${summary.errors} errors`
+    `${summary.calls} calls${summary.cli ? ` (${summary.cli} through conch agent)` : ""} · ${summary.sessions} sessions · ${summary.errors} errors`
       + ` (input ${summary.outcomes["input-error"]}, refused ${summary.outcomes.refused}, failed ${summary.outcomes.failed})`,
     "",
-    `${"tool".padEnd(24)} ${"calls".padStart(6)} ${"sess".padStart(5)} ${"err".padStart(5)} ${"rate".padStart(5)}`
+    `${"tool".padEnd(24)} ${"calls".padStart(6)} ${"cli".padStart(5)} ${"sess".padStart(5)} ${"err".padStart(5)} ${"rate".padStart(5)}`
       + ` ${"in".padStart(4)} ${"ref".padStart(4)} ${"fail".padStart(4)} ${"p50ms".padStart(7)} ${"p90ms".padStart(7)}`,
   );
   for (const tool of summary.tools) {
     lines.push(
-      `${tool.tool.padEnd(24)} ${String(tool.calls).padStart(6)} ${String(tool.sessions).padStart(5)} ${String(tool.errors).padStart(5)}`
+      `${tool.tool.padEnd(24)} ${String(tool.calls).padStart(6)} ${String(tool.cli).padStart(5)} ${String(tool.sessions).padStart(5)} ${String(tool.errors).padStart(5)}`
         + ` ${pct(tool.errorRate).padStart(5)} ${String(tool.outcomes["input-error"]).padStart(4)} ${String(tool.outcomes.refused).padStart(4)}`
         + ` ${String(tool.outcomes.failed).padStart(4)} ${String(tool.p50ms).padStart(7)} ${String(tool.p90ms).padStart(7)}`,
     );

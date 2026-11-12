@@ -47,6 +47,8 @@ What is newly captured, which before reached only the text log, a spoken line, o
 | A hook that couldn't reach a daemon whose socket is there (crashed, or too busy to accept in 500 ms) | `hook` (source `hook`) | nothing: the hook is a short-lived process with no log |
 | The Mac's New session sheet: a session that never checked in | `session-start` (source `mac`) | a notice on the sheet only |
 | Every MCP tool call that ended `failed`, `refused` or `input-error` | the tool's name (origin `mcp`) | `mcp-usage.jsonl` only, never a ticket |
+| Every `conch agent` command that ended the same way, in a shell or through `conch_run` (2026-11-11) | the tool's name it runs (origin `mcp`; its line says `via: "cli"` or `"run"`) | new |
+| A bug filed by hand with `conch bug` (2026-11-11) | its area (origin `bug`) | nowhere: the agent's reply, at best |
 
 Not captured, on purpose:
 
@@ -64,8 +66,9 @@ Not captured, on purpose:
 
 A ticket groups records with the same **signature**: `origin · operation · message`, where
 
-- **origin** is where it came from: `daemon`, `mac`, `ios`, `hook`, or `mcp`;
-- **operation** is the record's operation, or for MCP the tool's name plus its outcome (`conch_capture failed`);
+- **origin** is where it came from: `daemon`, `mac`, `ios`, `hook`, `mcp`, or `bug`;
+- **operation** is the record's operation, for MCP the tool's name plus its outcome (`conch_capture failed`), and for a
+  bug its area (`capture`, or `conch` when it names none);
 - **message** is the record's message, normalized: URLs → `<url>`; absolute and `~` paths → `<path>`; UUIDs and hex
   ids → `<id>`; anything in quotes (session labels, page text) → `"…"`; file names → `<file>`; numbers → `<n>`;
   whitespace collapsed; then only its **first sentence**, at most 160 characters. The rest of a message is usually
@@ -93,6 +96,29 @@ Tyler can also **Reopen** (ignored or fixing → open) and **Mark fixed** (no PR
 **The store** is `~/.config/conch/failure-tickets.json`, mode 0600, written whole through a temporary file and a
 rename. On its first run the desk reads back 14 days of records, so the list starts with what is happening now, not
 September.
+
+## Bugs filed by hand
+
+Tyler, 2026-11-11: *"Also tool for them to submit bugs if possible."* What conch records is what conch saw; an agent
+sees more (a pill that never lit, a tab that opened under the wrong session, an answer that contradicts the page).
+`conch bug "<title>" --happened "<what you saw>" --expected "<what should have>" [--area <word>] [--evidence <path or
+line>]...` files it (`src/bug-report.ts`), from an agent's shell (`conch agent bug`, or the `conch_run` tool) or
+Tyler's terminal.
+
+- The CLI sends `bug-report` to the daemon, which writes the record through `appendConchError` (source `bug`: the
+  title is its message, the area its operation, what happened, what was expected and the evidence its `state`) and
+  polls the desk at once. So it is one record path like every other, and the answer gives the ticket's number:
+  `opened` (a new ticket), `counted` (the same bug from another session, count + 1), `reopened` (a fixed one, back).
+- Its session is the one conch verifies from the shell's process tree (`conch agent whoami`); a report from a shell
+  conch can't tie to a session (Tyler's terminal) is filed under none, and says so.
+- **Limits**, kept by who filed it, as `conch_notify`'s are: the same bug again within the hour is answered
+  `duplicate` with its ticket, and more than 5 in an hour is refused.
+- The daemon down: the CLI writes the record itself, as a hook does, and the desk files it at its next start; the
+  answer says there is no number yet. A daemon from before `conch bug` (it answers the request as a malformed turn):
+  nothing is written, since its desk would drop a record of an origin it doesn't know, and the answer says to file it
+  again once conch is updated.
+- A bug ticket's Fix brief says it is a report, not a record: reproduce it first.
+- The phone bridge refuses `bug-report` (`MAC_APP_ONLY_DECODERS`): tickets are the Mac's.
 
 ## Showing it
 
@@ -148,7 +174,8 @@ ticket stays open.
 
 The conch repo on GitHub is **public**, and records carry session names, folder paths, client names and prompt text.
 
-- Tickets live only in `~/.config/conch/` (0600). Nothing in the loop files anything to GitHub or any other service.
+- Tickets live only in `~/.config/conch/` (0600). Nothing in the loop files anything to GitHub or any other service,
+  and `conch bug` is no exception: an agent asked to report a conch bug files it here, never as an issue.
   The only thing that leaves the Mac is the PR the fix session opens, under rule 5 above.
 - `gh` is used only to read PR state for branches the loop named.
 - **Mirror seam**: `FAILURE_MIRRORS` in `src/failure-tickets.ts` is an empty list with the interface a private mirror

@@ -73,8 +73,9 @@ export function relabelHint(label: string, source: LabelSource, summaries: reado
   const newest = summaries[0]!;
   return {
     label,
+    // 2026-11-11: renaming is `conch agent rename` in the shell (agent-cli.ts), which every session has.
     hint: `Your session is still labelled '${label}' but your recent work is about '${newest}'. If the focus has moved,`
-      + " call conch_rename with a short new label.",
+      + " rename it with `conch agent rename <your session id> <a short new label>`.",
   };
 }
 

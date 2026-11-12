@@ -10,7 +10,7 @@ import {
 import { CONCH_VERSION } from "../src/version.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, isAbsolute, resolve } from "node:path";
-import { AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
+import { AGENT_COMMANDS, AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
 import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
@@ -21,6 +21,8 @@ import {
   runMcpServer,
   MCP_HISTORY_MAX_BYTES,
   MCP_TOOLS,
+  MCP_LISTED_TOOLS,
+  listedMcpTools,
   createMcpToolHandlers,
   defaultMcpDependencies,
   dispatchJsonRpc,
@@ -88,7 +90,11 @@ const TOOL_NAMES = [
   "browser_close",
   "atlas_show",
   "conch_notify",
+  "conch_run",
 ] as const satisfies readonly McpToolName[];
+
+/** What a session started now is listed (2026-11-11): publishing, and the CLI for a shell that can't reach conch. */
+const LISTED_TOOL_NAMES = ["review_to_front", "conch_run"] as const;
 
 const DEFERRED_TOOL_NAMES = [
   "conch_prioritize",
@@ -406,6 +412,7 @@ function recordingHandlers(
     browser_close: handler("browser_close"),
     atlas_show: handler("atlas_show"),
     conch_notify: handler("conch_notify"),
+    conch_run: handler("conch_run"),
   };
 }
 
@@ -533,7 +540,7 @@ describe("recorded history MCP tools", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the sixteen tools with valid closed schemas", async () => {
+  test("tools/list returns the listed tools; every tool, listed or moved, has a valid closed schema", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -546,11 +553,12 @@ describe("MCP tool discovery", () => {
     }
 
     expect(response?.id).toBe(11);
-    expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(TOOL_NAMES.length);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(TOOL_NAMES.length);
+    // A session started now is listed two tools; the rest are `conch agent` commands.
+    expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...LISTED_TOOL_NAMES]);
+    expect(MCP_TOOLS.map((tool) => tool.name)).toEqual([...TOOL_NAMES]);
+    expect(new Set(MCP_TOOLS.map((tool) => tool.name)).size).toBe(TOOL_NAMES.length);
     for (const deferred of DEFERRED_TOOL_NAMES) {
-      expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
+      expect(MCP_TOOLS.some((tool) => (tool.name as string) === deferred)).toBe(false);
     }
 
     const expectedProperties: Record<McpToolName, string[]> = {
@@ -582,6 +590,7 @@ describe("MCP tool discovery", () => {
       browser_close: ["tab"],
       atlas_show: ["path", "markdown", "summary"],
       conch_notify: ["body", "title", "session", "link"],
+      conch_run: ["command"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -614,9 +623,10 @@ describe("MCP tool discovery", () => {
       browser_close: ["tab"],
       atlas_show: ["path", "markdown"],
       conch_notify: ["body"],
+      conch_run: ["command"],
     };
 
-    for (const tool of result.tools) {
+    for (const tool of MCP_TOOLS as readonly unknown[]) {
       if (!isRecord(tool) || typeof tool.name !== "string" || !isRecord(tool.inputSchema)) {
         throw new Error("invalid tool definition");
       }
@@ -1632,7 +1642,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     // This harness's daemon takes a publication without a word (`sendToDaemon`), as one from before verdicts does:
     // taken, and said to be unconfirmed, never "filed".
     const unconfirmed = "this conch daemon does not say whether it filed a publication; the id and version below are"
-      + " predicted, and conch_deliverables says what was filed";
+      + " predicted, and conch agent deliverables says what was filed";
     const long = await callTool(handlers, "review_to_front", { summary: "x".repeat(250), session: "Build" });
     expect(JSON.parse(toolText(long))).toEqual({
       outcome: "accepted",
@@ -2039,7 +2049,7 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
       "non-executable",
       `${MAX_SPEAK_CHARS} characters`,
       "already speaking",
-      'scope: "all"',
+      "--all",
       "yielded",
       "not on the list",
     ]) {
@@ -2791,7 +2801,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
     const result = JSON.parse(toolText(await callTool(older.handlers, "review_to_front", { summary: "the sim", kind: "simulator" })));
     expect(result).toMatchObject({
       outcome: "accepted",
-      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the id and version below are predicted, and conch_deliverables says what was filed",
+      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the id and version below are predicted, and conch agent deliverables says what was filed",
       version: 1,
       kind: "simulator",
     });
@@ -2817,7 +2827,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
     const publish = async (summary: string) => JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary })));
     expect((await publish("Team photo swapped on the about section")).relabel).toEqual({
       label,
-      hint: `Your session is still labelled '${label}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, call conch_rename with a short new label.`,
+      hint: `Your session is still labelled '${label}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, rename it with \`conch agent rename <your session id> <a short new label>\`.`,
     });
     published = held(["Hero with the new headline", "Team photo swapped on the about section"]);
     expect((await publish("Headline copy final")).relabel).toBeUndefined();
@@ -2978,30 +2988,33 @@ describe("the browser tools", () => {
     expect(await said({ ok: false, reason: "no-reply", diagnostic: "timed out" })).toBe("failed: conch's daemon didn't answer the browser (timed out)");
   });
 
-  test("the descriptions say it is conch's in-app browser the user sees, signed in per profile, and other browsers are fine", () => {
-    const open = AGENT_INSTRUCTIONS.tools.browser_open;
-    expect(open).toContain("conch's in-app browser");
-    expect(open).toContain("the user can watch and take over");
-    expect(open).toContain("signed in per account profile");
+  // 2026-11-11: the browser is `conch agent browser …`; its help says what the tools' descriptions said.
+  test("the commands' help says it is conch's in-app browser the user sees, signed in per profile, and other browsers are fine", () => {
+    const help = (name: string) => AGENT_COMMANDS.find((command) => command.name === name)!;
+    const open = help("browser open").help;
+    expect(open).toContain("conch's browser");
+    expect(open).toContain("so they can see what you do and take over");
+    expect(open).toContain("Tabs are signed in per account profile");
     // 2026-10-16: browse for the user where they can watch; other browsers when they ask or the task needs them.
-    expect(open).toContain("Use it whenever you browse on the user's behalf, so they can see what you do");
+    expect(open).toContain("whenever you browse on the user's behalf");
     expect(open).toContain("other browser tools (Claude in Chrome, Playwright, computer use) are for when they ask for them or the task needs them");
-    expect(open).toContain("the user's Workdesk");
-    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("At a sign-in, ask the user to sign in themselves in the tab, with browser_ask");
+    expect(help("browser open").summary).toContain("the user's Workdesk");
+    expect(help("browser type").help).toContain("At a sign-in, ask the user to sign in themselves with browser ask");
     // 2026-10-18: the ask is the tab's own, so the user sees it where they act on it, and the agent hears the answer.
-    const ask = AGENT_INSTRUCTIONS.tools.browser_ask;
-    expect(ask).toContain("that only they should do: sign in, pass a captcha, approve a consent screen, pick an account");
-    expect(ask).toContain("conch marks the tab Needs you, brings it to the front of their Workdesk and shows their session as needing them");
-    expect(ask).toContain("when they press Done, or conch sees the tab's profile sign in to the site you asked on, you get a message saying so");
-    expect(AGENT_INSTRUCTIONS.tools.browser_open).toContain("ask the user to sign in in the tab with browser_ask");
-    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain("ask is your last browser_ask there");
-    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain('openedBy "user" marks a tab the user opened in the Workdesk');
-    expect(AGENT_INSTRUCTIONS.tools.browser_tabs).toContain("paused marks one they have taken over");
-    expect(AGENT_INSTRUCTIONS.tools.browser_read).toContain("never a password's or a hidden field's value");
-    expect(AGENT_INSTRUCTIONS.tools.browser_type).toContain("Agents don't type passwords");
-    for (const name of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_ask", "browser_close"] as const) {
-      expect(AGENT_INSTRUCTIONS.tools[name]).toContain("conch's in-app browser");
-    }
+    const ask = help("browser ask");
+    expect(ask.summary).toContain("ask the user to sign in (or pass a captcha, approve a consent) in a tab");
+    expect(ask.help).toContain("conch marks the tab Needs you, brings it forward in their Workdesk and shows the session as needing them");
+    expect(ask.help).toContain("when they press Done, or conch sees the profile sign in, you get a message saying so");
+    expect(open).toContain("Not signed in: ask the user with browser ask before going on");
+    const tabs = help("browser tabs").help;
+    expect(tabs).toContain("ask is your last browser ask there");
+    expect(tabs).toContain("openedBy user marks a tab the user opened in the Workdesk");
+    expect(tabs).toContain("paused marks one they have taken over");
+    expect(help("browser read").help).toContain("never a password's or a hidden field's value");
+    expect(help("browser type").help).toContain("Agents don't type passwords");
+    const browser = AGENT_COMMANDS.filter((command) => command.name.startsWith("browser "));
+    expect(browser.map((command) => command.tool)).toEqual(["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_ask", "browser_close"]);
+    for (const command of browser) expect(command.group).toContain("in conch's browser, where they can watch");
   });
 });
 

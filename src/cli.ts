@@ -47,7 +47,7 @@ Getting started:
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
   conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
-  conch rename <session> <name> | model <session> <model>  save a name | type /model into it
+  conch rename <session> <name> | model <session> <model> | agent help | bug <title> --happened <what> --expected <what>  save a name | type /model into it | agents' tools, from a session's shell | file a private bug about conch
 
 Voice and settings:
   conch voice <session> [voice] | voices [setup]  show/pin, audition, or set up voices now
@@ -259,6 +259,13 @@ switch (command) {
   case "mcp": {
     const { runMcpServer } = await import("./mcp.ts");
     await runMcpServer({ config: cfg });
+    break;
+  }
+  // 2026-11-11: conch's tools for agents, from their shell (agent-cli.ts); `conch bug` is the one a person types too.
+  case "agent":
+  case "bug": {
+    const { runAgentCli } = await import("./agent-cli.ts");
+    process.exitCode = await runAgentCli({ argv: command === "bug" ? ["bug", ...rest] : rest, config: cfg });
     break;
   }
   case "install-plugin": {

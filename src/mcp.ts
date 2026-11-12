@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
@@ -36,7 +37,10 @@ import {
   type RuntimeControlMessage,
   type SettingKey,
 } from "./settings.ts";
-import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
+import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, movedToolDescription, type AgentInstructions } from "./agent-instructions.ts";
+import { AgentUsageError, cliWorded, cliWording, parseAgentCommand, renderAgentAnswer, splitCommandLine, usageErrorText } from "./agent-commands.ts";
+import { checkBugReport, requestBugReport, bugRecord, BUG_REPORT_KIND, BUG_REPORT_REPLY_MS, type BugReportRequest } from "./bug-report.ts";
+import { appendConchError } from "./app-errors.ts";
 import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
 import { NOTICE_BODY_MAX, NOTICE_TITLE_MAX, noticeLinkError, noticeText, requestNotice, type NoticeRequest } from "./notice-wire.ts";
 import { isPageAccess } from "./page-access.ts";
@@ -118,7 +122,7 @@ import {
   type PageCaptureReply,
   type PageCaptureSend,
 } from "./page-capture.ts";
-import { sessionOfProcess, unverified, type CallerBinding } from "./caller-session.ts";
+import { sessionOfProcess, unverified, type CallerBinding, type ShellCaller } from "./caller-session.ts";
 import {
   BROWSER_ASK_REASON_MAX,
   BROWSER_REPLY_MS,
@@ -139,6 +143,7 @@ import { appServerNoTerminal } from "./codex-threads.ts";
 import { ATLAS_MARKDOWN_MAX_BYTES, ATLAS_PATH_MAX, atlasCopiesFolder, atlasFiling, atlasPagePath, writeAtlasCopy } from "./atlas-copies.ts";
 import {
   HANDOFF_FROM_ENV,
+  HANDOFF_LISTED_ENV,
   HANDOFF_PARENT_ENV,
   handoffParentPid,
   McpHandoff,
@@ -288,12 +293,17 @@ export interface McpToolDefinition {
   inputSchema: JsonSchema;
 }
 
-/** The nine tools. Descriptions come from the one instruction source, `agent-instructions.ts`. */
-export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
+/**
+ * Every tool this server answers, listed or not. Descriptions come from the one instruction source,
+ * `agent-instructions.ts`: a listed tool's (`text.tools`), or, for one that moved to `conch agent`, where it went
+ * (`movedToolDescription`), which is what a session started before the move still sees (`listedMcpTools`).
+ */
+export function buildMcpToolDefinitions(text: AgentInstructions = AGENT_INSTRUCTIONS) {
+  const describe = (name: string): string => (text.tools as Record<string, string>)[name] ?? movedToolDescription(name);
   return [
     {
       name: "conch_sessions",
-      description: text.tools.conch_sessions,
+      description: describe("conch_sessions"),
       inputSchema: {
         type: "object",
         properties: {
@@ -313,7 +323,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_wake",
-      description: text.tools.conch_wake,
+      description: describe("conch_wake"),
       inputSchema: {
         type: "object",
         properties: {
@@ -328,7 +338,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_recite",
-      description: text.tools.conch_recite,
+      description: describe("conch_recite"),
       inputSchema: {
         type: "object",
         properties: {
@@ -343,7 +353,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_speak",
-      description: text.tools.conch_speak,
+      description: describe("conch_speak"),
       inputSchema: {
         type: "object",
         properties: {
@@ -360,7 +370,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_mode",
-      description: text.tools.conch_mode,
+      description: describe("conch_mode"),
       inputSchema: {
         type: "object",
         properties: {
@@ -388,7 +398,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_rename",
-      description: text.tools.conch_rename,
+      description: describe("conch_rename"),
       inputSchema: {
         type: "object",
         properties: {
@@ -401,7 +411,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_config",
-      description: text.tools.conch_config,
+      description: describe("conch_config"),
       inputSchema: {
         type: "object",
         properties: {
@@ -426,7 +436,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_transcript_tail",
-      description: text.tools.conch_transcript_tail,
+      description: describe("conch_transcript_tail"),
       inputSchema: {
         type: "object",
         properties: {
@@ -454,7 +464,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_fork",
-      description: text.tools.conch_fork,
+      description: describe("conch_fork"),
       inputSchema: {
         type: "object",
         properties: {
@@ -475,7 +485,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_start",
-      description: text.tools.conch_start,
+      description: describe("conch_start"),
       inputSchema: {
         type: "object",
         properties: {
@@ -502,7 +512,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "review_to_front",
-      description: text.tools.review_to_front,
+      description: describe("review_to_front"),
       inputSchema: {
         type: "object",
         properties: {
@@ -631,7 +641,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_history",
-      description: text.tools.conch_history,
+      description: describe("conch_history"),
       inputSchema: {
         type: "object",
         properties: {
@@ -649,7 +659,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_item",
-      description: text.tools.conch_item,
+      description: describe("conch_item"),
       inputSchema: {
         type: "object",
         properties: {
@@ -666,7 +676,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_working_folders",
-      description: text.tools.conch_working_folders,
+      description: describe("conch_working_folders"),
       inputSchema: {
         type: "object",
         properties: {
@@ -684,7 +694,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_on_screen",
-      description: text.tools.conch_on_screen,
+      description: describe("conch_on_screen"),
       inputSchema: {
         type: "object",
         properties: {},
@@ -693,7 +703,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_deliverables",
-      description: text.tools.conch_deliverables,
+      description: describe("conch_deliverables"),
       inputSchema: {
         type: "object",
         properties: {},
@@ -702,7 +712,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "review_remove",
-      description: text.tools.review_remove,
+      description: describe("review_remove"),
       inputSchema: {
         type: "object",
         properties: {
@@ -715,7 +725,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_capture",
-      description: text.tools.conch_capture,
+      description: describe("conch_capture"),
       inputSchema: {
         type: "object",
         properties: {
@@ -780,7 +790,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_open",
-      description: text.tools.browser_open,
+      description: describe("browser_open"),
       inputSchema: {
         type: "object",
         properties: {
@@ -804,7 +814,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_read",
-      description: text.tools.browser_read,
+      description: describe("browser_read"),
       inputSchema: {
         type: "object",
         properties: { tab: BROWSER_TAB_SCHEMA },
@@ -813,7 +823,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_click",
-      description: text.tools.browser_click,
+      description: describe("browser_click"),
       inputSchema: {
         type: "object",
         properties: { tab: BROWSER_TAB_SCHEMA, target: BROWSER_TARGET_SCHEMA },
@@ -823,7 +833,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_type",
-      description: text.tools.browser_type,
+      description: describe("browser_type"),
       inputSchema: {
         type: "object",
         properties: {
@@ -838,7 +848,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_screenshot",
-      description: text.tools.browser_screenshot,
+      description: describe("browser_screenshot"),
       inputSchema: {
         type: "object",
         properties: { tab: BROWSER_TAB_SCHEMA },
@@ -847,7 +857,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_tabs",
-      description: text.tools.browser_tabs,
+      description: describe("browser_tabs"),
       inputSchema: {
         type: "object",
         properties: {},
@@ -856,7 +866,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_ask",
-      description: text.tools.browser_ask,
+      description: describe("browser_ask"),
       inputSchema: {
         type: "object",
         properties: {
@@ -874,7 +884,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "browser_close",
-      description: text.tools.browser_close,
+      description: describe("browser_close"),
       inputSchema: {
         type: "object",
         properties: { tab: { ...BROWSER_TAB_SCHEMA, description: "The tab to close: one of your tab ids (browser_tabs)." } },
@@ -884,7 +894,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "atlas_show",
-      description: text.tools.atlas_show,
+      description: describe("atlas_show"),
       inputSchema: {
         type: "object",
         properties: {
@@ -911,7 +921,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
     },
     {
       name: "conch_notify",
-      description: text.tools.conch_notify,
+      description: describe("conch_notify"),
       inputSchema: {
         type: "object",
         properties: {
@@ -942,7 +952,40 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "conch_run",
+      description: describe("conch_run"),
+      inputSchema: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            minLength: 1,
+            maxLength: CONCH_RUN_COMMAND_MAX,
+            description: "The words after `conch agent`, quoted as in a shell: `browser click \"Sign in\"`, `tail 1a2b3c4d --wait 30`, `help`.",
+          },
+        },
+        required: ["command"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
+}
+
+/** The longest command line `conch_run` takes: a publish's marks or a bug's words, not a file's contents (`--file`). */
+export const CONCH_RUN_COMMAND_MAX = 16 * 1024;
+
+/**
+ * The tools a session's `tools/list` holds: `text.tools`', in its order. 2026-11-11: two, where there were 28 (the
+ * reasons are agent-instructions.ts'); every other tool is a `conch agent` command, and still answered when called.
+ */
+export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS): McpToolDefinition[] {
+  const all: readonly McpToolDefinition[] = buildMcpToolDefinitions(text);
+  return Object.keys(text.tools).map((name) => {
+    const tool = all.find((candidate) => candidate.name === name);
+    if (!tool) throw new Error(`agent-instructions.ts lists ${name}, which mcp.ts doesn't define`);
+    return tool;
+  });
 }
 
 /** A Workbench tab, by the id `browser_open` and `browser_tabs` give. */
@@ -970,7 +1013,28 @@ const BROWSER_TARGET_SCHEMA = {
   description: "A ref from browser_read (e12), a CSS selector, or the visible text of the element (a link's or button's words, a field's label). A string is tried as each in that order; {ref}, {selector} or {text} names which.",
 } as const;
 
-export const MCP_TOOLS = buildMcpTools();
+/** Every tool this server answers: the listed ones and the ones that moved to `conch agent`, schemas and all. */
+export const MCP_TOOLS = buildMcpToolDefinitions();
+/** What a session started now is given: `review_to_front` and `conch_run`. */
+export const MCP_LISTED_TOOLS = buildMcpTools();
+/** The tools that moved to `conch agent`, still answered for a session that has them (`listedMcpTools`). */
+export const MCP_MOVED_TOOL_NAMES: readonly string[] = MCP_TOOLS
+  .map((tool) => tool.name)
+  .filter((name) => !MCP_LISTED_TOOLS.some((listed) => listed.name === name));
+
+/**
+ * What this server lists. A session started now gets the listed tools alone. One a hand-off started (mcp-handoff.ts)
+ * serves a session that began on an older server, with the moved tools in its list, and maybe mid-task calling one:
+ * it keeps them (with their new descriptions, which say where they went), so nothing it was about to call is gone. Only
+ * the ones it had: `inherited` is the handing-over server's list when it said (`HANDOFF_LISTED_ENV`), and every moved
+ * tool for a server older than that, which listed them all. A restart leaves the session with the CLI.
+ */
+export function listedMcpTools(handoff?: { inherited?: readonly string[] }): McpToolDefinition[] {
+  if (!handoff) return [...MCP_LISTED_TOOLS];
+  const inherited = handoff.inherited ? new Set(handoff.inherited) : undefined;
+  return MCP_TOOLS.filter((tool) =>
+    MCP_LISTED_TOOLS.some((listed) => listed.name === tool.name) || !inherited || inherited.has(tool.name));
+}
 
 /**
  * The tools' own words — their names, argument names, enum values, setting keys. An argument holding one of these is
@@ -1000,6 +1064,22 @@ export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
 /** `meta` is the call's `params._meta`, which a Codex client fills with the calling thread. */
 export type McpToolHandler = (argumentsValue: unknown, meta?: unknown) => Promise<unknown>;
 export type McpToolHandlers = Record<McpToolName, McpToolHandler>;
+
+/**
+ * Commands that are `conch agent`'s alone (`AGENT_COMMANDS`), never an MCP tool: `conch bug` (2026-11-11, Tyler: "Also
+ * tool for them to submit bugs if possible"), reached from a shell or `conch_run`, and `whoami`.
+ */
+export const AGENT_ONLY_HANDLERS = ["conch_bug", "conch_whoami"] as const;
+export type AgentHandlerName = McpToolName | (typeof AGENT_ONLY_HANDLERS)[number];
+export type AgentHandlers = Record<AgentHandlerName, McpToolHandler>;
+
+/** The names `tools/call` answers: every tool this server defines, listed or moved, and never a CLI-only command. */
+const MCP_CALLABLE = new Set<string>(MCP_TOOLS.map((tool) => tool.name));
+
+/** What `conch_run` answers: the command's own text, and the value it came from, which the call log judges. */
+export class RunAnswer {
+  constructor(readonly text: string, readonly value: unknown) {}
+}
 
 export interface McpRuntimeConfig {
   claudeDir: string;
@@ -1059,6 +1139,17 @@ export interface McpDependencies {
   assistantTail?(transcriptPath: string, session: Readonly<SessionInfo>): Promise<AssistantTail>;
   /** How a waiting `conch_transcript_tail` sleeps between reads; Bun.sleep when absent. */
   sleep?(ms: number): Promise<void>;
+  /**
+   * The caller, for handlers run from an agent's shell (`conch agent`, agent-cli.ts): its process tree up to a session
+   * (caller-session.ts `sessionForShell`), in place of this server's parent and a Codex call's thread id.
+   */
+  shellCaller?(): Promise<ShellCaller>;
+  /** `conch bug`'s report to the daemon, held open for its ticket (`requestBugReport`). */
+  fileBug?(socketPath: string, request: BugReportRequest, timeoutMs?: number): ReturnType<typeof requestBugReport>;
+  /** A report written straight to the records, when the daemon isn't running to file it (`appendConchError`). */
+  recordBugOffline?(record: ReturnType<typeof bugRecord>): void;
+  /** Which agent this server serves, as its `initialize` said: the backend a bug report names. */
+  clientBackend?(): "claude" | "codex" | undefined;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -1312,13 +1403,35 @@ async function speechHeld(
     + " queued. Put it in your reply instead.";
 }
 
+/**
+ * A name no live session has, with the ones that are live, for an answer to name them. 2026-11-11: 13 calls of
+ * conch_transcript_tail failed on a name in 30 days (failure ticket #17), each told only that it matched nothing. The
+ * message stays the bare refusal, as the call log keeps it; `conch agent` and `conch_run` print the live ones under it.
+ */
+export class NoSuchSessionError extends ToolInputError {
+  constructor(query: string, readonly live: ReadonlyArray<{ id: string; label: string }>) {
+    super(`no live session matching "${query}"`);
+    this.name = "NoSuchSessionError";
+  }
+}
+
+/** A refusal as `conch agent` says it: a missing session's message with the live sessions under it. */
+export function errorWithCandidates(error: unknown): string {
+  const message = errorMessage(error);
+  if (!(error instanceof NoSuchSessionError) || !error.live.length) return message;
+  return `${message}; live sessions: ${error.live.map((one) => `${one.id} "${one.label}"`).join(", ")}`;
+}
+
 async function resolveSession(
   query: string,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
 ): Promise<SessionInfo> {
   const session = await dependencies.findSessionByName(config.claudeDir, query.trim());
-  if (!session) throw new ToolInputError(`no live session matching "${query.trim()}"`);
+  if (!session) {
+    const infos = (await dependencies.registrySnapshot(config.claudeDir).catch(() => null))?.infos ?? [];
+    throw new NoSuchSessionError(query.trim(), infos.slice(0, 8).map((one) => ({ id: one.sessionId, label: dependencies.sessionLabel(one, one.cwd) })));
+  }
   return session;
 }
 
@@ -1343,6 +1456,8 @@ async function callerBinding(
   dependencies: McpDependencies,
   meta?: unknown,
 ): Promise<CallerBinding> {
+  // From a shell, the shell's own process tree says (agent-cli.ts), never this process's parent.
+  if (dependencies.shellCaller) return (await dependencies.shellCaller()).binding;
   const parentPid = dependencies.parentPid();
   const threadId = codexCallingThread(meta);
   const hasParent = Number.isSafeInteger(parentPid) && parentPid > 1;
@@ -1698,7 +1813,7 @@ function browserTarget(args: Readonly<Record<string, unknown>>): BrowserTarget {
 export function createMcpToolHandlers(
   config: McpRuntimeConfig,
   dependencies: McpDependencies = defaultMcpDependencies,
-): McpToolHandlers {
+): AgentHandlers {
   const sessionsPath = config.sessionsPath ?? MCP_SESSIONS_FILE;
   // One pending speak per calling session. This server is the session's own
   // child process, so one variable IS per session.
@@ -1763,7 +1878,115 @@ export function createMcpToolHandlers(
     return parsed.value;
   }
 
-  const handlers: McpToolHandlers = {
+  /** Who is calling and how conch knows, for `whoami` and a bug report's `via`. */
+  async function whoCalls(meta: unknown): Promise<ShellCaller> {
+    if (dependencies.shellCaller) return dependencies.shellCaller();
+    const binding = await callerBinding(config, dependencies, meta);
+    if (binding.status !== "verified") return { binding };
+    return { binding, via: codexCallingThread(meta) ? "the Codex thread id on this MCP call" : "this MCP server's parent process, which is the session" };
+  }
+
+  const handlers: AgentHandlers = {
+    // 2026-11-11: `conch agent <command>`, run here, for a shell that can't reach conch's socket (Codex's sandbox allows
+    // no unix socket by default) or can't show which session it is (an app-server's thread without CODEX_THREAD_ID). The
+    // same words, the same handlers and the same answer as the CLI, with this server's verified caller.
+    async conch_run(argumentsValue, meta) {
+      const args = toolArguments(argumentsValue);
+      allowOnly(args, ["command"], { args: "command, one line: the words after `conch agent`", cmd: "command" });
+      const line = requiredString(args, "command");
+      let invocation: ReturnType<typeof parseAgentCommand>;
+      try {
+        invocation = parseAgentCommand(splitCommandLine(line), {
+          // Relative to where this server runs, the folder the session started in; there is no stdin to read.
+          readFile: (path) => readFileSync(resolve(process.cwd(), path), "utf8"),
+        });
+      } catch (error) {
+        if (error instanceof AgentUsageError) throw new ToolInputError(usageErrorText(error));
+        throw error;
+      }
+      if (invocation.kind === "help") return new RunAnswer(invocation.text, invocation.text);
+      const handler = handlers[invocation.tool as AgentHandlerName];
+      if (!handler || invocation.tool === "conch_run") throw new ToolInputError(`conch agent ${invocation.command.name} can't run here`);
+      try {
+        const value = await handler(invocation.args, meta);
+        return new RunAnswer(renderAgentAnswer(invocation.command, value, invocation.json, dependencies.now()), value);
+      } catch (error) {
+        // The command's own outcome, in the CLI's words.
+        const said = cliWording(errorWithCandidates(error));
+        if (error instanceof ToolInputError) throw new ToolInputError(said, error.outcome);
+        if (error instanceof AmbiguousSessionError) throw new ToolInputError(said);
+        throw new Error(said);
+      }
+    },
+
+    // A bug about conch (bug-report.ts): filed by the daemon as a failure ticket, private to this Mac, and answered with
+    // its number. Anyone may file one; only a verified session's carries its session.
+    async conch_bug(argumentsValue, meta) {
+      const args = toolArguments(argumentsValue);
+      allowOnly(args, ["title", "happened", "expected", "area", "evidence"], { description: "happened", body: "happened", what: "happened" });
+      const checked = checkBugReport(args);
+      if (!checked.ok) throw new ToolInputError(checked.error);
+      const { binding, via } = await whoCalls(meta);
+      const session = binding.status === "verified" ? binding.session : undefined;
+      const said = via ?? (binding.status === "unverified" ? `unverified: ${binding.reason}` : undefined);
+      const backend = session?.backend ?? dependencies.clientBackend?.();
+      const request: BugReportRequest = {
+        kind: BUG_REPORT_KIND,
+        report: checked.report,
+        from: session?.sessionId ?? "unverified",
+        ...(said ? { via: said.slice(0, 300) } : {}),
+        ...(backend ? { backend } : {}),
+        version: CONCH_VERSION,
+      };
+      const sent = await (dependencies.fileBug ?? requestBugReport)(config.socketPath, request, BUG_REPORT_REPLY_MS);
+      if (!sent.ok && sent.reason === "daemon-down") {
+        // The daemon files it from the records when it next starts; the records are written here, as a hook's are.
+        try {
+          (dependencies.recordBugOffline ?? ((record) => void appendConchError(record, null)))(bugRecord(request));
+        } catch (error) {
+          throw new Error(`failed: conch's daemon isn't reachable, and its records can't be written from here either (${errorMessage(error)}); a sandbox does both. Run it through the conch_run tool, or tell the user`);
+        }
+        return {
+          outcome: "recorded",
+          said: "conch's daemon isn't running, so there is no ticket number yet: the report is in conch's private records, and becomes a ticket in Settings › Failures when conch starts",
+        };
+      }
+      if (!sent.ok && sent.reason === "older") {
+        // Not written to the records either: an older desk drops a record of an origin it doesn't know, for good.
+        throw new Error("failed: conch's daemon is older than conch bug and can't file it, so nothing was filed. Once conch is updated and restarted, file it again; tell the user what you saw meanwhile");
+      }
+      if (!sent.ok) {
+        throw new Error(`failed: conch's daemon didn't answer the report${sent.diagnostic ? ` (${sent.diagnostic})` : ""}. It may have been filed: \`conch failures\` lists the tickets`);
+      }
+      const reply = sent.reply;
+      if (reply.kind === "bug-error") throw reply.refused ? refusal(reply.error) : new Error(reply.error);
+      const { kind: _kind, ...filed } = reply;
+      return {
+        ...filed,
+        ...(session
+          ? { session: session.sessionId }
+          : { note: `filed under no session: conch couldn't tell which session filed it (${binding.status === "unverified" ? binding.reason : ""})` }),
+      };
+    },
+
+    // Which session conch takes the caller to be, and how it knows: the question every refusal of an unverified caller raises.
+    async conch_whoami(argumentsValue, meta) {
+      allowOnly(toolArguments(argumentsValue), []);
+      const { binding, via } = await whoCalls(meta);
+      if (binding.status !== "verified") {
+        return { caller: "unverified", reason: binding.reason, means: "commands on your own session (publish, folders, browser, deliverables, atlas) are refused; ones that name a session still work" };
+      }
+      const session = binding.session;
+      return {
+        caller: "verified",
+        session: session.sessionId,
+        label: dependencies.sessionLabel(session, session.cwd),
+        backend: session.backend ?? "claude",
+        ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(via ? { via } : {}),
+      };
+    },
+
     async conch_history(argumentsValue, meta) {
       const parsed = parseHistoryPageRequest(argumentsValue);
       if (!parsed.ok) throw new ToolInputError(parsed.err);
@@ -1974,7 +2197,8 @@ export function createMcpToolHandlers(
           ...started,
           note: "conch sees it running, as a session of its own in conch's Mac app and phone",
           ...(prompt ? {
-            next: `to bring back its answer: conch_transcript_tail {session: "${response.sessionId}", wait: 30}, then again with since: the cursor it returned, until its status is waiting (needs: it is asking the user something). Its text then is the answer; sentences gives more of it`,
+            // 2026-11-11: in the CLI's words, which every session has (the tool moved to `conch agent tail`).
+            next: `to bring back its answer: conch agent tail ${response.sessionId} --wait 30, then again with --since <the cursor it printed>, until its status is waiting (needs: it is asking the user something). Its text then is the answer; --sentences gives more of it`,
           } : {}),
         };
       }
@@ -2926,7 +3150,7 @@ export type McpCallObserver = (call: McpCallObservation) => void;
  * reply's code (history.ts), a wake or recite whose audio this Mac has yielded (`audioWhere`), and speech the user's
  * manual mode drops (`speechHeld`) — so the agent reads them as a result but the log counts what happened.
  */
-function resultOutcome(value: unknown): { outcome: McpCallOutcome; error?: string } {
+export function resultOutcome(value: unknown): { outcome: McpCallOutcome; error?: string } {
   if (!isRecord(value)) return { outcome: "ok" };
   if (typeof value.audio === "string" && value.audio.startsWith("refused:")) return { outcome: "refused", error: value.audio };
   if (typeof value.held === "string" && value.held) return { outcome: "refused", error: value.held };
@@ -2938,6 +3162,37 @@ function resultOutcome(value: unknown): { outcome: McpCallOutcome; error?: strin
   return { outcome: input.includes(value.code) ? "input-error" : "failed", error };
 }
 
+/** What one server answers beyond its handlers: the tools it lists, and whether it says where a moved one went. */
+export interface McpDispatchContext {
+  /** What `tools/list` answers; the listed tools (`MCP_LISTED_TOOLS`) when absent. */
+  listed?: readonly McpToolDefinition[];
+  /**
+   * The moved tools this server has told its session about, once each: present on a server that still lists them (a
+   * session started before the move), so the first call of each says the command it is now. Absent, none is told.
+   */
+  movedHinted?: Set<string>;
+}
+
+/** The command a `conch_run` call ran, for the call log: the tool it is, and its arguments, so the log is the tool's. */
+function runForLog(argumentsValue: unknown): { tool: string; args: Record<string, unknown> } | undefined {
+  if (!isRecord(argumentsValue) || typeof argumentsValue.command !== "string") return undefined;
+  try {
+    // No file is read for this: the log keeps argument names, and an atlas page's words are no part of it.
+    const invocation = parseAgentCommand(splitCommandLine(argumentsValue.command), { readFile: () => "", readStdin: () => "" });
+    return invocation.kind === "run" ? { tool: invocation.tool, args: invocation.args } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What the first call of a moved tool adds, on a server that still lists it. */
+function movedHint(tool: string): string | undefined {
+  const command = AGENT_COMMANDS.find((candidate) => candidate.tool === tool);
+  return command
+    ? `${tool} is \`conch agent ${command.name}\` in your shell now (\`conch agent help ${command.name}\`); this tool keeps working here until the session restarts.`
+    : undefined;
+}
+
 /**
  * Dispatch one already-parsed JSON-RPC message. All failures are converted to
  * JSON-RPC errors or MCP isError tool results; this function never rejects.
@@ -2947,6 +3202,7 @@ export async function dispatchJsonRpc(
   message: unknown,
   handlers: McpToolHandlers,
   observe?: McpCallObserver,
+  context: McpDispatchContext = {},
 ): Promise<JsonRpcResponse | null> {
   let requestId: JsonRpcId = null;
   let shouldReply = true;
@@ -2974,7 +3230,7 @@ export async function dispatchJsonRpc(
 
       case "tools/list":
         return shouldReply
-          ? jsonRpcResult(requestId, { tools: MCP_TOOLS })
+          ? jsonRpcResult(requestId, { tools: context.listed ?? MCP_LISTED_TOOLS })
           : null;
 
       case "tools/call": {
@@ -2987,7 +3243,7 @@ export async function dispatchJsonRpc(
         const meta = message.params._meta;
         const ts = Date.now();
         const started = performance.now();
-        if (!Object.hasOwn(handlers, name)) {
+        if (!MCP_CALLABLE.has(name) || !Object.hasOwn(handlers, name)) {
           tell({ ts, tool: name, ms: 0, outcome: "input-error", error: "unknown tool", meta });
           return shouldReply
             ? jsonRpcError(requestId, -32602, `Unknown tool "${name}"`)
@@ -3002,24 +3258,35 @@ export async function dispatchJsonRpc(
             ? jsonRpcError(requestId, -32602, "Tool arguments must be an object")
             : null;
         }
+        // A `conch_run` is logged as the command's own tool, marked `via: "run"`, so the log counts what agents do.
+        const run = name === "conch_run" ? runForLog(argumentsValue) : undefined;
+        const logged = { tool: run?.tool ?? name, arguments: run?.args ?? argumentsValue, meta, ...(run ? { via: "run" as const } : {}) };
+        // review_to_front's answers name conch's other tools, which are `conch agent` commands now (agent-commands.ts).
+        const worded = name === "review_to_front";
         try {
-          const value = await handlers[name as McpToolName](argumentsValue, meta);
-          tell({ ts, tool: name, ms: performance.now() - started, ...resultOutcome(value), arguments: argumentsValue, meta });
+          const answered = await handlers[name as McpToolName](argumentsValue, meta);
+          const value = answered instanceof RunAnswer ? answered.text : worded ? cliWorded(answered) : answered;
+          tell({ ts, ms: performance.now() - started, ...resultOutcome(answered instanceof RunAnswer ? answered.value : answered), ...logged });
           if (name === "conch_history" || name === "conch_item") {
             if (!shouldReply) return null;
             // A text content block escapes the JSON again. Budget the final UTF-8 wire frame.
             return historyRpcResult(requestId, toolResult(JSON.stringify(value)));
           }
-          return shouldReply
-            ? jsonRpcResult(requestId, toolResult(value))
-            : null;
+          if (!shouldReply) return null;
+          const result = toolResult(value);
+          const hint = context.movedHinted && !context.movedHinted.has(name) ? movedHint(name) : undefined;
+          if (hint) {
+            context.movedHinted!.add(name);
+            result.content.push({ type: "text", text: hint });
+          }
+          return jsonRpcResult(requestId, result);
         } catch (error) {
-          tell({ ts, tool: name, ms: performance.now() - started, outcome: callOutcome(error), error: errorMessage(error), arguments: argumentsValue, meta });
+          tell({ ts, ms: performance.now() - started, outcome: callOutcome(error), error: errorMessage(error), ...logged });
           if (name === "conch_history" || name === "conch_item") {
             return shouldReply ? historyRpcResult(requestId, toolError(error)) : null;
           }
           return shouldReply
-            ? jsonRpcResult(requestId, toolError(error))
+            ? jsonRpcResult(requestId, toolError(worded ? new Error(cliWording(errorMessage(error))) : error))
             : null;
         }
       }
@@ -3045,11 +3312,12 @@ export async function dispatchJsonRpcBatch(
   messages: readonly unknown[],
   handlers: McpToolHandlers,
   observe?: McpCallObserver,
+  context: McpDispatchContext = {},
 ): Promise<JsonRpcResponse | JsonRpcResponse[] | null> {
   if (!messages.length) return jsonRpcError(null, -32600, "Invalid Request");
   const responses: JsonRpcResponse[] = [];
   for (const message of messages) {
-    const response = await dispatchJsonRpc(message, handlers, observe);
+    const response = await dispatchJsonRpc(message, handlers, observe, context);
     if (response) responses.push(response);
   }
   return responses.length ? responses : null;
@@ -3075,13 +3343,18 @@ export interface RunMcpServerOptions {
    * off when `input` is given (tests) unless passed; false is off.
    */
   report?: { dir?: string; pid?: number; sessionPid?: number } | false;
+  /** What `tools/list` answers (tests); else what this server's start says (`listedMcpTools`). */
+  listed?: readonly McpToolDefinition[];
 }
 
 /** How often an idle server looks for a newer conch to hand over to, besides after each message. */
 export const MCP_HANDOFF_IDLE_CHECK_MS = 5 * 60_000;
 
-/** The real server's hand-off: the daemon's toolset off the sessions file, and a fresh `conch mcp` of what is installed. */
-function stdioHandoff(sessionsPath: string): Omit<McpHandoffOptions, "writeLine" | "diagnostic"> {
+/**
+ * The real server's hand-off: the daemon's toolset off the sessions file, and a fresh `conch mcp` of what is installed,
+ * told what this one lists (`HANDOFF_LISTED_ENV`), so it lists those and no more.
+ */
+function stdioHandoff(sessionsPath: string, listed: readonly string[]): Omit<McpHandoffOptions, "writeLine" | "diagnostic"> {
   return {
     ownToolset: MCP_TOOLSET,
     async publishedToolset() {
@@ -3095,7 +3368,12 @@ function stdioHandoff(sessionsPath: string): Omit<McpHandoffOptions, "writeLine"
         stdin: "pipe",
         stdout: "pipe",
         stderr: "inherit",
-        env: { ...process.env, [HANDOFF_FROM_ENV]: String(process.pid), [HANDOFF_PARENT_ENV]: String(sessionParentPid()) },
+        env: {
+          ...process.env,
+          [HANDOFF_FROM_ENV]: String(process.pid),
+          [HANDOFF_PARENT_ENV]: String(sessionParentPid()),
+          [HANDOFF_LISTED_ENV]: listed.join(","),
+        },
       });
       return {
         write(line: string) {
@@ -3125,18 +3403,34 @@ function sessionParentPid(): number {
 }
 
 /**
+ * What a real server lists: the listed tools, or, for one a hand-off started (its session began on an older server),
+ * those and the moved tools the session had (`listedMcpTools`).
+ */
+function stdioListedTools(): McpToolDefinition[] {
+  if (!process.env[HANDOFF_FROM_ENV] || handoffParentPid(process.env, process.ppid, processParent) === undefined) return listedMcpTools();
+  const inherited = process.env[HANDOFF_LISTED_ENV];
+  return listedMcpTools(inherited === undefined ? {} : { inherited: inherited.split(",").filter(Boolean) });
+}
+
+/**
  * Newline-delimited JSON-RPC 2.0 over stdio. stdout is used only by writeLine;
  * all local diagnostics go to stderr.
  */
 export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<void> {
   let loaded: Config | McpRuntimeConfig | undefined = options.config;
   const runtimeConfig = () => (loaded ??= loadConfig());
-  const handlers = options.handlers ?? createMcpToolHandlers(
-    runtimeConfig(),
-    options.dependencies ?? defaultMcpDependencies,
-  );
   // Which agent this server serves, as its `initialize` said: the backend of a call whose session conch can't tell.
   let clientBackend: ReturnType<typeof backendOfClient>;
+  const handlers = options.handlers ?? createMcpToolHandlers(
+    runtimeConfig(),
+    { ...(options.dependencies ?? defaultMcpDependencies), clientBackend: () => clientBackend },
+  );
+  const listed = options.listed ?? (options.input ? listedMcpTools() : stdioListedTools());
+  // A server that still lists moved tools says, the first time each is called, which command it is now.
+  const context: McpDispatchContext = {
+    listed,
+    ...(listed.some((tool) => MCP_MOVED_TOOL_NAMES.includes(tool.name)) ? { movedHinted: new Set<string>() } : {}),
+  };
   const callLog = options.callLog === false
     ? undefined
     : options.callLog ?? new McpCallLog({
@@ -3160,7 +3454,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
   // A server a hand-off started is the installed conch already: it never hands over again, or each would start another.
   const handoffOptions = options.handoff === false
     ? undefined
-    : options.handoff ?? (options.input || process.env[HANDOFF_FROM_ENV] ? undefined : stdioHandoff(options.config?.sessionsPath ?? MCP_SESSIONS_FILE));
+    : options.handoff ?? (options.input || process.env[HANDOFF_FROM_ENV] ? undefined : stdioHandoff(options.config?.sessionsPath ?? MCP_SESSIONS_FILE, listed.map((tool) => tool.name)));
   const handoff = handoffOptions ? new McpHandoff({ ...handoffOptions, writeLine, diagnostic }) : undefined;
   // What this server has, for the daemon to tell which sessions can't get conch's current tools (mcp-servers.ts).
   const reportOptions = options.report === false ? undefined : options.report ?? (options.input ? undefined : {});
@@ -3172,7 +3466,7 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
         pid: reportOptions.pid ?? process.pid,
         sessionPid: reportOptions.sessionPid ?? sessionParentPid(),
         toolset: MCP_TOOLSET,
-        tools: MCP_TOOLS.map((tool) => tool.name),
+        tools: listed.map((tool) => tool.name),
         handoff: handoff !== undefined,
         version: CONCH_VERSION,
         startedAt: Date.now(),
@@ -3200,8 +3494,8 @@ export async function runMcpServer(options: RunMcpServerOptions = {}): Promise<v
     // Handed over to a newer conch's server: every line is its to answer.
     if (handoff?.forward(line)) return;
     const response = Array.isArray(message)
-      ? await dispatchJsonRpcBatch(message, handlers, callLog?.observe)
-      : await dispatchJsonRpc(message, handlers, callLog?.observe);
+      ? await dispatchJsonRpcBatch(message, handlers, callLog?.observe, context)
+      : await dispatchJsonRpc(message, handlers, callLog?.observe, context);
     if (response) await writeResponse(response);
   };
   // One thing at a time, a line or a look for a newer conch, so a hand-off never starts while a call is half-answered.

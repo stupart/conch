@@ -42,10 +42,10 @@ describe("whether the work drifted from the label", () => {
 describe("the hint review_to_front returns", () => {
   const drifted = ["Team photo swapped on the about section", "Hero with the new headline"];
 
-  test("names the label and the newest work, and suggests conch_rename, never renaming", () => {
+  test("names the label and the newest work, and suggests conch agent rename, never renaming", () => {
     expect(relabelHint(LABEL, "agent", drifted)).toEqual({
       label: LABEL,
-      hint: `Your session is still labelled '${LABEL}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, call conch_rename with a short new label.`,
+      hint: `Your session is still labelled '${LABEL}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, rename it with \`conch agent rename <your session id> <a short new label>\`.`,
     });
   });
 
