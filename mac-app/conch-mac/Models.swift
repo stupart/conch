@@ -1046,6 +1046,14 @@ struct ConversationReply: Decodable, Equatable, Sendable {
         case markdown
     }
 
+    /// Only whose reply it is, for what reads nothing else of it (`PublishedState.forSidebar`).
+    init(sessionId: String, text: String = "", spokenChars: Int = 0, markdown: String? = nil) {
+        self.sessionId = sessionId
+        self.text = text
+        self.spokenChars = spokenChars
+        self.markdown = markdown
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = (try? container.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""

@@ -252,9 +252,9 @@ describe("new work does not replace what you are reading", () => {
     // group, so picking an older version does not unselect the tab it belongs to.
     expect(strip).toContain("current: byID[group.shown(picked: picked)] ?? versions[0]");
     expect(strip).toContain("isSelected: shown.map(group.versions.contains) ?? false");
-    // The ages tick on the ledger's clock, in the ledger's own vocabulary.
-    expect(strip).toContain("TimelineView(.periodic(from: .now, by: 10)) { timeline in");
-    expect(strip).toContain("now: timeline.date");
+    // The ages tick on the ledger's clock, in the ledger's own vocabulary (`PeriodicClock`, 2026-11-11).
+    expect(strip).toContain("PeriodicClock(every: 10) { now in");
+    expect(strip).toContain("now: now,");
 
     const tab = pane.slice(pane.indexOf("private struct DeliverableTab: View {"));
     expect(tab).toContain("current.reviewedAt.flatMap { relativeAge(epochMilliseconds: $0, now: now) }");
