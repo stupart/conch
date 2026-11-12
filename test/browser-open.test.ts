@@ -274,7 +274,7 @@ describe("sessions conch starts", () => {
 
   test("get nothing while the setting is off", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/work/demo" })).toBe("cd -- '/work/demo' && exec claude");
-    expect(terminalSessionCommand({ backend: "codex", cwd: "/work/demo" })).toBe("cd -- '/work/demo' && exec codex");
+    expect(terminalSessionCommand({ backend: "codex", cwd: "/work/demo" })).toBe("cd -- '/work/demo' && exec codex --no-daemon");
   });
 
   test("Claude in Terminal: the folder first on PATH, $BROWSER, and the env file for its Bash commands", () => {
@@ -291,9 +291,9 @@ describe("sessions conch starts", () => {
 
   test("Codex in Terminal: the folder and $BROWSER, no Claude env file", () => {
     routeSessionBrowsers(dir);
-    expect(terminalSessionCommand({ backend: "codex", cwd: "/work/demo" })).toBe(`cd -- '/work/demo' && exec env ${path} codex`);
+    expect(terminalSessionCommand({ backend: "codex", cwd: "/work/demo" })).toBe(`cd -- '/work/demo' && exec env ${path} codex --no-daemon`);
     expect(terminalSessionCommand({ backend: "codex", cwd: "/work/demo", resumeSessionId: "abc" }))
-      .toBe(`cd -- '/work/demo' && exec env ${path} codex resume 'abc'`);
+      .toBe(`cd -- '/work/demo' && exec env ${path} codex --no-daemon resume 'abc'`);
   });
 
   test("in the background, both agents carry it in the command tmux's zsh runs", () => {

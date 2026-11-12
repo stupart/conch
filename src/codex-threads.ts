@@ -576,6 +576,25 @@ export function appServerNoTerminal(pid: number): string {
  */
 const APP_SERVER_ARGS = /\sapp-server(?=\s+-|\s+daemon\b|\s*$)/;
 
+/**
+ * The app-server holding a thread's writer lock, when one does: Codex's shared daemon, or the ChatGPT app's own.
+ *
+ * A resume from conch asks before it launches. A Terminal session gets a private server (`terminalFlags`), and a private
+ * server can't open a thread another process writes (`writer_lock.rs`: "already has an active writer"); one an
+ * app-server holds is joined there instead, by `codex resume <id>` with nothing that keeps it off the daemon.
+ * Undefined when no app-server holds it, or when the lock or `ps` can't say, which launches as before.
+ */
+export async function codexThreadServer(
+  codexHome: string,
+  threadId: string,
+  options: Pick<CodexThreadsOptions, "lockProbe" | "processArgs"> = {},
+): Promise<number | undefined> {
+  const holder = (await readCodexOpenThreadIds(codexHome, options.lockProbe)).get(threadId);
+  if (!holder) return;
+  const args = (await (options.processArgs ?? readProcessArgs)([holder]))?.get(holder);
+  return args !== undefined && APP_SERVER_ARGS.test(args) ? holder : undefined;
+}
+
 /** Each pid's command line from one `ps`, or null when `ps` cannot run. */
 async function readProcessArgs(pids: number[]): Promise<Map<number, string> | null> {
   // `ps -p` exits 1 when none of the pids are alive any more, which is an

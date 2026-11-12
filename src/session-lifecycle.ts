@@ -93,6 +93,13 @@ export interface StartSessionRequest {
    */
   hookTrust?: string;
   /**
+   * Resume into the Codex app-server that already holds this conversation's writer lock, rather than with a private
+   * server of its own (`terminalFlags`): a private one can't open a thread another process writes. The window joins it
+   * there, and its `resume <id>` is what credits it to that window (codex-terminal-sessions.ts). Daemon-owned, never
+   * accepted from a wire request: read from the lock just before the launch.
+   */
+  sharedServer?: true;
+  /**
    * Per-session choices from the agent's own `--help` (C1), keyed by the
    * adapter row's `startOptions[].name`. Refused unless every key is in the
    * table and every value fits its kind; `bypass-permissions` here overrides
@@ -384,7 +391,8 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
   const hookTrust = request.hookTrust && adapter.hookTrustArgs ? adapter.hookTrustArgs(request.hookTrust) : "";
-  const hostFlags = request.host === "background" ? adapter.backgroundFlags : "";
+  const hostFlags = request.host === "background" ? adapter.backgroundFlags
+    : request.sharedServer ? "" : adapter.terminalFlags;
   if (request.initialPrompt !== undefined && (resume || teleport || request.claudeHandoff)) {
     throw new Error("A first message is only given to a new conversation");
   }
@@ -421,6 +429,16 @@ const CONVERSATION_SELECTORS: Record<SessionBackend, Record<string, "value" | "o
 const LAUNCH_OVERRIDES: Record<SessionBackend, ReadonlySet<string>> = {
   claude: new Set(),
   codex: new Set(["hooks.state", "check_for_update_on_startup"]),
+};
+
+/**
+ * Switches conch puts on a launch itself, on either host (`backgroundFlags`, `terminalFlags`): a relaunch puts them back
+ * as its own host needs, so they are dropped quietly too. Since 2026-11-12 a Terminal Codex session carries
+ * `--no-daemon` as well, and each restart would otherwise report it came back "without --no-daemon".
+ */
+const LAUNCH_SWITCHES: Record<SessionBackend, ReadonlySet<string>> = {
+  claude: new Set(),
+  codex: new Set(["--no-daemon"]),
 };
 
 /**
@@ -473,6 +491,7 @@ export function restartRequest(
       if (selector !== "none") takeNext();
       continue;
     }
+    if (LAUNCH_SWITCHES[backend].has(flag)) continue;
     // A per-launch override the table sets (`-c model="gpt-6-luna"`) comes back as its row;
     // any other `-c` (the trust override, one a person typed) stays out, as before.
     if (flag === "-c" || flag === "--config") {
