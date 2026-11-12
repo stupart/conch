@@ -23,7 +23,7 @@ import {
   type PendingApproval,
 } from "./approval.ts";
 import { adapterFor, adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
-import { claudeTranscriptSince } from "./delivery-evidence.ts";
+import { claudeTranscriptSince, codexTurnStartedSince } from "./delivery-evidence.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { checkReviewLink, linkRefusalNote, markImagesRefusal, resolveReviewFocus, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince, type ReviewScene } from "./snippet.ts";
@@ -2830,6 +2830,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         } catch {}
         const counted = await promptSince(transcriptPath, beforeCount ?? undefined, sharedWindow(event.sessionId));
         if (counted !== false) return counted;
+        // Codex can start the turn long before it writes the prompt down (an auto-compaction first): that turn is the
+        // words going in (delivery-evidence.ts `codexTurnStartedSince`).
+        try {
+          if (await codexTurnStartedSince(transcriptPath, injectStartedAt)) {
+            landedCode = "provider-turn-started";
+            return true;
+          }
+        } catch {}
         // The count stays still when the process took the words into a new conversation: that one's
         // transcript is where they are.
         try {

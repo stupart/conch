@@ -633,6 +633,30 @@ describe("a send that did not submit is caught, not reported delivered", () => {
     } finally { codex.cleanup(); }
   });
 
+  test("a Codex send whose turn started before Codex wrote the prompt down is delivered, with no Return pressed again", async () => {
+    // 2026-11-11: Codex auto-compacted first and wrote the prompt nearly two minutes on; the turn it started at once was
+    // the words going in, and two more Returns went into the running turn.
+    const codex = codexSession();
+    try {
+      const events: RecordObservation[] = [];
+      const h = harness({
+        window: codex.window,
+        observeRecords: (event) => events.push(event),
+        inject: () => {
+          appendFileSync(codex.path, `${JSON.stringify({
+            timestamp: new Date().toISOString(), type: "event_msg",
+            payload: { type: "task_started", turn_id: "t1", turn_attribution: { turn_id: "t1", turn_trigger: "user" } },
+          })}\n`);
+          return { via: "tmux" };
+        },
+      });
+      expect(await h.voice.handle(inject("hello"))).toBe(true);
+      expect(events.filter(({ kind }) => kind === "delivery").at(-1)?.code).toBe("provider-turn-started");
+      expect(h.keys).toEqual([]);
+      expect(h.errors).toEqual([]);
+    } finally { codex.cleanup(); }
+  });
+
   test("a Codex send that never submits is re-sent, then reported, and recorded with its steps", async () => {
     const codex = codexSession();
     try {
