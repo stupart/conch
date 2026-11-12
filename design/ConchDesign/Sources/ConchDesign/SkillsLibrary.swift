@@ -467,13 +467,16 @@ public enum SkillsLibrary {
         return order.map { Chip(title: $0, isOff: off[$0] ?? false) }
     }
 
-    /// The line under a skill's description: its plugin and version, what calls it, and whether its copies differ.
+    /// The line beside a skill's name: its plugin, what calls it, and how many copies, how many of them differ. "2
+    /// different copies" beside a skill in three places read as a miscount (2026-11-11).
     public static func detail(_ skill: InstalledSkillInfo) -> String {
         var parts: [String] = []
-        if let plugin = skill.plugin { parts.append("plugin \(plugin)") }
+        if let plugin = skill.plugin { parts.append("\(plugin) plugin") }
         if skill.kind == "command" { parts.append("command") }
         if let call = skill.locations.compactMap(\.invocation).first { parts.append(call) }
-        if skill.versions > 1 { parts.append("\(skill.versions) different copies") }
+        if skill.locations.count > 1 {
+            parts.append("\(skill.locations.count) copies" + (skill.versions > 1 ? ", \(skill.versions) versions" : ""))
+        }
         return parts.joined(separator: " · ")
     }
 

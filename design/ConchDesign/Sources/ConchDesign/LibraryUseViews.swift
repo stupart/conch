@@ -267,13 +267,18 @@ public struct SkillDetailPanel: View {
                               onRun: actions.run, onType: actions.type)
             }
             LibraryFact(label: skill.locations.count == 1 ? "Lives in" : "Copies") {
+                // How each copy is called, only when they aren't all called alike.
+                let sameCall = Set(skill.locations.map { $0.invocation ?? "" }).count == 1
                 ForEach(skill.locations) { location in
                     SkillCopyLine(location: location, isRead: (reading ?? SkillsLibrary.primaryLocation(skill)?.id) == location.id,
-                                  showsRead: skill.locations.count > 1, actions: actions)
+                                  showsRead: skill.locations.count > 1, showsCall: !sameCall, actions: actions)
                 }
             }
-            LibraryFact(label: "Sessions") {
-                LibrarySessionChips(uses: uses, onOpen: actions.openSession)
+            // Said once: with none open, Use already says so.
+            if !uses.isEmpty {
+                LibraryFact(label: "Sessions") {
+                    LibrarySessionChips(uses: uses, onOpen: actions.openSession)
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -287,6 +292,7 @@ struct SkillCopyLine: View {
     let location: SkillLocationInfo
     let isRead: Bool
     let showsRead: Bool
+    let showsCall: Bool
     let actions: SkillDetailActions
 
     var body: some View {
@@ -298,15 +304,20 @@ struct SkillCopyLine: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(ConchColor.textPrimary)
                         .lineLimit(1)
+                    // Off is a choice, not a failure: a quiet tag, not attention's red.
+                    if location.enabled == false { LibraryChip("Off", help: "Off for new sessions there") }
                     if isRead, showsRead {
                         Text("shown below").font(.system(size: 10.5)).foregroundStyle(ConchColor.textTertiary)
                     }
                 }
-                Text(line(management))
-                    .font(.system(size: 11))
-                    .foregroundStyle(location.enabled == false ? ConchColor.attention : ConchColor.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                let line = line(management)
+                if !line.isEmpty {
+                    Text(line)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ConchColor.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             Spacer(minLength: ConchSpace.x2)
             switch management {
@@ -326,12 +337,13 @@ struct SkillCopyLine: View {
         }
     }
 
-    /// Its kind, whether it is off, where Codex's is switched, and how it is called.
+    /// What the place doesn't already say: a plugin's or claude.ai's, a command, where Codex's is switched, and how it
+    /// is called when the copies differ. A skill of yours in an account says nothing more than its place.
     private func line(_ management: SkillManagement) -> String {
-        var parts = [SkillCopies.kindTitle(location)]
-        if location.enabled == false { parts.append("off for new sessions") }
+        var parts: [String] = []
+        if !["user", "project"].contains(location.origin) || location.kind == "command" { parts.append(SkillCopies.kindTitle(location)) }
         if management == .codexConfig, let note = management.note { parts.append(note) }
-        if let invocation = location.invocation { parts.append(invocation) }
+        if showsCall, let invocation = location.invocation { parts.append(invocation) }
         return parts.joined(separator: " · ")
     }
 
