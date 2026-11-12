@@ -36,6 +36,11 @@ struct ConversationStack: View {
     var noTerminal: String? = nil
     /// Offered beside that reason when a window can be attached to the job.
     var onOpenInTerminal: (() -> Void)? = nil
+    /// Open another session by its id: the one a message between sessions came from or went to (`PeerMessageRow`).
+    var onOpenSession: (String) -> Void = { _ in }
+    /// A live session's label by its id, or nil when it isn't a row: what such a message names it by, and whether
+    /// there is anything to open.
+    var sessionLabel: (String) -> String? = { _ in nil }
     /// Why a send didn't land while a question card was the live one, by that card: the card is
     /// where it gets fixed, whether the card sent it or the composer did.
     var questionNotices: [String: String] = [:]
@@ -284,6 +289,8 @@ struct ConversationStack: View {
     /// which is the answer to "what is it doing".
     private func foldable(_ item: ConversationItem) -> Bool {
         guard item.kind == "tool" else { return false }
+        // A message to another session is something said, not a step worked (2026-11-12).
+        if item.peer != nil { return false }
         if let asked = item.question, !asked.options.isEmpty { return false }
         if let plan = item.plan, !plan.isEmpty { return false }
         return true
@@ -386,10 +393,14 @@ struct ConversationStack: View {
                 .foregroundStyle(Palette.textFaint)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case "tool":
+            // A message to another session reads as the message it sent, "Sent to …", never as the call.
+            if let peer = item.peer {
+                peerRow(item, peer)
+            }
             // A question outranks every other shape a tool row can take: the
             // rest of the stack reports what already happened, this one is
             // blocked on a person. It must never look like something to skim.
-            if let asked = item.question, !asked.options.isEmpty {
+            else if let asked = item.question, !asked.options.isEmpty {
                 let questions = item.allQuestions
                 // Once answered it collapses to one line naming what was decided
                 // (ConchDesign/QuestionOutcome, the Mac's rule). Only a FINISHED
@@ -428,7 +439,11 @@ struct ConversationStack: View {
                 toolRow(item)
             }
         case "material":
-            MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)
+            if let peer = item.peer {
+                peerRow(item, peer)
+            } else {
+                MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)
+            }
         default:
             // Whole, always: a reply the daemon cut, or a recorded one past its preview, is read
             // from the record as it arrives or comes near the viewport. "Show the rest" is gone.
@@ -438,6 +453,25 @@ struct ConversationStack: View {
                 .lineSpacing(ConchType.readingLineSpacing)
                 .foregroundStyle(Palette.textPrimary)
         }
+    }
+
+    /// A message between agent sessions (ConchDesign `PeerMessageRow`, 2026-11-12), the Mac's row: who it is from or
+    /// went to, as the live row names them, the words whole, and a tap to that session while it is a row. A long one
+    /// the daemon cut is read back whole from the record, whose tag holds the words.
+    private func peerRow(_ item: ConversationItem, _ peer: ConchPeerMessage) -> some View {
+        let live = peer.session.flatMap(sessionLabel)
+        let body: String = {
+            guard item.kind == "material", let full = history.fullText(forSnapshotItem: item.id),
+                  let recorded = ConchPeerMessage.recorded(full) else { return text(of: item) }
+            return HistorySnapshot.whole(record: recorded.body, cut: item.text) ?? item.text
+        }()
+        return PeerMessageRow(
+            message: peer,
+            body: body,
+            at: item.at.map { Date(timeIntervalSince1970: $0 / 1_000) },
+            liveLabel: live,
+            open: live == nil ? nil : { peer.session.map(onOpenSession) }
+        )
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {
@@ -592,7 +626,8 @@ struct ConversationStack: View {
         QuestionOutcome.liveQuestionID(
             in: conversation.items,
             id: \.id,
-            isUser: { $0.kind == "user" },
+            // Another session's message starts a turn as Tyler's words do (`startsTurn` in src/conversation.ts).
+            isUser: { $0.kind == "user" || ($0.peer?.direction == .received && $0.peer?.queued == false) },
             isRunningQuestion: { $0.question != nil && $0.tool?.status == "running" }
         )
     }

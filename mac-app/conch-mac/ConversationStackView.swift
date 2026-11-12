@@ -77,6 +77,11 @@ struct ConversationStackView: View {
     /// Open the subagent a Task/Agent block started, in this same pane (C4).
     /// The daemon says which agent that was; the pane decides how to show it.
     var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
+    /// Open another session by its id: the one a message between sessions came from or went to (`PeerMessageRow`).
+    var onOpenSession: (String) -> Void = { _ in }
+    /// A live session's label by its id, or nil when it isn't a row: what a message between sessions names it by,
+    /// and whether there is anything to open.
+    var sessionLabel: (String) -> String? = { _ in nil }
     /// Why conch cannot type into this session (a closed or app-server Codex
     /// thread, a background job with no window). Answering a question IS
     /// typing, so its buttons go dead and say why instead of failing on press.
@@ -149,6 +154,8 @@ struct ConversationStackView: View {
     /// render as itself rather than as something you must think to open.
     private func foldable(_ item: ConversationItem) -> Bool {
         guard item.kind == .tool else { return false }
+        // A message to another session is something said, not a step worked (2026-11-12).
+        if item.peer != nil { return false }
         if let asked = item.question, !asked.options.isEmpty { return false }
         if let plan = item.plan, !plan.isEmpty { return false }
         return true
@@ -293,7 +300,8 @@ struct ConversationStackView: View {
         QuestionOutcome.liveQuestionID(
             in: conversation.items,
             id: \.id,
-            isUser: { $0.kind == .user },
+            // Another session's message starts a turn as Tyler's words do (`startsTurn` in src/conversation.ts).
+            isUser: { $0.kind == .user || ($0.peer?.direction == .received && $0.peer?.queued == false) },
             isRunningQuestion: { $0.question != nil && $0.tool?.status == "running" }
         )
     }
@@ -795,11 +803,18 @@ struct ConversationStackView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
         case .material:
-            MaterialRow(material: item.material, fallback: item.text)
+            if let peer = item.peer {
+                peerRow(item, peer)
+            } else {
+                MaterialRow(material: item.material, fallback: item.text)
+            }
         case .tool:
+            // A message to another session reads as the message it sent, "Sent to …", never as the call.
+            if let peer = item.peer {
+                peerRow(item, peer)
             // A question outranks the generic tool shell: this row exists only
             // because the session is blocked on one of these choices.
-            if let asked = item.question, !asked.options.isEmpty {
+            } else if let asked = item.question, !asked.options.isEmpty {
                 let questions = item.allQuestions
                 // §3: once answered it collapses to one line naming what was decided. Only
                 // when the answer actually names an option — the wire never states a choice,
@@ -851,6 +866,26 @@ struct ConversationStackView: View {
                 toolRow(item)
             }
         }
+    }
+
+    /// A message between agent sessions (ConchDesign `PeerMessageRow`, 2026-11-12): who it is from or went to, as the
+    /// live row names them, the words whole, and a click to that session while it is a row. A long one the daemon cut is
+    /// read back whole from the record, whose tag holds the words (`ConchPeerMessage.recorded`).
+    private func peerRow(_ item: ConversationItem, _ peer: ConchPeerMessage) -> some View {
+        let live = peer.session.flatMap(sessionLabel)
+        let body: String = {
+            guard item.kind == .material, let full = history.fullText(forSnapshotItem: item.id),
+                  let recorded = ConchPeerMessage.recorded(full) else { return text(of: item) }
+            return HistorySnapshot.whole(record: recorded.body, cut: item.text) ?? item.text
+        }()
+        return PeerMessageRow(
+            message: peer,
+            body: body,
+            at: item.at.map { Date(timeIntervalSince1970: $0 / 1_000) },
+            liveLabel: live,
+            open: live == nil ? nil : { peer.session.map(onOpenSession) }
+        )
+        .padding(.top, peer.direction == .received ? Self.turnBreak : 0)
     }
 
     /// The permission prompt, as the question card's shape: what it wants, and the three
@@ -1874,6 +1909,7 @@ private struct MaterialRow: View {
         case .interruption: return "stop.circle"
         case .commandOutput: return "terminal"
         case .task: return "shippingbox"
+        case .peerMessage: return "bubble.left.and.bubble.right"
         case .unknown, nil: return "square.stack"
         }
     }

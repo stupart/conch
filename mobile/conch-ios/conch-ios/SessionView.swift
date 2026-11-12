@@ -20,6 +20,8 @@ struct SessionView: View {
     @State private var showReview = false
     #endif
     @State private var sendFailed = false
+    /// The session a message between sessions names, while it is open over this one (`PeerMessageRow`).
+    @State private var peerSession: String?
     @FocusState private var typing: Bool
     @State private var pickedPhoto: PhotosPickerItem?
     /// Prepared and waiting, NOT uploaded. Nothing leaves the phone until you
@@ -255,6 +257,9 @@ struct SessionView: View {
                             onFreeform: { typing = true },
                             noTerminal: row?.noTerminal,
                             onOpenInTerminal: row?.attachable == true ? openInTerminal : nil,
+                            // The session a message between sessions came from or went to, pushed over this one.
+                            onOpenSession: { peerSession = $0 },
+                            sessionLabel: { id in bridge.state?.rows.first { $0.id == id }?.label },
                             questionNotices: questionNotices
                         )
                     } else if let replyText {
@@ -400,6 +405,10 @@ struct SessionView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        // Another session, opened from a message between sessions: pushed over this one, Back returns here.
+        .navigationDestination(item: $peerSession) { id in
+            SessionView(bridge: bridge, speech: speech, talk: talk, sessionId: id)
+        }
         .toolbar {
             // The name, and under it the state. The state was a chip in the
             // trailing capsule, which clipped it to "! N" and "W…".

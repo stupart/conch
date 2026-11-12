@@ -38,6 +38,9 @@ public enum ConchSendFailure {
         // conch never found, or never held, the window to type into.
         case "window-not-focusable", "clipboard-fallback":
             "couldn't reach that session's window."
+        // Only another session's message (`conch message`) is refused this way: it may not take the front from you.
+        case "would-take-focus":
+            "that session is in a Terminal window, and conch brings one to the front only for what you send."
         case "hosted-app-unavailable":
             "the Codex app isn't reachable on this Mac. Open it, then send again."
         case "hosted-session-not-open":

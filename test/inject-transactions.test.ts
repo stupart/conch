@@ -394,3 +394,25 @@ describe("UI injection transactions", () => {
     expect(await withUITransaction(async () => "ready")).toBe("ready");
   });
 });
+
+// `conch message` (2026-11-12): an agent's words reach a session without bringing its window to the front.
+describe("a send that may not raise a window", () => {
+  test("a Terminal window is refused before anything is focused or typed", async () => {
+    const ui = fakeUI();
+    const result = await injectText(cfg, 1, "words", undefined, { ...ui.options(1), raiseWindow: false });
+    expect(result).toEqual({ via: "none", failed: true, reason: "would-take-focus" });
+    expect(ui.actions).toEqual([]);
+    expect(ui.items()).toEqual(textItems("original"));
+  });
+
+  test("a tmux pane is typed as ever", async () => {
+    const ui = fakeUI();
+    const typed: string[] = [];
+    const result = await injectText(cfg, 1, "words", undefined, {
+      ...ui.options(1), raiseWindow: false, findTmuxPane: async () => "%fake",
+      sendTmuxKeys: async (_pane, text) => { typed.push(text); return { exitCode: 0 }; },
+    });
+    expect(result).toEqual({ via: "tmux" });
+    expect(typed).toEqual(["words", "Enter"]);
+  });
+});

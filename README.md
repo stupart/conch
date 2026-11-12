@@ -82,6 +82,7 @@ A more playful view of your sessions, the lagoon, is in the works.
 | Permission prompts | Answered by voice, in the app, or on the phone | Announced and shown as needing you; you answer in Codex |
 | Multiple-choice questions | Answered with its picker's own keys | Your answer goes in as a message |
 | Rename | conch's label, and `/rename` in the session | conch's label only |
+| Messages from other sessions | Claude Code's SendMessage, or `conch message` | `conch message` |
 
 `conch setup` wires Claude Code's hooks and installs the plugin for both. Codex needs no hooks: conch reads Codex's
 own session files, read-only, every few seconds. `conch install --codex` adds conch's Codex hooks as well; Codex asks
@@ -155,6 +156,7 @@ conch is local-first. It has no server and no account of its own.
 | `conch pause` / `conch resume` | Manual (hold finished turns quietly) / auto |
 | `conch rename <session> <name>` | Give a session a name in conch |
 | `conch model <session> <model>` | Switch a live session's model |
+| `conch message <session> "<text>"` / `--reply <msg-id> "<text>"` | From an agent's shell: send another session (Claude Code or Codex) a message, framed so it knows who from and how to answer (`conch message --help`). Both ends show it as a message between sessions |
 | `conch voices [setup]` / `conch voice <session> [voice]` | Audition the voices, or set them up now / show or pin a session's voice |
 | `conch settings` / `get <key>` / `set <key> <value>` / `unset <key>` | List, read, change or reset a setting ([docs/configuration.md](docs/configuration.md)) |
 | `conch pair` | Connect the iPhone app |

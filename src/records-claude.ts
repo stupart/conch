@@ -1,4 +1,5 @@
 import { unwrapPastedContent } from "./conversation.ts";
+import { peerRecordText, receivedPeerMessage, type PeerMessage } from "./peer-messages.ts";
 import { recordToolResult, recordValue } from "./records-sanitize.ts";
 import {
   emptyRecords,
@@ -96,6 +97,25 @@ function responseFor(
   };
 }
 
+/**
+ * A message another agent session sent this one, from its record: Claude Code's meta turn or the queued attachment
+ * it files while the session is busy (both `origin.kind: "peer"`), or text `conch message` typed in. Null for
+ * anything else, a tool result included.
+ */
+function claudePeerRecord(entry: Record<string, unknown>, message: Record<string, unknown>): { peer: PeerMessage; body: string } | null {
+  const attachment = object(entry.attachment);
+  if (entry.type === "attachment" && attachment?.type === "queued_command" && object(attachment.origin)?.kind === "peer") {
+    const prompt = typeof attachment.prompt === "string" ? attachment.prompt : visibleText(recordValue(attachment.prompt));
+    const received = receivedPeerMessage(unwrapPastedContent(prompt ?? ""), attachment.origin);
+    return received && { ...received, peer: { ...received.peer, queued: true } };
+  }
+  if (entry.type !== "user") return null;
+  const content = message.content;
+  if (Array.isArray(content) && content.some((part) => object(part)?.type === "tool_result")) return null;
+  const text = typeof content === "string" ? content : visibleText(recordValue(content));
+  return text ? receivedPeerMessage(unwrapPastedContent(text), entry.origin) : null;
+}
+
 /** Normalize one complete JSONL record; never retain the source envelope in parser state. */
 export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerContext): NormalizedRecords {
   const out = emptyRecords();
@@ -111,8 +131,11 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
   const message = object(entry.message) ?? {};
   const compact = entry.type === "summary" || entry.isCompactSummary === true
     || (entry.type === "system" && entry.subtype === "compact_boundary");
+  // Another session's message is kept although Claude Code files it as a meta turn or a queue attachment: as
+  // `inter_agent`, never as a message of Tyler's, in the tag the apps read a sender from (peerRecordText).
+  const peer = compact ? null : claudePeerRecord(entry, message);
   // Omitted bodies may still provide a UUID needed to follow a later visible branch.
-  const omitted = !compact && ((entry.type !== "user" && entry.type !== "assistant")
+  const omitted = !compact && !peer && ((entry.type !== "user" && entry.type !== "assistant")
     || entry.isMeta === true || message.role === "system" || message.role === "developer");
 
   const nativeId = string(entry.uuid);
@@ -164,9 +187,10 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
       content: compactContent,
     });
   } else {
-    const humanInput = entry.type === "user" && parts.some((part) =>
+    // A peer message starts a turn as Tyler's words do: the session answers it. One queued mid-turn joins that turn.
+    const humanInput = (peer !== null && !peer.peer.queued) || (entry.type === "user" && parts.some((part) =>
       (part.type === "text" && typeof part.text === "string")
-      || part.type === "image" || part.type === "document");
+      || part.type === "image" || part.type === "document"));
     if (humanInput || nativeTurnId) {
       turnId = nativeTurnId ? recordKey(context.sessionId, "turn", nativeTurnId)
         : nativeId ? recordKey(context.sessionId, "turn", nativeId) : physicalRecordKey(context, "turn");
@@ -190,7 +214,11 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     // pointing at "the message with this UUID" has nothing to point at when the id it
     // needs is a block index. Tool calls, results and attachments keep their own ids,
     // because each of those IS addressed on its own.
-    const visible = rawParts.flatMap((raw) => {
+    if (peer) {
+      append(rootId, { kind: "inter_agent", role: "system", turnId, text: peerRecordText(peer.peer, peer.body) });
+    }
+    const blocks = peer ? [] : rawParts;
+    const visible = blocks.flatMap((raw) => {
       const block = object(raw);
       const text = block?.type === "text" && typeof block.text === "string"
         ? recordValue(entry.type === "user" ? unwrapPastedContent(block.text) : block.text) : undefined;
@@ -198,7 +226,7 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     });
     let messageWritten = false;
 
-    for (const [blockIndex, rawPart] of rawParts.entries()) {
+    for (const [blockIndex, rawPart] of blocks.entries()) {
       const part = object(rawPart);
       if (!part) continue;
       if (part.type === "text" && typeof part.text === "string") {

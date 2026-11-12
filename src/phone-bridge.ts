@@ -2,6 +2,7 @@ import { decodeFailureTicketRequest } from "./failure-tickets.ts";
 import { decodeNoticeRequest } from "./notice-wire.ts";
 import { decodeBugReportRequest } from "./bug-report.ts";
 import { decodePushRegistration, PUSH_REGISTRATION_MAX_BYTES, type PushRegistration } from "./push-devices.ts";
+import { decodePeerMessageRequest } from "./peer-message-send.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -223,6 +224,8 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   decodeNoticeRequest,
   // Bug reports (bug-report.ts) become failure tickets, which are the Mac's: a phone files none.
   decodeBugReportRequest,
+  // `conch message` names its sender by a process on this Mac (peer-message-send.ts), which a phone has none of.
+  decodePeerMessageRequest,
 };
 
 /** A control body only the Mac app may send, as the control server would read it (one envelope unwrapped, as it does). */

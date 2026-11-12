@@ -1130,6 +1130,8 @@ struct GroundStrip: View {
 try MainActor.assumeIsolated { try renderOnboarding() }
 try renderFailureTickets()
 try renderFloatingPill()
+// Messages between agent sessions (PeerMessagesGallery.swift).
+try renderPeerMessages()
 
 // MARK: - Infinite scroll
 
