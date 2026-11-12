@@ -845,9 +845,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     /// Something Tyler sent through conch itself — a canvas, a Show, a video from this phone — summed up by the
     /// daemon and drawn as one quiet row. Nil from an older daemon, which keeps today's rows.
     var receipt: ConchSentReceipt?
+    /// A message between agent sessions (2026-11-12): one another session sent this one (a material row), or one this
+    /// session sent (its tool row). Drawn as `PeerMessageRow`, never as Tyler's bubble. Nil from an older daemon.
+    var peer: ConchPeerMessage?
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material, receipt, peer
     }
 
     /// What a question card shows: every question, or the one.
@@ -866,6 +869,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
         receipt = try? c.decodeIfPresent(ConchSentReceipt.self, forKey: .receipt)
+        peer = try? c.decodeIfPresent(ConchPeerMessage.self, forKey: .peer)
     }
 }
 

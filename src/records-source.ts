@@ -7,7 +7,9 @@ import type { RecordObject, RecordProvider } from "./records-types.ts";
 // Per provider, so a fix to one re-reads only its transcripts (1.75 GB each, 2026-09-23).
 // codex 3: Codex's injected context is no longer stored as Tyler's words.
 // claude 3: pasted text is stored without Claude Code's `<pasted_content>` tags.
-export const RECORD_PARSER_VERSION = { claude: 3, codex: 3 } as const satisfies Record<RecordProvider, number>;
+// 4 (both, 2026-11-12): a message from another agent session is stored as `inter_agent` in conch's tag, never as
+// Tyler's words or not at all (peer-messages.ts).
+export const RECORD_PARSER_VERSION = { claude: 4, codex: 4 } as const satisfies Record<RecordProvider, number>;
 export const SOURCE_PROBE_BYTES = 256;
 
 export interface StoredRecordSource {

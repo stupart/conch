@@ -661,6 +661,28 @@ extension ConversationItem {
     /// somewhere else; going through the decoder is what guarantees a recorded row is
     /// the same shape as a published one, with no second set of defaults to drift.
     init?(recorded: HistoryItem, text: String) {
+        // Another session's message, kept as `inter_agent` in conch's tag (src/peer-messages.ts `peerRecordText`): the
+        // same peer row as a live one, through the same decoder. A Codex team's own traffic stays as it was.
+        if recorded.kind == "inter_agent", let read = ConchPeerMessage.recorded(text) {
+            var peer: [String: Any] = [
+                "direction": read.peer.direction.rawValue, "name": read.peer.name, "via": read.peer.viaConch ? "conch" : "claude",
+            ]
+            if let session = read.peer.session { peer["session"] = session }
+            if let agentId = read.peer.agentId { peer["agentId"] = agentId }
+            if let pid = read.peer.pid { peer["pid"] = pid }
+            if let msgId = read.peer.msgId { peer["msgId"] = msgId }
+            if let replyTo = read.peer.replyTo { peer["replyTo"] = replyTo }
+            var payload: [String: Any] = [
+                "id": recorded.id, "rev": recorded.revision, "kind": "material", "text": read.body,
+                "material": ["kind": "peer_message", "title": read.peer.heading()],
+                "peer": peer,
+            ]
+            if let at = recorded.at { payload["at"] = at }
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let decoded = try? JSONDecoder().decode(ConversationItem.self, from: data) else { return nil }
+            self = decoded
+            return
+        }
         let kind: String = switch recorded.kind {
         case "message": recorded.role == "user" ? "user" : "assistant"
         case "tool_call", "tool_result": "tool"

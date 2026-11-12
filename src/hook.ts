@@ -159,6 +159,12 @@ export interface TurnEvent {
    */
   awaitDelivery?: true;
   /**
+   * An inject that is another agent session's message (`conch message`, peer-message-send.ts), framed, named and
+   * limited by the daemon itself. Never from the socket: `validateSocketTurnEvent` refuses it, so no client can skip
+   * the framing or the limits. Delivered without touching what Tyler is doing (voice-loop `deliverPeerMessage`).
+   */
+  peer?: true;
+  /**
    * A `review-published` whose sender waits for the daemon's verdict on this connection: filed
    * (with the filing's real id, version and link, and where it can be seen) or refused, and why
    * (review-verdict.ts). Only `review_to_front` asks; without it the socket acks at once, as a

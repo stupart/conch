@@ -3275,6 +3275,13 @@ private struct ConversationPane: View {
                         onSelectSession(target)
                     }
                 },
+                // The session a message between sessions came from or went to: its row, in this same pane.
+                onOpenSession: { id in
+                    if let target = state?.rows.first(where: { $0.id == id }) ?? subagentRow(id: id) {
+                        onSelectSession(target)
+                    }
+                },
+                sessionLabel: { id in state?.rows.first(where: { $0.id == id })?.label },
                 noTerminal: row.noTerminal,
                 onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
                 approval: row.approval,

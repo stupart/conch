@@ -39,7 +39,7 @@ Getting started:
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
   conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
-  conch rename <session> <name> | model <session> <model> | agent help | bug <title> --happened <what> --expected <what>  save a name | type /model into it | agents' tools, from a session's shell | file a private bug about conch
+  conch rename <session> <name> | model <session> <model> | message <session> "<text>" | agent help | bug <title> --happened <what> --expected <what>  save a name | type /model into it | from an agent's shell, message another session (message --help) | agents' tools, from a session's shell | file a private bug about conch
 
 Voice and settings:
   conch voice <session> [voice] | voices [setup]  show/pin, audition, or set up voices now
@@ -452,6 +452,25 @@ switch (command) {
     console.log(`[conch] ${oldLabel} -> ${renamedLabel} (persisted to ~/.config/conch/labels.json)${
       voiceMigrated ? "; voice pin migrated" : ""
     }${providerWarning}`);
+    break;
+  }
+  case "message": {
+    // One session's message into another's prompt (peer-message-send.ts), run from the sending agent's shell.
+    // Belongs under `conch agent` once that lands (PR #610); `message` stays as the name both spell.
+    const { runMessageCommand } = await import("./peer-message-cli.ts");
+    const { forwardToDaemonSocket } = await import("./phone-bridge.ts");
+    const { readConversationTail } = await import("./conversation.ts");
+    const { assistantTail } = await import("./transcript-tail.ts");
+    const { transcriptFormatFor } = await import("./agent-adapter.ts");
+    process.exitCode = await runMessageCommand(rest, {
+      request: (line, timeoutMs) => forwardToDaemonSocket(cfg.socketPath, line, timeoutMs),
+      stdin: () => new Response(Bun.stdin.stream()).text(),
+      stdinIsTTY: process.stdin.isTTY === true,
+      callerPid: process.ppid,
+      readTail: async (path, sessionId) => assistantTail(await readConversationTail(path, sessionId, transcriptFormatFor(path))),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+    });
     break;
   }
   case "model": {

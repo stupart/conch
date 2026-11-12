@@ -4894,3 +4894,81 @@ describe("a slash command is typed once and confirmed by the screen", () => {
     expect(h.texts).toEqual(["/Users/you/shot.png what is this?"]);
   });
 });
+
+describe("another session's message (`conch message`), delivered without touching Tyler's", () => {
+  // 2026-11-12: an agent's message goes in by the path his sends take, and none of what that path does with HIS words.
+  const peer = (text: string, over: Partial<TurnEvent> = {}) => inject(text, { peer: true, ...over });
+
+  test("a dialog open refuses it, and nothing is typed, said, or filed as his send", async () => {
+    const h = harness({ window: () => ({ sessionId: "s1", status: "waiting" }) as SessionInfo });
+    expect(await h.voice.handle(peer("words"))).toEqual({ delivered: false, reason: "session-awaiting-answer" });
+    expect(h.texts).toEqual([]);
+    expect(h.said).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  test("its words are never the answer to a question on screen", async () => {
+    const path = transcript(
+      user({ type: "text", text: "ask me" }),
+      assistant({ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input: { questions: [{ header: "Alpha", question: "Pick?", options: [{ label: "A1" }, { label: "A2" }] }] } }),
+    );
+    try {
+      const h = harness({ key: () => { appendFileSync(path, JSON.stringify(user({ type: "text", text: "A1" })) + "\n"); return { via: "tmux" }; } });
+      await h.voice.handle(peer("A1", { transcriptPath: path }));
+      expect(h.answered).toEqual([]);
+      expect(h.texts).toEqual(["A1"]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("it never falls back to his clipboard, and says whether a window may be raised", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const h = harness({
+      terminal: {
+        injectText: async (_cfg, _pid, _text, _before, options) => {
+          seen.push(options as Record<string, unknown> | undefined);
+          return { via: "none", failed: true, reason: "would-take-focus" };
+        },
+        injectKey: async () => ({ via: "tmux" }),
+        injectKeys: async () => ({ via: "tmux" }),
+        injectProviderCommand: async () => ({ kind: "delivered", via: "tmux" }),
+        toClipboard: async () => { throw new Error("an agent's words never go on the clipboard"); },
+      },
+    });
+    expect(await h.voice.handle(peer("words"))).toEqual({ delivered: false, reason: "would-take-focus" });
+    expect(seen[0]).toMatchObject({ clipboardFallback: false });
+    expect(typeof seen[0]?.raiseWindow).toBe("boolean");
+    expect(h.said).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  test("Tyler's own send keeps every one of those", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const h = harness({
+      terminal: {
+        injectText: async (_cfg, _pid, _text, _before, options) => {
+          seen.push(options as Record<string, unknown> | undefined);
+          return { via: "none", failed: true, reason: "window-not-focusable" };
+        },
+        injectKey: async () => ({ via: "tmux" }),
+        injectKeys: async () => ({ via: "tmux" }),
+        injectProviderCommand: async () => ({ kind: "delivered", via: "tmux" }),
+        toClipboard: async () => {},
+      },
+    });
+    expect(await h.voice.handle(inject("words"))).toMatchObject({ delivered: false });
+    expect(seen[0]?.clipboardFallback).toBeUndefined();
+    expect(seen[0]?.raiseWindow).toBeUndefined();
+    expect(h.said.length).toBeGreaterThan(0);
+  });
+
+  test("a Codex app thread gets it by the app's own route", async () => {
+    const received: Parameters<NonNullable<VoiceLoopDeps["hostedSend"]>>[0][] = [];
+    const h = harness({
+      window: () => ({ sessionId: "s1", agentSessionId: "thread-1", backend: "codex", pid: 0, codexHome: "/fake/profile", messageRoute: "codex-app", noTerminal: "hosted", status: "idle" }) as SessionInfo,
+      hostedSend: async (input) => { received.push(input); return { delivered: true, mode: "started", turnId: "t" }; },
+    });
+    expect(await h.voice.handle(peer("framed words"))).toBe(true);
+    expect(received[0]).toMatchObject({ threadId: "thread-1", text: "framed words" });
+    expect(h.texts).toEqual([]);
+  });
+});

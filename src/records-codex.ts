@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { peerRecordText, receivedPeerMessage } from "./peer-messages.ts";
 import { recordToolResult, recordValue } from "./records-sanitize.ts";
 import {
   emptyRecords,
@@ -202,10 +203,13 @@ function message(
     state.mirrors.push({ turnId, role, hash, id, nativeId, carriers: [carrier], hasAttachments: !!attachments.length });
     if (state.mirrors.length > MAX_MIRRORS) state.mirrors.splice(0, state.mirrors.length - MAX_MIRRORS);
   }
+  // What `conch message` typed into this session is another session speaking, not Tyler (peer-messages.ts).
+  const received = role === "user" && text !== undefined ? receivedPeerMessage(text) : null;
   out.items.push({
-    id, turnId, nativeId, kind: "message", role, at,
+    id, turnId, nativeId, at,
+    ...(received ? { kind: "inter_agent" as const, role: "system" as const } : { kind: "message" as const, role }),
     // Mirrors enrich identity/provenance. A compact event must not trim the canonical response body.
-    text: mirror && carrier !== "response_message" ? undefined : text,
+    text: mirror && carrier !== "response_message" ? undefined : received ? peerRecordText(received.peer, received.body) : text,
     ...(attachments.length ? { content: { omittedAttachments: attachments, reason: "binary_not_indexed" } } : {}),
   });
 }
