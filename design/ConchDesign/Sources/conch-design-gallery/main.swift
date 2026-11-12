@@ -1409,7 +1409,9 @@ struct SidebarColumn<Content: View>: View {
 // feature stopped for want of one. Drawn in the Settings window's own type, SF at its sizes, as the app does.
 func settingsFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
 
-func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes: [ConchPermission: String] = [:], caution: String? = nil, launchd: Bool = false) -> some View {
+func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes: [ConchPermission: String] = [:],
+                    progress: [ConchPermission: String] = [:], caution: String? = nil, moreCautions: [String] = [],
+                    launchd: Bool = false) -> some View {
     VStack(spacing: 0) {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -1423,7 +1425,7 @@ func permissionsTab(_ statuses: [ConchPermission: ConchPermissionStatus], notes:
         .padding(.vertical, 16)
         Rectangle().fill(ConchColor.hairline).frame(height: 1)
         ConchPermissionList(
-            statuses: statuses, notes: notes, caution: caution,
+            statuses: statuses, notes: notes, progress: progress, caution: caution, moreCautions: moreCautions,
             cautionAction: launchd ? (title: "Let the app own it", run: {}) : nil,
             titleFont: settingsFont(14, .medium), detailFont: settingsFont(12), statusFont: settingsFont(11), inset: 22,
             onAction: { _, _ in }
@@ -1462,6 +1464,36 @@ try render("permissions-settings-cautions", width: 780) {
     ], notes: [.accessibility: "Couldn't open System Settings. It is under Privacy & Security › Accessibility."], caution: ConchPermissionHost.caution(startedBy: "terminal"))
     Caption("The launchd service owns the daemon: the handover the app already has")
     permissionsTab(allAllowed, caution: ConchPermissionHost.caution(startedBy: "launchd"), launchd: true)
+}
+
+// Every state has a way to finish it (2026-11-11). Tyler: "it says i need to connect permissions but can't." A refused
+// Automation prompt never comes back and System Settings can't add conch by hand: Reset…. A grant made to a build signed
+// differently shows on in System Settings while this build is refused: said, with the off-and-on fix. A reopen says it
+// is happening, and Automation with Terminal closed asks after opening it in the background.
+try render("permissions-settings-ways-out", width: 780) {
+    Heading(title: "Settings › Permissions: a way out of every state", note: "Reset… where macOS won't ask again, the off-and-on fix where System Settings shows a switch for another build, and words for what each press is doing.")
+    Caption("Refused once: Automation and the Microphone, each with Reset… beside Open Settings")
+    permissionsTab([
+        .accessibility: .granted,
+        .automation: .denied,
+        .screenRecording: .granted,
+        .microphone: .denied,
+    ], progress: [.microphone: "Reset. Press Allow… and macOS asks again."])
+    Caption("A switch for another build, a reopen under way, and Automation with Terminal closed")
+    permissionsTab([
+        .accessibility: .needsRelaunch,
+        .automation: .unanswered("Terminal isn't open, so macOS can't say yet."),
+        .screenRecording: .grantedToAnotherBuild,
+        .microphone: .granted,
+    ], progress: [.accessibility: "Reopening conch…"],
+       moreCautions: [ConchPermissionHost.signatureCaution(adHoc: true)!])
+    Caption("Back from System Settings, still off: the off-and-on fix where you are looking")
+    permissionsTab([
+        .accessibility: .denied,
+        .automation: .granted,
+        .screenRecording: .granted,
+        .microphone: .granted,
+    ], progress: [.accessibility: ConchPermissionGrantMemory.stillOff(.accessibility)])
 }
 
 try render("permissions-notices", width: 1040) {

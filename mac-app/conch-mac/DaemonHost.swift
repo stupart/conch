@@ -100,6 +100,14 @@ final class DaemonHost: ObservableObject {
 
     var isOurs: Bool { if case .running = state { return true }; return false }
 
+    /// The host this app runs, for the relaunch that hands its daemon over (`StateStore.relaunchForNewBuild`): set as it
+    /// is made, and there is one, the app delegate's.
+    private(set) static weak var hosting: DaemonHost?
+
+    init() {
+        DaemonHost.hosting = self
+    }
+
     // MARK: - Lifecycle
 
     /// Bring a daemon up, unless one is already answering.
@@ -227,6 +235,21 @@ final class DaemonHost: ObservableObject {
     func restart() {
         stop()
         start()
+    }
+
+    /// Stop the daemon this app started and wait until it is gone, process and socket, so a conch opening now starts
+    /// its own (2026-11-11). Reopen conch opened the new conch first: it found this one's daemon still answering and
+    /// adopted it, the old conch then stopped it on its way out, and the new one sat on a dead socket until its health
+    /// check noticed, with the grant the reopen was for reaching a daemon it no longer had. False when there is none of
+    /// ours to hand over (stopped, or someone else's, which a reopen leaves to its owner).
+    func stopForRelaunch() async -> Bool {
+        guard let task = process else { return false }
+        stop()
+        let deadline = Date().addingTimeInterval(5)
+        while task.isRunning || socketAnswers(), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return true
     }
 
     /// A3's one button. The launchd agent is the other owner that made

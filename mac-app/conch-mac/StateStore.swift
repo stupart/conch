@@ -1754,22 +1754,32 @@ final class StateStore: ObservableObject {
     /// path — shown in the stale-build line where Relaunch was clicked (A13).
     @Published private(set) var relaunchFailure: String?
 
-    func relaunchForNewBuild() {
+    /// conch again, as a new process: a newer build, or a permission that reaches only a process started after it. The
+    /// daemon this app runs is stopped and gone first (`DaemonHost.stopForRelaunch`), so the new conch starts its own
+    /// rather than adopting one that is about to stop; then the new conch opens, and this one quits once it is up. A
+    /// reopen that didn't happen brings the daemon back and says why, here and to `failed`.
+    func relaunchForNewBuild(failed: (@MainActor () -> Void)? = nil) {
         let bundle = Bundle.main.bundleURL
         relaunchFailure = nil
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
-            Task { @MainActor in
-                // Quit only once the new instance is up. Quitting on a failed
-                // reopen left no conch running and nothing saying why.
-                guard let error else { NSApp.terminate(nil); return }
-                self.relaunchFailure = "Couldn't relaunch: \(error.localizedDescription) — \(bundle.path)"
-                self.reportAppError(
-                    operation: "relaunch",
-                    message: error.localizedDescription,
-                    state: ["target": bundle.path]
-                )
+        Task { @MainActor in
+            let daemon = DaemonHost.hosting
+            let handedOver = await daemon?.stopForRelaunch() ?? false
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
+                Task { @MainActor in
+                    // Quit only once the new instance is up. Quitting on a failed
+                    // reopen left no conch running and nothing saying why.
+                    guard let error else { NSApp.terminate(nil); return }
+                    if handedOver { daemon?.start() }
+                    self.relaunchFailure = "Couldn't relaunch: \(error.localizedDescription) — \(bundle.path)"
+                    self.reportAppError(
+                        operation: "relaunch",
+                        message: error.localizedDescription,
+                        state: ["target": bundle.path]
+                    )
+                    failed?()
+                }
             }
         }
     }

@@ -379,7 +379,7 @@ describe("the Mac deliverable viewers say why a file would not show", () => {
 
 describe("Relaunch says why it didn't, instead of quitting into nothing", () => {
   test("quit only on success; otherwise macOS's words in the stale-build line and a relaunch record", () => {
-    const relaunch = slice(mac("StateStore.swift"), "func relaunchForNewBuild()", "private func updateNewerDaemonWarning()");
+    const relaunch = slice(mac("StateStore.swift"), "func relaunchForNewBuild(failed:", "private func updateNewerDaemonWarning()");
     // The error was `_`, and the app quit whether or not the new one opened.
     expect(relaunch).not.toContain("{ _, _ in");
     expect(relaunch.match(/NSApp\.terminate\(nil\)/g)).toHaveLength(1);

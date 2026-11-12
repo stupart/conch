@@ -187,16 +187,11 @@ enum CanvasCapture {
     /// System Settings at Privacy & Security › Screen Recording.
     static let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 
-    /// conch reopened, as a grant only reaches a new process: the store's own relaunch (a new instance up before this one
-    /// quits). `failed` when it didn't happen.
+    /// conch reopened, as a grant only reaches a new process: the store's own relaunch, which hands its daemon over
+    /// first and opens a new instance before this one quits. `failed` when it didn't happen.
     static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {
         guard let store else { return failed() }
-        store.relaunchForNewBuild()
-        Task { @MainActor in
-            // The failure is set from the open's own completion: a moment is plenty, and a reopen that worked has quit.
-            try? await Task.sleep(for: .seconds(5))
-            if store.relaunchFailure != nil { failed() }
-        }
+        store.relaunchForNewBuild(failed: failed)
     }
 
     /// What is on `display` now, without the windows `leavingOut`; nil without the Screen Recording grant, which Send has

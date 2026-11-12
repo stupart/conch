@@ -54,7 +54,7 @@ describe("never sent, or recorded, without saying so", () => {
     inOrder(act, "case .openSettings:\n            settingsOpened = true", "store?.openLink(CanvasCapture.settings.absoluteString, cwd: nil, rowId: nil)");
     expect(act).toContain("case .reopen:\n            CanvasCapture.reopen(store) { [weak self] in self?.say(.reopenFailed) }");
     expect(act).toContain("store?.openLink(revealing.path, cwd: nil, rowId: nil, reveal: true)");
-    expect(member(send, "static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {")).toContain("store.relaunchForNewBuild()");
+    expect(member(send, "static func reopen(_ store: StateStore?, failed: @escaping @MainActor () -> Void) {")).toContain("store.relaunchForNewBuild(failed: failed)");
   });
 
   test("the pill stays up for as long as it says anything, and is placed before it shows", () => {
