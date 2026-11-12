@@ -389,6 +389,13 @@ export async function lastReplyFor(
   return { text: lastAssistantReply(conversation), shared: conversation.shared === true };
 }
 
+/**
+ * How long the Mac must have had no keyboard or mouse before another session's message (`conch message`) may bring a
+ * Terminal window to the front to be typed. Tyler's own sends raise it at once, since he asked; an agent's would take
+ * the front from whatever he is doing, so a session conch can only reach that way is refused while he is at the Mac.
+ */
+export const PEER_RAISE_IDLE_SECS = 60;
+
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
 /** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
  *  couldn't be read — callers must fail SAFE (don't gate / don't auto-silence) on null. */
@@ -1726,6 +1733,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (event.type === "session-start") return sessionStarted(event);
     if (event.type === "interrupt") return void (await interruptSession(event));
     if (event.type === "inject") {
+      // Another session's message is not Tyler answering: none of what follows is his (`deliverPeerMessage`).
+      if (event.peer) return deliverPeerMessage(event);
       // Answering STOPS the reading.
       //
       // Typing into Claude Code directly interrupts a read, because conch
@@ -2316,6 +2325,20 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return result ?? { heard: "", cut: true };
   }
 
+  /**
+   * Another agent session's words, typed into this one (`conch message`, 2026-11-12). Through the delivery Tyler's
+   * sends take, from the dialog refusal to the transcript's confirmation and the Codex app's route, with nothing of
+   * his touched: the reading he is listening to goes on; the words are never an answer to a question on screen, a
+   * voice question or his draft; a refusal goes back to the sender, never aloud; his clipboard is never the fallback;
+   * and a Terminal window is raised to type only once he has left the Mac alone (`PEER_RAISE_IDLE_SECS`).
+   */
+  async function deliverPeerMessage(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure> {
+    const failure: inject.SendFailure = { delivered: false };
+    const delivered = await deliverToSession({ ...event, type: "turn-end" }, event.announce, undefined, undefined, failure);
+    log(`message from another session into "${event.label}" ${delivered === "staged" ? "staged" : delivered ? "delivered" : "not delivered"}${delivered === false && failure.reason ? ` (${failure.reason})` : ""}`);
+    return delivered === false ? failure : delivered;
+  }
+
   /** Inject a prompt utterance and report how it went. */
   async function deliver(
     event: TurnEvent,
@@ -2488,6 +2511,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       text.length,
     );
     receipt.emit("accepted", "delivery-accepted");
+    // Another session's message (`deliverPeerMessage`): what it would have done with Tyler's words when they don't
+    // land (his draft, a spoken line, his clipboard, a failure filed as his send's) is not done.
+    const quiet = event.peer === true;
+    const draft = (words: string, sessionId: string): void => {
+      if (!quiet) publishDictation(words, sessionId);
+    };
+    const say: typeof speak = quiet ? async () => {} : speak;
+    const clip = (words: string): Promise<void> => (quiet ? Promise.resolve() : toClipboard(words));
     let receiptCode = "delivery-unconfirmed";
     let uncertain = false;
     // Whether the words survived on the Mac's clipboard. Worth saying: it is the
@@ -2499,10 +2530,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // inject's own step timeline. Diagnosing the unsent Codex messages (2026-09-23) meant
       // lining up the daemon log, an undated step log and Codex's rollouts by hand.
       const steps: string[] = [];
-      const reportSend = (message: string, detail: Record<string, unknown> = {}): void =>
+      const reportSend = (message: string, detail: Record<string, unknown> = {}): void => void (quiet ||
         recordDaemonError("inject", message, event.sessionId, {
           label: event.label, chars: text.length, code: receiptCode, ...detail, steps,
-        });
+        }));
       let committed = false;
       const commit = (): void => {
         if (committed) return;
@@ -2527,11 +2558,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         receiptCode = reason ?? "delivery-failed";
         // A failed retry cannot disprove that the original submission landed.
         uncertain ||= reason === "transport-error" || reason === "submit-error";
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
         reportSend("Could not deliver the prompt. Review the recovered draft before retrying.");
         if (!beforeInject || await beforeInject()) {
-          await speak(cfg, reason && PERMISSION_LINES[reason]
+          await say(cfg, reason && PERMISSION_LINES[reason]
             ? `${PERMISSION_LINES[reason]} Your words are in the draft.`
             : "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label, false, event.sessionId);
         }
@@ -2542,13 +2573,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // the apps put on the row. A resume registers the new process, and a retry goes there.
       const refused = async (dead: DeadTarget): Promise<false> => {
         receiptCode = dead.reason;
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         log(`not typing into "${event.label}": ${dead.detail}`);
         reportSend("Nothing typed: the session isn't running in that terminal any more. The words went back to the draft.", {
           pid: event.pid, ...(dead.jobId ? { jobId: dead.jobId } : {}), detail: dead.detail,
         });
         if (!beforeInject || await beforeInject()) {
-          await speak(cfg, "That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft.", event.label, false, event.sessionId);
+          await say(cfg, "That session isn't running in its terminal any more. Resume it, and I'll pick it up. Your words are in the draft.", event.label, false, event.sessionId);
         }
         return false;
       };
@@ -2697,7 +2728,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           } catch {
             return failedDelivery("submit-error");
           }
-          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; publishDictation(text, event.sessionId); return false; }
+          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; draft(text, event.sessionId); return false; }
           if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
         }
         return { box, resends };
@@ -2723,7 +2754,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       if (target?.messageRoute === "codex-app" && target.backend === "codex" && target.codexHome && !target.pid) {
         if (!cfg.autoSubmit) {
           receiptCode = "staged-not-submitted";
-          publishDictation(text, event.sessionId);
+          draft(text, event.sessionId);
           return "staged";
         }
         // Tests supplying a fake terminal must never reach the real desktop.
@@ -2757,7 +2788,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       const injectStartedAt = Date.now();
       let result: inject.InjectTextResult;
       try {
-        result = await injectText(cfg, event.pid, text, beforeInject, { steps });
+        // Another session's message never falls back to Tyler's clipboard, and raises a window only when he isn't using the Mac.
+        result = quiet
+          ? await injectText(cfg, event.pid, text, beforeInject, {
+            steps, clipboardFallback: false, raiseWindow: ((await idleSeconds()) ?? 0) >= PEER_RAISE_IDLE_SECS,
+          })
+          : await injectText(cfg, event.pid, text, beforeInject, { steps });
       } catch {
         return failedDelivery("transport-error");
       }
@@ -2771,7 +2807,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       if (interrupted) {
         receiptCode = "delivery-interrupted";
         uncertain = true;
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         return false;
       }
 
@@ -2779,7 +2815,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         const named = permissionReason(reason);
         receiptCode = named ?? "clipboard-fallback";
         onClipboard = true;
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         // Name the cause: "keystroke-fallback-off" means the session isn't in a
         // tmux pane AND typing is disabled, so EVERY utterance lands here — a
         // config problem, not a transient one. Without this the log line is
@@ -2809,7 +2845,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // problem and not something retrying fixes — it stays broken until
         // someone dismisses the popup, and saying so is the difference between
         // a fixable minute and a baffling one.
-        await speak(
+        await say(
           cfg,
           PERMISSION_LINES[receiptCode]
             ?? (receiptCode === "system-dialog-blocking"
@@ -2830,7 +2866,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       if (("failed" in result && result.failed) || via === "none") return failedDelivery(reason);
       if (!cfg.autoSubmit) {
         receiptCode = "staged-not-submitted";
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         log(`staged text in "${event.label}" via ${via} — waiting for explicit send`);
         recordTelemetry("inject", { route: via, confirmed: false, staged: true, chars: text.length });
         return "staged";
@@ -2989,7 +3025,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           } catch {
             return failedDelivery("submit-error");
           }
-          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; publishDictation(text, event.sessionId); return false; }
+          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; draft(text, event.sessionId); return false; }
           if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
         }
       }
@@ -2998,11 +3034,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // A prompt did land, but on a branch nothing exact names. It may be
         // this one, so neither "delivered" nor "didn't send" is true.
         receiptCode = "delivery-unattributed";
-        publishDictation(text, event.sessionId);
+        draft(text, event.sessionId);
         log(`inject into "${event.label}" via ${via} unconfirmed — a prompt landed in the shared transcript but its window is unknown`);
         recordTelemetry("inject", { route: via, confirmed: false, unattributed: true, chars: text.length, latencyMs: Date.now() - injectStartedAt });
         reportSend("A prompt landed in the shared transcript, but not provably this window's.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
-        await speak(cfg, "Couldn't confirm that landed. Another window shares this session. Check it before sending again.", event.label, false, event.sessionId);
+        await say(cfg, "Couldn't confirm that landed. Another window shares this session. Check it before sending again.", event.label, false, event.sessionId);
         return false;
       }
       // Keystrokes from a process macOS doesn't trust can vanish without an error: typed, by osascript's account, and
@@ -3021,11 +3057,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       reportSend(stuckInBox
         ? "Typed into a busy session, and the words stayed in its input box through three Returns. They are on the clipboard too."
         : "Typed, but the session never took it. The words are on the clipboard.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
-      publishDictation(text, event.sessionId);
-      await toClipboard(text);
-      onClipboard = true;
+      draft(text, event.sessionId);
+      await clip(text);
+      onClipboard = !quiet;
       if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, untrusted
+      await say(cfg, untrusted
         ? `${PERMISSION_LINES["accessibility-permission-denied"]} Your words are on the clipboard.`
         : stuckInBox
           ? "I typed that but it didn't send. It's still in the session's input box — press return there."

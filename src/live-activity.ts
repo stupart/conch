@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, relative, sep } from "node:path";
 import {
   readConversationTail,
+  startsTurn,
   type Conversation,
   type ConversationFormat,
   type ConversationItem,
@@ -405,7 +406,8 @@ export function activityFacts(conversation: Conversation, places: readonly strin
   let start = 0;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
-    if ((item.kind === "user" && !item.id.startsWith("queued:")) || item.material?.kind === "interruption") {
+    // A message from another session starts a turn as his words do, unless it too was queued (peer-messages.ts).
+    if ((startsTurn(item) && !item.id.startsWith("queued:")) || item.material?.kind === "interruption") {
       start = index + 1;
       break;
     }

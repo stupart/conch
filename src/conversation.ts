@@ -47,7 +47,22 @@ import {
   taskNotificationText,
 } from "./agent-activity.ts";
 import { conchHome } from "./home.ts";
+import {
+  CONCH_REPLY_NAME,
+  SEND_MESSAGE_TOOL,
+  conchMessageCommand,
+  conchMessageDelivery,
+  crossSessionDeliveryNotice,
+  receivedPeerMessage,
+  resolvePeer,
+  sendMessageDelivery,
+  sentPeerMessage,
+  type PeerDirectory,
+  type PeerMessage,
+} from "./peer-messages.ts";
 import { isWindowKey } from "./window-key.ts";
+
+export type { PeerMessage } from "./peer-messages.ts";
 
 export type ConversationItemKind =
   | "user"
@@ -63,7 +78,9 @@ export type ConversationMaterialKind =
   | "system_note"
   | "interruption"
   | "command_output"
-  | "task";
+  | "task"
+  /** A message from another agent session; the item's `peer` says who. */
+  | "peer_message";
 
 export interface ConversationMaterial {
   kind: ConversationMaterialKind;
@@ -122,6 +139,11 @@ export interface ConversationItem {
   review?: { summary: string; link?: string };
   /** Present when this row is something Tyler sent through conch itself, summed up (`SentReceipt`). */
   receipt?: SentReceipt;
+  /**
+   * Present when this row is a message between agent sessions (peer-messages.ts): one another session sent this
+   * one (a `material` row, never `user`, so nothing reads it as Tyler's), or one this session sent (its `tool` row).
+   */
+  peer?: PeerMessage;
 }
 
 export interface Conversation {
@@ -159,7 +181,8 @@ export function upsertConversationItem(
     && existing.tool?.status === item.tool?.status
     && existing.tool?.result === item.tool?.result
     && JSON.stringify(existing.material) === JSON.stringify(item.material)
-    && JSON.stringify(existing.receipt) === JSON.stringify(item.receipt);
+    && JSON.stringify(existing.receipt) === JSON.stringify(item.receipt)
+    && JSON.stringify(existing.peer) === JSON.stringify(item.peer);
   if (unchanged) return;
   conversation.items[item.id] = { ...item, rev: existing.rev + 1 };
 }
@@ -665,6 +688,131 @@ function upsertMaterials(conversation: Conversation, key: string, materials: rea
 }
 
 /**
+ * A message another session sent this one, as its own row (peer-messages.ts). A material, not a `user` row: every
+ * reader that asks "did Tyler say something" asks `kind === "user"`, and this was never him (`startsTurn` is the
+ * question for "did a turn start here"). The words are the row's text, so an app too old to know `peer` still shows
+ * them, under the title.
+ */
+function upsertReceivedPeer(
+  conversation: Conversation,
+  id: string,
+  received: { peer: PeerMessage; body: string },
+  at: number | undefined,
+): void {
+  upsertConversationItem(conversation, {
+    id,
+    kind: "material",
+    text: received.body,
+    at,
+    material: { kind: "peer_message", title: `From ${received.peer.name}` },
+    peer: received.peer,
+  });
+}
+
+/** The command line a shell tool ran, whole (`summariseToolInput` keeps one line of it): Claude's, or Codex's. */
+function commandOf(input: unknown): string | undefined {
+  if (typeof input === "string") {
+    const embedded = /exec_command\(\s*\{\s*cmd\s*:\s*(["'`])((?:\\.|(?!\1)[\s\S])*)\1/.exec(input);
+    return embedded?.[2] ? unescapeInner(embedded[2]) : input;
+  }
+  if (!input || typeof input !== "object") return undefined;
+  const record = input as Record<string, unknown>;
+  for (const key of ["command", "cmd"]) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+    // Codex's `shell` tool: `["bash", "-lc", "<the line>"]`.
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) {
+      return /^-l?c$/.test(String(value[1] ?? "")) ? String(value.at(-1)) : value.join(" ");
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The message a tool call sent another session, when it is one: Claude Code's SendMessage, or a shell running
+ * `conch message`. A `--reply` names no session, only the message it answers; when that message is in this
+ * conversation, the reply is named for whoever sent it. Null for any other call.
+ */
+function sentPeerOf(conversation: Conversation, name: string, input: unknown): { peer: PeerMessage; body: string } | null {
+  if (name === SEND_MESSAGE_TOOL) return sentPeerMessage(input);
+  if (toolKind(name, input) !== "command_execution") return null;
+  const command = commandOf(input);
+  const sent = command && command.includes("message") ? conchMessageCommand(command) : null;
+  if (!sent?.peer.replyTo || sent.peer.name !== CONCH_REPLY_NAME) return sent;
+  for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+    const original = conversation.items[conversation.order[index]!]?.peer;
+    if (original?.direction !== "received" || original.msgId !== sent.peer.replyTo) continue;
+    const { name: from, pid, session, agentId } = original;
+    return { ...sent, peer: { ...sent.peer, name: from, ...(pid ? { pid } : {}), ...(session ? { session } : {}), ...(agentId ? { agentId } : {}) } };
+  }
+  return sent;
+}
+
+/** A sent message, with what its call's result said about delivery. */
+function deliveredPeer(
+  peer: PeerMessage,
+  toolUseResult: unknown,
+  resultText: string,
+  isError: boolean,
+): PeerMessage {
+  const delivery = peer.via === "conch"
+    ? conchMessageDelivery(resultText, isError)
+    : sendMessageDelivery(toolUseResult, resultText, isError);
+  return { ...peer, ...delivery };
+}
+
+/**
+ * Claude Code's later word that a message this session sent was held or expired, onto the row that sent it. False
+ * when no row in this conversation sent that message, so the notice is shown as itself.
+ */
+function noteDelivery(conversation: Conversation, notice: { msgId: string; delivery: PeerMessage["delivery"]; note: string }): boolean {
+  for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+    const item = conversation.items[conversation.order[index]!];
+    if (item?.peer?.direction !== "sent" || item.peer.msgId !== notice.msgId) continue;
+    upsertConversationItem(conversation, {
+      ...item,
+      peer: { ...item.peer, delivery: notice.delivery, ...(notice.note ? { deliveryNote: notice.note } : {}) },
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a turn starts at this row: something Tyler said, or a message another session sent, which Claude Code
+ * and Codex both answer as a turn of its own. What a turn boundary means (a question no longer pending, where the
+ * reply being read starts) is the same for both; who said it is not. A peer message that arrived mid-turn joins
+ * that turn instead.
+ */
+export function startsTurn(item: ConversationItem | undefined): boolean {
+  return item?.kind === "user" || (item?.peer?.direction === "received" && !item.peer.queued);
+}
+
+/**
+ * Every peer message with its other end named as conch knows it now: the live row it came from or went to, by pid,
+ * conch id, subagent id or exact name (`resolvePeer`). Run on each publish, since rows come and go and are renamed;
+ * a row it changes is replaced, never written into (it may be the cached build's), and its revision moves so a
+ * viewer holding the old one takes the new.
+ */
+export function withPeerSessions(conversation: Conversation, directory: PeerDirectory): Conversation {
+  for (const key of conversation.order) {
+    const item = conversation.items[key];
+    if (!item?.peer) continue;
+    const peer = resolvePeer(item.peer, directory);
+    if (peer === item.peer) continue;
+    conversation.items[key] = {
+      ...item,
+      rev: item.rev + 1,
+      peer,
+      ...(item.material?.kind === "peer_message"
+        ? { material: { ...item.material, title: `From ${peer.label ?? peer.name}` } }
+        : {}),
+    };
+  }
+  return conversation;
+}
+
+/**
  * Fold one Claude transcript line into the conversation.
  *
  * The trap this exists to avoid: Claude Code records TOOL RESULTS as entries of
@@ -685,6 +833,23 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   // is finished. Then carry on: the user-message form is also a task material.
   const notice = taskNotificationText(entry);
   if (notice) finishSubagent(conversation, notice);
+
+  // A message from another session that arrived while this one was busy, queued as one of Tyler's would be but
+  // with `origin.kind: "peer"` (2.1.280–2.1.309). Only his were read, so these were never shown at all. Keyed by
+  // the record's own uuid, as the record store keys it, so the two copies are recognised as one.
+  const queuedPeer = entry.type === "attachment" && entry.attachment?.type === "queued_command"
+    && entry.attachment.origin?.kind === "peer" ? entry.attachment : null;
+  if (queuedPeer) {
+    const prompt = typeof queuedPeer.prompt === "string"
+      ? queuedPeer.prompt
+      : Array.isArray(queuedPeer.prompt) ? textFromClaudeParts(queuedPeer.prompt, "text") : "";
+    const received = receivedPeerMessage(unwrapPastedContent(prompt), queuedPeer.origin);
+    const key = id ?? `queued:${typeof queuedPeer.source_uuid === "string" ? queuedPeer.source_uuid : conversation.order.length}`;
+    if (received) {
+      upsertReceivedPeer(conversation, key, { ...received, peer: { ...received.peer, queued: true } }, Date.parse(queuedPeer.timestamp ?? "") || at);
+    }
+    return;
+  }
 
   // What Tyler sent while the session was busy. Claude Code records it only as a queued
   // command (`origin.kind: "human"`), never as a user record: across his transcripts from
@@ -725,14 +890,18 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
         // the result arrives at launch, so the block is still RUNNING: the
         // agent is out there, and only its task notification ends it.
         const launched = subagentLaunch(entry.toolUseResult);
+        const resultText = claudeResultText(result.content);
         upsertConversationItem(conversation, {
           ...target,
           tool: {
             ...target.tool,
             status: result.is_error ? "error" : launched?.async ? "running" : "done",
-            result: claudeResultText(result.content),
+            result: resultText,
             ...(launched ? { subagent: { id: launched.id } } : {}),
           },
+          ...(target.peer
+            ? { peer: deliveredPeer(target.peer, entry.toolUseResult, resultText, result.is_error === true) }
+            : {}),
         });
       }
       return;
@@ -740,6 +909,17 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
     const rawText = unwrapPastedContent(typeof entry.message?.content === "string"
       ? entry.message.content
       : textFromClaudeParts(parts, "text"));
+    // Another session's message, from Claude Code's SendMessage (a meta turn, `origin.kind: "peer"`) or typed in by
+    // `conch message`: its own row. It was Claude Code's note, tags and all, under "Added by Claude Code"; conch's
+    // would have been Tyler's own bubble.
+    const received = rawText ? receivedPeerMessage(rawText, entry.origin) : null;
+    if (received) {
+      upsertReceivedPeer(conversation, id ?? `peer:${conversation.order.length}`, received, at);
+      return;
+    }
+    // Claude Code saying a message this session sent was held, or expired: said on the row that sent it.
+    const notice = entry.isMeta === true ? crossSessionDeliveryNotice(rawText) : null;
+    if (notice && noteDelivery(conversation, notice)) return;
     // Claude Code's own records under the user's name, flagged as such: the summary it
     // writes when it compacts ("This session is being continued from a previous
     // conversation…"), and meta records — command caveats, "continued from another
@@ -834,12 +1014,14 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
     const changed = toolKind(String(call.name ?? ""), call.input) === "file_change"
       ? fileChange(call.input)
       : null;
+    // A message to another session reads as the message, "→ sent to …", not as the call that sent it.
+    const sent = sentPeerOf(conversation, String(call.name ?? ""), call.input);
     upsertConversationItem(conversation, {
       id: `tool:${callId}`,
       kind: "tool",
       // The question itself, not "AskUserQuestion(...)" — this row is the one
       // thing on screen a person has to act on, so it says what it is asking.
-      text: asked ? asked.question : summariseToolInput(call.input),
+      text: asked ? asked.question : sent?.body || summariseToolInput(call.input),
       at,
       tool: {
         name: toolDisplayName(String(call.name ?? "tool")),
@@ -851,6 +1033,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       ...(asked ? { question: asked } : {}),
       ...(questions.length > 1 ? { questions } : {}),
       ...(changed ? { change: changed } : {}),
+      ...(sent ? { peer: sent.peer } : {}),
     });
   }
 }
@@ -1409,6 +1592,12 @@ function upsertCodexMessage(
 ): void {
   // Keyed on the whole message, so both of Codex's copies still collapse into one.
   const id = codexMessageId(role, text, codexTurn.get(conversation));
+  // Codex can't receive Claude Code's SendMessage, so a peer message reaches it only as text `conch message` typed.
+  const received = role === "user" ? receivedPeerMessage(text) : null;
+  if (received) {
+    upsertReceivedPeer(conversation, id, received, at);
+    return;
+  }
   const sent = role === "user" ? splitSentReceipts(text) : { text, receipts: [] };
   if (sent.text || !sent.receipts.length) upsertConversationItem(conversation, { id, kind: role, text: sent.text, at });
   upsertReceipts(conversation, id, sent.receipts, !sent.text, at);
@@ -1611,10 +1800,11 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       // Remembered so a much-later echoed answer (see `stripEchoedQuestion`)
       // can be told apart from a genuine quote of Tyler's own.
       rememberCodexQuestionOptions(conversation, codexAsyncQuestionOptions(payload.name, parsed));
+      const sent = asked ? null : sentPeerOf(conversation, String(payload.name ?? ""), parsed);
       upsertConversationItem(conversation, {
         id: `tool:${callId}`,
         kind: "tool",
-        text: asked ? asked.question : summariseToolInput(parsed),
+        text: asked ? asked.question : sent?.body || summariseToolInput(parsed),
         at,
         tool: {
           name: toolDisplayName(String(payload.name ?? "tool")),
@@ -1624,6 +1814,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         },
         ...(steps.length ? { plan: steps } : {}),
         ...(asked ? { question: asked } : {}),
+        ...(sent ? { peer: sent.peer } : {}),
       });
       return;
     }
@@ -1633,13 +1824,16 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       const target = conversation.items[`tool:${callId}`];
       if (!target?.tool) return;
       const output = codexToolOutput(payload.output);
+      const failed = payload.output?.success === false || CODEX_TOOL_FAILED.test(output);
       upsertConversationItem(conversation, {
         ...target,
         tool: {
           ...target.tool,
-          status: payload.output?.success === false || CODEX_TOOL_FAILED.test(output) ? "error" : "done",
+          status: failed ? "error" : "done",
           result: output,
         },
+        // Codex reports a command's exit code only in its output's words, so a refusal reads from what conch printed.
+        ...(target.peer ? { peer: deliveredPeer(target.peer, undefined, output, failed || /Process exited with code [1-9]/.test(output)) } : {}),
       });
       return;
     }
@@ -1731,7 +1925,7 @@ export function latestAnswerableQuestions(conversation: Conversation): AgentQues
 export function pendingQuestion(conversation: Conversation): { id: string; questions: AgentQuestion[] } | null {
   for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
     const item = conversation.items[conversation.order[index]!];
-    if (item?.kind === "user") return null;
+    if (startsTurn(item)) return null;
     if (item?.question && item.tool?.status === "running") return { id: item.id, questions: item.questions ?? [item.question] };
   }
   return null;
@@ -1785,8 +1979,8 @@ const tailDepth = new Map<string, number>();
 function saidMessages(conversation: Conversation): number {
   let count = 0;
   for (const key of conversation.order) {
-    const kind = conversation.items[key]?.kind;
-    if (kind === "user" || kind === "assistant") count++;
+    const item = conversation.items[key];
+    if (item?.kind === "assistant" || startsTurn(item)) count++;
   }
   return count;
 }
@@ -2335,7 +2529,7 @@ export function publishedConversation(
   const spoken = conversation.order
     .map((id) => conversation.items[id])
     .filter((item): item is ConversationItem =>
-      item !== undefined && (item.kind === "assistant" || item.kind === "user")
+      item !== undefined && (item.kind === "assistant" || startsTurn(item))
     )
     .slice(-MIN_SPOKEN_ITEMS)
     .filter((item) => !inWindow.has(item.id));
