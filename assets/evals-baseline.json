@@ -1,0 +1,452 @@
+{
+  "v": 1,
+  "machine": {
+    "at": "2026-11-12T01:09:07.211Z",
+    "conch": "0.4.0",
+    "bun": "1.4.4",
+    "os": "macOS 26.6.2",
+    "model": "Mac17,6",
+    "cpu": "Apple M5 Max",
+    "cores": 18,
+    "memoryGB": 128,
+    "loadStart": 7.5,
+    "loadAverages": {
+      "start": [
+        7.5,
+        22.35,
+        41.06
+      ],
+      "end": [
+        7.58,
+        20.3,
+        39.34
+      ]
+    },
+    "loadEnd": 7.58,
+    "run": {
+      "seconds": 15,
+      "sessions": 12
+    },
+    "note": "idle enough: load 7.58 on 18 cores"
+  },
+  "tokens": {
+    "method": {
+      "approx": "ceil(characters / 4)"
+    },
+    "tools": [
+      {
+        "name": "review_to_front",
+        "chars": 8033,
+        "tokens": 2009,
+        "descriptionChars": 847,
+        "schemaChars": 7128,
+        "parameterProseChars": 4660,
+        "parameters": 8
+      },
+      {
+        "name": "conch_run",
+        "chars": 750,
+        "tokens": 188,
+        "descriptionChars": 421,
+        "schemaChars": 277,
+        "parameterProseChars": 114,
+        "parameters": 1
+      }
+    ],
+    "pieces": {
+      "server-instructions": {
+        "chars": 1009,
+        "tokens": 253
+      },
+      "skill-listing": {
+        "chars": 315,
+        "tokens": 79
+      },
+      "agents-md": {
+        "chars": 2787,
+        "tokens": 697
+      },
+      "tools-list": {
+        "chars": 8786,
+        "tokens": 2197
+      },
+      "tools-list (Claude Code names)": {
+        "chars": 8836,
+        "tokens": 2209
+      },
+      "deferred-tool-names": {
+        "chars": 75,
+        "tokens": 19
+      },
+      "skill:conch-control (on load)": {
+        "chars": 51805,
+        "tokens": 12952
+      }
+    },
+    "surfaces": {
+      "claude-code": {
+        "chars": 1399,
+        "tokens": 351,
+        "parts": [
+          "server-instructions",
+          "skill-listing",
+          "deferred-tool-names"
+        ]
+      },
+      "claude-code (all tools loaded)": {
+        "chars": 10160,
+        "tokens": 2541,
+        "parts": [
+          "server-instructions",
+          "skill-listing",
+          "tools-list (Claude Code names)"
+        ]
+      },
+      "codex": {
+        "chars": 11888,
+        "tokens": 2973,
+        "parts": [
+          "agents-md",
+          "skill-listing",
+          "tools-list"
+        ]
+      }
+    }
+  },
+  "compute": {
+    "mcpServerRssMB": 86,
+    "testDaemon": {
+      "sessions": 12,
+      "fixtureMB": 135,
+      "startup": {
+        "firstPongMs": 210,
+        "allSessionsPublishedMs": 312,
+        "settleSeconds": 3.2,
+        "settled": true,
+        "cpuSecondsToSettle": 0.6,
+        "cpuSecondsBeforeFirstCensus": 0.6
+      },
+      "rest": {
+        "seconds": 15,
+        "cpuPercent": 0.3,
+        "rssMB": 54,
+        "perMinute": {
+          "fsCalls": 52,
+          "fs": {
+            "statSync temp": 12,
+            "existsSync config": 12,
+            "statSync config": 12,
+            "existsSync codex": 12,
+            "readdirSync config": 4
+          },
+          "fsBySite": {
+            "readNewLines (failure-tickets.ts)": 23.9,
+            "readClaudeAccounts (claude-accounts.ts)": 12,
+            "codexThreadsPass (codex-threads.ts)": 12,
+            "readMcpServerReports (mcp-servers.ts)": 4
+          },
+          "spawns": 4,
+          "spawned": {
+            "ps -axo ← guardedSpawn (runaway.ts) ← listMcpServerProcesses (mcp-servers.ts)": 4
+          },
+          "writtenKB": {},
+          "publishedWrites": 0
+        }
+      },
+      "load": {
+        "seconds": 16.5,
+        "cpuPercent": 8.6,
+        "rssMB": 53,
+        "perMinute": {
+          "fsCalls": 99983,
+          "fs": {
+            "existsSync transcripts": 31372.5,
+            "statSync transcripts": 13619.4,
+            "openSync transcripts": 9833.8,
+            "closeSync transcripts": 9833.8,
+            "readFileSync config": 9369.7,
+            "readSync transcripts": 7621.9,
+            "Bun.file registry": 3481,
+            "readdirSync transcripts": 3481,
+            "fstatSync transcripts": 2871.8,
+            "existsSync config": 1109.6,
+            "existsSync codex": 790.5,
+            "Bun.file transcripts": 652.7,
+            "accessSync temp": 493.1,
+            "accessSync system": 493.1
+          },
+          "fsBySite": {
+            "readTail (claude-title.ts)": 27847.9,
+            "findTranscript (agent-adapter.ts)": 27847.9,
+            "parsedTail (conversation.ts)": 8615.5,
+            "liveTranscriptPath (claude-title.ts)": 6962,
+            "labelOverrides (sessions.ts)": 5874.2,
+            "registrySnapshot (sessions.ts)": 3771.1,
+            "listing (agent-activity.ts)": 2958.8,
+            "fileVersion (file-version.ts)": 2958.8,
+            "voiceOverrides (speak.ts)": 2915.3,
+            "isExecutableFile (speech-engine.ts)": 1479.4,
+            "publishSessionsFile (status.ts)": 1214.7,
+            "readClaudeAccounts (claude-accounts.ts)": 1109.6,
+            "update (session-watch.ts)": 1015.3,
+            "watchSessionSources (session-watch.ts)": 772.3
+          },
+          "spawns": 783.2,
+          "spawned": {
+            "tmux list-panes ← guardedSpawn (runaway.ts) ← readServer (background-recovery.ts)": 493.1,
+            "ps -Ao ← guardedSpawn (runaway.ts) ← processParentTable (window-key.ts)": 290.1
+          },
+          "writtenKB": {
+            "sessions-file": 23231.4,
+            "config": 34.3,
+            "temp": 3.7,
+            "state-file": 1.7,
+            "log": 0.6
+          },
+          "publishedWrites": 242.9
+        },
+        "script": "3 sessions busy, transcripts +4 turns/s, a hook event every 2 s, 10 pings/s, conch_sessions 1/s"
+      },
+      "publishedStateKB": 96
+    }
+  },
+  "latency": {
+    "controlPing": {
+      "n": 200,
+      "p50": 0,
+      "p90": 0.1,
+      "mean": 0.1,
+      "max": 0.5
+    },
+    "controlGetConfig": {
+      "n": 20,
+      "p50": 0.1,
+      "p90": 0.2,
+      "mean": 0.2,
+      "max": 0.9
+    },
+    "hook": {
+      "transcriptMB": 8,
+      "userPromptSubmit": {
+        "n": 6,
+        "p50": 58.5,
+        "p90": 65.8,
+        "mean": 58.9,
+        "max": 65.8
+      },
+      "stop": {
+        "n": 6,
+        "p50": 95.8,
+        "p90": 99.7,
+        "mean": 91.8,
+        "max": 99.7
+      }
+    },
+    "cliVersion": {
+      "n": 5,
+      "p50": 44.7,
+      "p90": 46.5,
+      "mean": 43.6,
+      "max": 46.5
+    },
+    "mcp": {
+      "coldStartToInitializeMs": {
+        "n": 4,
+        "p50": 42.4,
+        "p90": 44.7,
+        "mean": 43.2,
+        "max": 44.7
+      },
+      "toolsList": {
+        "n": 10,
+        "p50": 0.2,
+        "p90": 0.3,
+        "mean": 0.2,
+        "max": 0.6,
+        "bytes": 29919
+      },
+      "toolCalls": {
+        "conch_sessions": {
+          "n": 6,
+          "p50": 79.7,
+          "p90": 82.7,
+          "mean": 79.9,
+          "max": 82.7,
+          "replyBytes": 3610,
+          "ok": true
+        },
+        "conch_sessions detail": {
+          "n": 6,
+          "p50": 80.6,
+          "p90": 97.3,
+          "mean": 83.7,
+          "max": 97.3,
+          "replyBytes": 1263,
+          "ok": true
+        },
+        "conch_transcript_tail": {
+          "n": 6,
+          "p50": 88.7,
+          "p90": 90.1,
+          "mean": 88.4,
+          "max": 90.1,
+          "replyBytes": 317,
+          "ok": true
+        },
+        "conch_config": {
+          "n": 6,
+          "p50": 0.5,
+          "p90": 3.2,
+          "mean": 1.1,
+          "max": 3.2,
+          "replyBytes": 10689,
+          "ok": true
+        },
+        "conch_deliverables": {
+          "n": 6,
+          "p50": 39.3,
+          "p90": 47.9,
+          "mean": 41.5,
+          "max": 47.9,
+          "replyBytes": 79,
+          "ok": true
+        },
+        "conch_history": {
+          "n": 6,
+          "p50": 0.1,
+          "p90": 0.3,
+          "mean": 0.1,
+          "max": 0.3,
+          "replyBytes": 82,
+          "ok": false
+        },
+        "conch_on_screen": {
+          "n": 6,
+          "p50": 0.2,
+          "p90": 0.3,
+          "mean": 0.2,
+          "max": 0.3,
+          "replyBytes": 124,
+          "ok": true
+        }
+      },
+      "serverRssMB": 86
+    },
+    "controlPingUnderLoad": {
+      "n": 148,
+      "p50": 0.2,
+      "p90": 0.4,
+      "mean": 0.5,
+      "max": 24.2
+    },
+    "conchSessionsUnderLoad": {
+      "n": 14,
+      "p50": 77.6,
+      "p90": 91.4,
+      "mean": 80.5,
+      "max": 105.7
+    },
+    "registrySnapshot": {
+      "sessions": 12,
+      "n": 20,
+      "p50": 35.6,
+      "p90": 37,
+      "mean": 35.7,
+      "max": 37.9
+    },
+    "transcriptTail": {
+      "transcriptMB": 64,
+      "coldMs": 2.5,
+      "unchanged": {
+        "n": 10,
+        "p50": 0,
+        "p90": 0.1,
+        "mean": 0,
+        "max": 0.1
+      },
+      "afterAppend": {
+        "n": 5,
+        "p50": 0.3,
+        "p90": 0.6,
+        "mean": 0.3,
+        "max": 0.6
+      }
+    },
+    "transcriptMark": {
+      "transcriptMB": 64,
+      "note": "the inject's prompt count, with no cursor",
+      "coldMs": 107.4,
+      "repeat": {
+        "n": 3,
+        "p50": 0.1,
+        "p90": 0.1,
+        "mean": 0.1,
+        "max": 0.1
+      }
+    },
+    "injectPreflight": {
+      "note": "deadTarget on a live pid: the kernel's answer and `ps -o args=`",
+      "n": 10,
+      "p50": 1.4,
+      "p90": 1.8,
+      "mean": 1.6,
+      "max": 2.3
+    },
+    "ps": {
+      "n": 10,
+      "p50": 73.4,
+      "p90": 76.7,
+      "mean": 74.2,
+      "max": 82.9
+    },
+    "publishedStateRows": {
+      "sessions": 12,
+      "note": "rows only: the daemon adds conversations, activity and deliverables",
+      "n": 20,
+      "p50": 0.1,
+      "p90": 0.1,
+      "mean": 0.1,
+      "max": 0.9,
+      "bytes": 3866
+    },
+    "publishedStateFile": {
+      "kb": 96,
+      "parse": {
+        "n": 20,
+        "p50": 0.1,
+        "p90": 0.1,
+        "mean": 0.1,
+        "max": 0.7
+      },
+      "stringify": {
+        "n": 20,
+        "p50": 0.1,
+        "p90": 0.1,
+        "mean": 0.1,
+        "max": 0.2
+      },
+      "writeAndRename": {
+        "n": 20,
+        "p50": 0.1,
+        "p90": 0.2,
+        "mean": 0.1,
+        "max": 0.3
+      }
+    },
+    "whisper": {
+      "engine": "conch.app",
+      "model": "ggml-large-v3-turbo-q5_0.bin",
+      "audioSeconds": 5,
+      "firstRunMs": 406,
+      "warmMs": {
+        "n": 2,
+        "p50": 377.9,
+        "p90": 381.2,
+        "mean": 379.6,
+        "max": 381.2
+      },
+      "realTimeFactor": 0.08,
+      "wordErrorRate": 0
+    }
+  }
+}

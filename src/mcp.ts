@@ -3115,6 +3115,18 @@ function toolError(error: unknown): {
   };
 }
 
+/**
+ * The UTF-8 bytes of the text a tools/call reply hands the agent: its content blocks' text, or an error's message.
+ * What the agent reads, so what it pays for; the JSON-RPC envelope around it never reaches its context.
+ */
+export function replyTextBytes(response: JsonRpcResponse): number {
+  if (response.error) return Buffer.byteLength(response.error.message, "utf8");
+  const content = isRecord(response.result) && Array.isArray(response.result.content) ? response.result.content : [];
+  let bytes = 0;
+  for (const block of content) if (isRecord(block) && typeof block.text === "string") bytes += Buffer.byteLength(block.text, "utf8");
+  return bytes;
+}
+
 function historyRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
   const response = jsonRpcResult(id, result);
   const fits = (value: JsonRpcResponse) => Buffer.byteLength(serializeJsonRpcLine(value), "utf8") + 1 <= MCP_HISTORY_MAX_BYTES;
@@ -3266,28 +3278,27 @@ export async function dispatchJsonRpc(
         try {
           const answered = await handlers[name as McpToolName](argumentsValue, meta);
           const value = answered instanceof RunAnswer ? answered.text : worded ? cliWorded(answered) : answered;
-          tell({ ts, ms: performance.now() - started, ...resultOutcome(answered instanceof RunAnswer ? answered.value : answered), ...logged });
-          if (name === "conch_history" || name === "conch_item") {
-            if (!shouldReply) return null;
-            // A text content block escapes the JSON again. Budget the final UTF-8 wire frame.
-            return historyRpcResult(requestId, toolResult(JSON.stringify(value)));
-          }
-          if (!shouldReply) return null;
-          const result = toolResult(value);
-          const hint = context.movedHinted && !context.movedHinted.has(name) ? movedHint(name) : undefined;
+          const ms = performance.now() - started;
+          // A text content block escapes the JSON again. Budget the final UTF-8 wire frame.
+          const history = name === "conch_history" || name === "conch_item";
+          const result = toolResult(history ? JSON.stringify(value) : value);
+          const hint = !history && context.movedHinted && !context.movedHinted.has(name) ? movedHint(name) : undefined;
           if (hint) {
             context.movedHinted!.add(name);
             result.content.push({ type: "text", text: hint });
           }
-          return jsonRpcResult(requestId, result);
+          const response = history ? historyRpcResult(requestId, result) : jsonRpcResult(requestId, result);
+          // 2026-11-11, `bytes`: what the call put in the agent's context, so result sizes are a distribution in the
+          // log (`conch mcp-usage`, `conch evals`) rather than a guess from transcripts.
+          tell({ ts, ms, ...resultOutcome(answered instanceof RunAnswer ? answered.value : answered), ...logged, bytes: replyTextBytes(response) });
+          return shouldReply ? response : null;
         } catch (error) {
-          tell({ ts, ms: performance.now() - started, outcome: callOutcome(error), error: errorMessage(error), ...logged });
-          if (name === "conch_history" || name === "conch_item") {
-            return shouldReply ? historyRpcResult(requestId, toolError(error)) : null;
-          }
-          return shouldReply
-            ? jsonRpcResult(requestId, toolError(worded ? new Error(cliWording(errorMessage(error))) : error))
-            : null;
+          const ms = performance.now() - started;
+          const response = name === "conch_history" || name === "conch_item"
+            ? historyRpcResult(requestId, toolError(error))
+            : jsonRpcResult(requestId, toolError(worded ? new Error(cliWording(errorMessage(error))) : error));
+          tell({ ts, ms, outcome: callOutcome(error), error: errorMessage(error), ...logged, bytes: replyTextBytes(response) });
+          return shouldReply ? response : null;
         }
       }
 
