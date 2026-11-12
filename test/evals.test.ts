@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -320,5 +320,53 @@ describe("the census the test daemon runs under", () => {
     expect(counted.written).toEqual({ out: 2048 });
     expect(Object.keys(counted.spawned)).toEqual(["echo hi ← (top) (probe.ts)"]);
     // A child bun process: generous for a Mac busy with other agents' gates.
+  }, 30_000);
+
+  test("counts SQLite commits, and the fsync'd ones, in conch's worker threads too", async () => {
+    const root = scratch();
+    const src = join(root, "src");
+    mkdirSync(src);
+    const db = join(root, "history.sqlite");
+    writeFileSync(join(src, "store.ts"), [
+      `import { Database } from "bun:sqlite";`,
+      `export function work(path: string) {`,
+      `  const db = new Database(path);`,
+      `  db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");`,
+      `  db.exec("CREATE TABLE IF NOT EXISTS t (n INTEGER)");`,
+      // Two autocommits at FULL, one transaction of three rows at FULL, then two at NORMAL.
+      `  db.query("INSERT INTO t VALUES (?)").run(1);`,
+      `  db.run("INSERT INTO t VALUES (2)");`,
+      `  db.transaction(() => { for (let n = 0; n < 3; n++) db.query("INSERT INTO t VALUES (?)").run(n); })();`,
+      `  db.exec("PRAGMA synchronous = NORMAL");`,
+      `  db.query("UPDATE t SET n = n + 1").run();`,
+      `  db.transaction(() => db.query("DELETE FROM t WHERE n > 100").run())();`,
+      `  db.query("SELECT count(*) FROM t").get();`,
+      `  db.close();`,
+      `}`,
+    ].join("\n"));
+    writeFileSync(join(src, "worker.ts"), [
+      `import { parentPort } from "node:worker_threads";`,
+      `import { work } from "./store.ts";`,
+      `work(${JSON.stringify(db)});`,
+      // The census writes a thread's counts twice a second; a worker ended from outside writes none on its way out.
+      `await Bun.sleep(800);`,
+      `parentPort!.postMessage("done");`,
+    ].join("\n"));
+    writeFileSync(join(src, "probe.ts"), [
+      `import { Worker } from "node:worker_threads";`,
+      `const worker = new Worker(new URL("./worker.ts", import.meta.url));`,
+      `await new Promise((done) => worker.on("message", done));`,
+      `await worker.terminate();`,
+    ].join("\n"));
+    const census = join(root, "census");
+    const proc = Bun.spawn([process.execPath, "--preload", resolve(import.meta.dir, "../src/evals-census.ts"), join(src, "probe.ts")], {
+      env: { ...process.env, CONCH_EVALS_CENSUS: census, CONCH_EVALS_SRC: src, CONCH_EVALS_CENSUS_PATHS: JSON.stringify([[root, "root"]]) },
+      stdout: "ignore", stderr: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+    const threads = readdirSync(root).filter((name) => /^census\.t\d+\.json$/.test(name));
+    expect(threads).toHaveLength(1);
+    const counted = JSON.parse(readFileSync(join(root, threads[0]!), "utf8")) as { sqlite: Record<string, number> };
+    expect(counted.sqlite).toEqual({ "commit history.sqlite": 5, "fsync history.sqlite": 3 });
   }, 30_000);
 });

@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 
@@ -92,7 +93,13 @@ interface Fixture {
   census: string;
   sessions: FixtureSession[];
   sleepers: Array<ReturnType<typeof Bun.spawn>>;
+  /** Every transcript in the fixture: the sessions' and the history's. */
+  transcripts: number;
 }
+
+/** Folders of ended sessions' transcripts beside the live ones, and how many in each (`buildFixture`). */
+const HISTORY_FOLDERS = 60;
+const HISTORY_PER_FOLDER = 2;
 
 function freePort(): number {
   const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
@@ -157,6 +164,8 @@ export function buildFixture(count: number): Fixture {
     CONCH_MIC_CUES: "0",
     CONCH_PHONE: "0",
     CONCH_ANNOUNCE_SUMMARY: "0",
+    // The history index, on: the live daemon here runs it (its worker, its SQLite), and it is off by default.
+    CONCH_RECORDS_ENABLED: "1",
     CONCH_EVALS_CENSUS: census,
     CONCH_EVALS_SRC: join(REPO, "src"),
     CONCH_EVALS_CENSUS_PATHS: JSON.stringify([
@@ -170,6 +179,7 @@ export function buildFixture(count: number): Fixture {
       [join(root, "state.json"), "state-file"],
       [join(root, ".state.json."), "state-file"],
       [log, "log"],
+      [join(root, "config", "records"), "records"],
       [join(root, "config"), "config"],
       [home, "home"],
       [root, "temp"],
@@ -195,13 +205,42 @@ export function buildFixture(count: number): Fixture {
     sessions.push(session);
     registryWrite(claudeDir, session, "idle");
   }
-  return { root, env, claudeDir, sessionsFile, socket, census, sessions, sleepers };
+  // History: transcripts of sessions that ended, in folders of their own, as a Mac that has used Claude Code for a
+  // while holds them (218 folders and 1,832 transcripts on the Mac this was built on, 2026-11-11). Every lookup of a
+  // transcript by id searched these folders, and the history index walks them.
+  let historyIndex = 0;
+  for (let folder = 0; folder < HISTORY_FOLDERS; folder++) {
+    const cwd = join(root, "work", `old-${folder}`);
+    const project = join(claudeDir, "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(project, { recursive: true });
+    for (let n = 0; n < HISTORY_PER_FOLDER; n++) {
+      const sessionId = `e7a1e7a1-0000-4000-9000-${String(historyIndex++).padStart(12, "0")}`;
+      writeTranscript(join(project, `${sessionId}.jsonl`), sessionId, cwd, 0.008);
+    }
+  }
+  return { root, env, claudeDir, sessionsFile, socket, census, sessions, sleepers, transcripts: count + historyIndex };
+}
+
+/** How many of the fixture's transcripts the history index holds as complete: read only, beside the worker. */
+function recordsIndexed(fixture: Fixture): number {
+  const path = join(fixture.env.CONCH_CONFIG_DIR!, "records", "history.sqlite");
+  if (!existsSync(path)) return 0;
+  try {
+    const db = new Database(path, { readonly: true });
+    try {
+      return (db.query("SELECT count(*) AS n FROM sources WHERE coverage_status = 'complete'").get() as { n: number }).n;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
 }
 
 // ---- the census, read ----
 
-interface CensusFile { at: number; cpuMicros: number; rss: number; calls: Record<string, number>; sites?: Record<string, number>; written: Record<string, number>; spawned: Record<string, number> }
-interface CensusSnapshot { at: number; cpuMicros: number; rss: number; threads: number; calls: Map<string, number>; sites: Map<string, number>; written: Map<string, number>; spawned: Map<string, number> }
+interface CensusFile { at: number; cpuMicros: number; rss: number; calls: Record<string, number>; sites?: Record<string, number>; written: Record<string, number>; spawned: Record<string, number>; sqlite?: Record<string, number> }
+interface CensusSnapshot { at: number; cpuMicros: number; rss: number; threads: number; calls: Map<string, number>; sites: Map<string, number>; written: Map<string, number>; spawned: Map<string, number>; sqlite: Map<string, number> }
 
 function readCensus(base: string): CensusSnapshot | null {
   const dir = join(base, "..");
@@ -222,7 +261,7 @@ function readCensus(base: string): CensusSnapshot | null {
     for (const file of files) for (const [key, value] of Object.entries(pick(file))) out.set(key, (out.get(key) ?? 0) + value);
     return out;
   };
-  return { at: main.at, cpuMicros: main.cpuMicros, rss: main.rss, threads: files.length, calls: sum((f) => f.calls), sites: sum((f) => f.sites ?? {}), written: sum((f) => f.written), spawned: sum((f) => f.spawned) };
+  return { at: main.at, cpuMicros: main.cpuMicros, rss: main.rss, threads: files.length, calls: sum((f) => f.calls), sites: sum((f) => f.sites ?? {}), written: sum((f) => f.written), spawned: sum((f) => f.spawned), sqlite: sum((f) => f.sqlite ?? {}) };
 }
 
 async function freshCensus(base: string, after: number, timeoutMs = 3_000): Promise<CensusSnapshot | null> {
@@ -249,6 +288,12 @@ export interface WindowCost {
     writtenKB: Record<string, number>;
     /** Rewrites of the published sessions file, the one the Mac app and every conch_sessions read. */
     publishedWrites: number;
+    /** `stat`, `lstat` and `fstat` calls, of every kind of file, and `existsSync` (a `stat` too). */
+    stats: number;
+    /** SQLite commits, and those that waited on an fsync, by database (the records worker's history.sqlite). */
+    sqliteCommits: number;
+    sqliteFsyncs: number;
+    sqlite: Record<string, number>;
   };
 }
 
@@ -279,6 +324,12 @@ function windowCost(before: CensusSnapshot, after: CensusSnapshot): WindowCost {
       spawned: top(spawned, 12),
       writtenKB: perMinute(before.written, after.written, 1 / 1024),
       publishedWrites: Math.round(publishedWrites * 10) / 10,
+      stats: Math.round(Object.entries(fs).filter(([key]) => /^(?:stat|lstat|fstat|exists)Sync /.test(key)).reduce((sum, [, value]) => sum + value, 0)),
+      ...(() => {
+        const sqlite = perMinute(before.sqlite, after.sqlite);
+        const total = (kind: string) => Math.round(Object.entries(sqlite).filter(([key]) => key.startsWith(`${kind} `)).reduce((sum, [, value]) => sum + value, 0) * 10) / 10;
+        return { sqliteCommits: total("commit"), sqliteFsyncs: total("fsync"), sqlite };
+      })(),
     },
   };
 }
@@ -456,6 +507,16 @@ export async function runHarness(options: HarnessOptions): Promise<{ compute?: R
     }
     if (firstPong === undefined) throw new Error("the test daemon never answered a ping");
 
+    // The history index has read every transcript (its worker indexes them from the start), or 180 s.
+    const indexedBy = Date.now() + 180_000;
+    const indexStart = Date.now();
+    let indexed = recordsIndexed(fixture);
+    while (Date.now() < indexedBy && indexed < fixture.transcripts) {
+      await Bun.sleep(500);
+      indexed = recordsIndexed(fixture);
+    }
+    const recordsIndexSeconds = Math.round((Date.now() - indexStart) / 100) / 10;
+
     // Settled: three one-second samples under 5% of a core in a row, or 45 s.
     const settleStart = Date.now();
     let quiet = 0;
@@ -477,6 +538,7 @@ export async function runHarness(options: HarnessOptions): Promise<{ compute?: R
       settled: quiet >= 3,
       cpuSecondsToSettle: settled ? Math.round(settled.cpuMicros / 1e5) / 10 : undefined,
       cpuSecondsBeforeFirstCensus: Math.round(startupCpu / 1e5) / 10,
+      records: { transcripts: fixture.transcripts, indexed, indexSeconds: recordsIndexSeconds },
     };
 
     // At rest.

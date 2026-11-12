@@ -23,8 +23,10 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
-import { hasConversation, liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
-import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { claudeTranscriptGuess, hasConversation, liveTranscriptPath, readClaudeTitles, readClaudeTitlesIfThere, readContinuedIn } from "./claude-title.ts";
+import { parseWindowKey, processParentTableWith, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { noteRegistryEntries } from "./transcript-paths.ts";
+import { readKeptFile } from "./kept-file.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
 const LABELS_FILE = join(conchHome(), ".config/conch/labels.json");
@@ -545,10 +547,10 @@ function startedAt(entry: any): number {
  * outranks the one a model wrote, whichever is more recent.
  */
 export function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
-  const path = info.transcriptPath
-    ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
-  if (!path) return info;
-  const titles = readClaudeTitles(path);
+  // The guessed path unchecked: a transcript that isn't there leaves the name as it was, as an unfound one did.
+  const guess = info.transcriptPath ? undefined : claudeTranscriptGuess(claudeDir, info.cwd, info.sessionId);
+  const titles = info.transcriptPath ? readClaudeTitles(info.transcriptPath) : guess ? readClaudeTitlesIfThere(guess) : null;
+  if (!titles) return info;
   // A registry name Claude Code DERIVED is a fallback, not a choice. It used to
   // outrank the generated title — correct when a registry name could only come
   // from a person, wrong once Claude Code started writing `morrow-e9` at startup
@@ -647,20 +649,21 @@ export function normalizeSessionLabel(label: string): string {
 
 /** Read conch-owned labels; Claude's frequently rewritten registry remains read-only. */
 export function labelOverrides(options: LabelOverrideOptions = {}): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(labelOverridePath(options), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const entries: Array<[string, string]> = [];
-    for (const [sessionId, value] of Object.entries(parsed)) {
-      if (!sessionId || typeof value !== "string") continue;
-      try {
-        entries.push([sessionId, normalizeSessionLabel(value)]);
-      } catch {}
-    }
-    return Object.fromEntries(entries);
-  } catch {
-    return {};
+  // Read again only when the file moved (kept-file.ts): every row's label asks, on every render.
+  return { ...readKeptFile(labelOverridePath(options), parseLabelOverrides, {}) };
+}
+
+function parseLabelOverrides(text: string): Record<string, string> {
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const entries: Array<[string, string]> = [];
+  for (const [sessionId, value] of Object.entries(parsed)) {
+    if (!sessionId || typeof value !== "string") continue;
+    try {
+      entries.push([sessionId, normalizeSessionLabel(value)]);
+    } catch {}
   }
+  return Object.fromEntries(entries);
 }
 
 function writeLabelOverrides(
@@ -726,19 +729,21 @@ function workingFoldersPath(path?: string): string {
 }
 
 export function workingFolderOverrides(path?: string): Record<string, string[]> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(workingFoldersPath(path), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const entries: Array<[string, string[]]> = [];
-    for (const [sessionId, value] of Object.entries(parsed)) {
-      if (!sessionId || !Array.isArray(value)) continue;
-      const folders = value.filter((folder): folder is string => typeof folder === "string" && folder.startsWith("/"));
-      if (folders.length) entries.push([sessionId, folders]);
-    }
-    return Object.fromEntries(entries);
-  } catch {
-    return {};
+  // Read again only when the file moved (kept-file.ts); copied, since rows carry the arrays.
+  const kept = readKeptFile(workingFoldersPath(path), parseWorkingFolders, {});
+  return Object.fromEntries(Object.entries(kept).map(([sessionId, folders]) => [sessionId, [...folders]]));
+}
+
+function parseWorkingFolders(text: string): Record<string, string[]> {
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const entries: Array<[string, string[]]> = [];
+  for (const [sessionId, value] of Object.entries(parsed)) {
+    if (!sessionId || !Array.isArray(value)) continue;
+    const folders = value.filter((folder): folder is string => typeof folder === "string" && folder.startsWith("/"));
+    if (folders.length) entries.push([sessionId, folders]);
   }
+  return Object.fromEntries(entries);
 }
 
 /** Absolute paths; `conch_working_folders` has checked they exist. */
@@ -925,6 +930,8 @@ export async function registrySnapshot(
     allEntries.push(entry);
     if (isEngageable(entry) && !unusedBackgroundJob(claudeDir, entry)) claudeEntries.push(entry);
   }
+  // A session that moved folder or process is searched for again (transcript-paths.ts).
+  noteRegistryEntries(claudeDir, allEntries);
   // A process killed outright leaves its registry file behind until Claude Code next prunes it, and after the Mac
   // goes down that is every session's. When conch brings one back (`restart-recovery.ts`), the live process and
   // the dead file name one conversation, and read as two windows of it: a doubled row, half of it dead. The live
@@ -1020,7 +1027,8 @@ export async function registrySnapshot(
   // ponytail: ~30 ms per read on a 1200-process Mac; cache the table by pid
   // set if a profile ever shows it.
   if (infos.filter((info) => info.pid).length >= 2) {
-    const parents = await (options.processParents ?? processParentTable)();
+    const pids = infos.flatMap((info) => [info.pid, info.agentPid]).filter((pid): pid is number => !!pid && pid > 0);
+    const parents = await (options.processParents ?? (() => processParentTableWith(pids, options.isPidAlive)))();
     if (parents) infos = withStartedBy(infos, parents);
   }
 
@@ -1078,10 +1086,10 @@ function movedToLiveSession(
   live: ReadonlySet<string>,
 ): boolean {
   const seen = new Set<string>([entry.sessionId]);
-  let path = liveTranscriptPath(claudeDir, entry.cwd, entry.sessionId);
-  // ponytail: a second 64KB tail read per session per snapshot (currentName
-  // reads one too); fold them into one read if a profile ever shows it. The
-  // hop bound is a guard for a bogus chain — each real hop is a backgrounding.
+  // Unchecked: `readContinuedIn` of a transcript that isn't there finds nothing, as an unfound one did.
+  let path = claudeTranscriptGuess(claudeDir, entry.cwd, entry.sessionId);
+  // The tail currentName reads too, kept between snapshots (claude-title.ts `keptTail`): one `stat` while the
+  // transcript doesn't move. The hop bound is a guard for a bogus chain — each real hop is a backgrounding.
   for (let hop = 0; hop < 8 && path; hop += 1) {
     const next = readContinuedIn(path);
     if (!next || seen.has(next)) return false;
@@ -1281,7 +1289,8 @@ export async function codexRegistrySnapshot(codexHome: string, options: Registry
   const entries = codexEntriesById(observed.entries, hooked.entries);
   let infos = await Promise.all([...entries.values()].map(entry => toInfo("", entry, "codex")));
   if (infos.filter(info => info.pid).length >= 2) {
-    const parents = await (options.processParents ?? processParentTable)();
+    const pids = infos.flatMap(info => [info.pid, info.agentPid]).filter((pid): pid is number => !!pid && pid > 0);
+    const parents = await (options.processParents ?? (() => processParentTableWith(pids, options.isPidAlive)))();
     if (parents) infos = withStartedBy(infos, parents);
   }
   const declared = workingFolderOverrides();

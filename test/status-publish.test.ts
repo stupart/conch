@@ -4,14 +4,17 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedState } from "../src/panel.ts";
 import {
+  noticeableState,
   publishSessionsFile,
   SESSIONS_FILE,
+  SessionsFilePublisher,
 } from "../src/status.ts";
 
 function publishedState(ts: number, label: string): PublishedState {
@@ -118,4 +121,57 @@ test("session publication failures never escape to the renderer", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("the sessions file is not rewritten to say what it already says, but is to say it again after the heartbeat", () => {
+  const directory = mkdtempSync(join(tmpdir(), "conch-session-state-"));
+  const path = join(directory, "sessions.json");
+  let now = 1_000;
+  const publisher = new SessionsFilePublisher(path, 15_000, () => now);
+  try {
+    expect(publisher.publish(publishedState(1, "first"))).toBe(true);
+    const written = statSync(path);
+    // Only the timestamp moved.
+    now += 500;
+    expect(publisher.publish(publishedState(2, "first"))).toBe(false);
+    expect(statSync(path).mtimeMs).toBe(written.mtimeMs);
+    expect(JSON.parse(readFileSync(path, "utf8")).ts).toBe(1);
+    // Something a reader can see moved.
+    expect(publisher.publish(publishedState(3, "renamed"))).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).rows[0].label).toBe("renamed");
+    // The heartbeat: the Mac app counts a snapshot older than 45 s as a daemon that may be gone.
+    now += 15_000;
+    expect(publisher.publish(publishedState(4, "renamed"))).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).ts).toBe(4);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a sessions file removed or replaced under the publisher is written again", () => {
+  const directory = mkdtempSync(join(tmpdir(), "conch-session-state-"));
+  const path = join(directory, "sessions.json");
+  const publisher = new SessionsFilePublisher(path, 15_000, () => 1_000);
+  try {
+    expect(publisher.publish(publishedState(1, "first"))).toBe(true);
+    rmSync(path);
+    expect(publisher.publish(publishedState(2, "first"))).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).ts).toBe(2);
+    writeFileSync(path, "{}\n");
+    expect(publisher.publish(publishedState(3, "first"))).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).ts).toBe(3);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("what a person would notice: a row's status or name, manual mode, the voice; not the clock", () => {
+  const base = publishedState(1, "first");
+  expect(noticeableState(publishedState(2, "first"))).toBe(noticeableState(base));
+  expect(noticeableState({ ...base, rows: [{ ...base.rows[0]!, status: "working" }] })).not.toBe(noticeableState(base));
+  expect(noticeableState(publishedState(1, "renamed"))).not.toBe(noticeableState(base));
+  expect(noticeableState({ ...base, mode: { ...base.mode, paused: true } })).not.toBe(noticeableState(base));
+  expect(noticeableState({ ...base, live: { state: "speaking", label: "first" } })).not.toBe(noticeableState(base));
+  expect(noticeableState({ ...base, rows: [] })).not.toBe(noticeableState(base));
+  expect(noticeableState({ ...base, conversations: { session: { order: [], items: {} } as never } })).toBe(noticeableState(base));
 });

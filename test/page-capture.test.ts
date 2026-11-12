@@ -176,7 +176,8 @@ describe("where a request may go", () => {
     expect(daemon).toContain("getState: () => lastPublishedPanelState,");
     expect(daemon).not.toMatch(/lastPublishedPanelState\s*=\s*[^;]*captureRequests/);
     expect(daemon.match(/withCaptureRequests\(/g)).toHaveLength(1);
-    expect(daemon.match(/publishSessionsFile\(/g)).toHaveLength(1);
+    // One place writes the sessions file (`SessionsFilePublisher`, which skips a write that would change nothing).
+    expect(daemon.match(/sessionsFile\.publish\(/g)).toHaveLength(1);
     // The Mac app reads them from its own snapshot; a remote Mac's store never handles them.
     expect(read("mac-app/conch-mac/StateStore.swift")).toContain("pageCaptures.handle(snapshot.captureRequests)");
     expect(read("mac-app/conch-mac/RemoteMacStore.swift")).not.toContain("captureRequests");

@@ -1,5 +1,6 @@
 import { backgroundStartupPid, backgroundTrustReport, managedBackgroundSession } from "./background-sessions.ts";
-import { BackgroundGuard } from "./background-recovery.ts";
+import { BackgroundGuard, backgroundServersLook } from "./background-recovery.ts";
+import { processLook } from "./process-look.ts";
 import { RestartGuard, bootTime } from "./restart-recovery.ts";
 import { dismissedWriter, loadDismissed } from "./dismissed-store.ts";
 import { handleAccountTools } from "./account-tools.ts";
@@ -244,6 +245,7 @@ import {
   type CodexTurnMemory,
 } from "./codex-threads.ts";
 import { watchChangingPaths, watchSessionSources } from "./session-watch.ts";
+import { settleKeptFiles } from "./kept-file.ts";
 import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
 export { daemonStateFromUnknown } from "./daemon-state.ts";
 import {
@@ -286,7 +288,8 @@ import {
   openTheaterReview,
   LEGACY_REVIEWS_FILE,
   publishDictation,
-  publishSessionsFile,
+  SessionsFilePublisher,
+  noticeableState,
   REVIEWS_FILE,
   renderPanel,
   resizeRenderer,
@@ -1837,6 +1840,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The at-rest status reflects the one lossless quiet mode.
   const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
+  /** A session opened or closed: the next render looks at the process table and the tmux servers again. */
+  function sessionsMoved(): void {
+    processLook.invalidate();
+    backgroundServersLook.invalidate();
+  }
+
   const panelRefresh = new SessionReconciler({
     read: () => {
       breadcrumb("panel: reading the session registry");
@@ -1868,12 +1877,19 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // on Tyler's thirteen, a render's conversations went from 24 ms to 0.4 ms with
   // nothing new and with one transcript grown, for about 50 MB of kept lines.
   const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
-  const accountSourcesWatch = watchChangingPaths(() => void renderSessionPanel());
+  const accountSourcesWatch = watchChangingPaths(() => {
+    sessionsMoved();
+    void renderSessionPanel();
+  });
   const transcriptWatch = watchChangingPaths(() => {
     breadcrumb("watch: a live transcript changed");
+    // An agent at work may start a process: the shared `ps` and tmux looks stop backing off (process-look.ts).
+    processLook.nudge();
+    backgroundServersLook.nudge();
     transcriptRender.request();
   }, { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
+  const sessionsFile = new SessionsFilePublisher();
   let lastPanelModel: PanelModel | null = null;
   /**
    * What each live session's transcript tail said at the last render, and the version of the file it was read from:
@@ -2536,7 +2552,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   function writeSessionsFile(): void {
     if (lastPublishedPanelState) {
       const state = { ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()), mcpToolset: MCP_TOOLSET };
-      publishSessionsFile(withToolsStale(state, toolsStale));
+      // Not written when it would say what the file already says (`SessionsFilePublisher`).
+      sessionsFile.publish(withToolsStale(state, toolsStale));
     }
   }
 
@@ -2671,11 +2688,24 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   toolsStaleTimer.unref?.();
   setTimeout(lookForStaleTools, 15_000).unref?.();
 
+  /**
+   * The published state goes out at most twice a second, and at once when something a person would see moves
+   * (`noticeableState`: a row's status or name, a row opening or closing, manual mode, the voice starting or stopping, a
+   * send's outcome). It went out up to ten times a second, as fast as renders came: four a second while a session
+   * worked, 243 sessions-file writes a minute in `conch evals`' scripted load (2026-11-11), for a Mac app that reads
+   * the file four times a second and a phone that redraws on every frame. What a burst coalesces is a conversation
+   * growing and a working row's activity line; the latest of them is what goes out.
+   */
+  let lastNoticeable = "";
   const publishedStateWriter = createPublishThrottle(() => {
     breadcrumb("published state: writing the sessions file");
+    lastNoticeable = noticeableState(lastPublishedPanelState);
     writeSessionsFile();
     breadcrumb("published state: sending it to the phone");
     phoneApplication?.publish();
+  }, {
+    intervalMs: 500,
+    urgent: () => noticeableState(lastPublishedPanelState) !== lastNoticeable,
   });
 
   /**
@@ -2786,6 +2816,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     breadcrumb("panel: rows and the reply");
     const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
+    // Every row's label and voice, each file looked at once (kept-file.ts).
+    settleKeptFiles();
     const orderedRows = buildPanelRows({
       sessions: visible,
       sessionStates,
@@ -2953,6 +2985,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
     if (current()) {
+      // The model and the published state name every row and its voice: each file looked at once (kept-file.ts).
+      settleKeptFiles();
       // Partial transcription and reading progress can change while the registry
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
@@ -4763,7 +4797,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       join(cfg.claudeDir, "sessions"),
       ...(codexHome ? [join(codexHome, "thread-writer-locks")] : []),
     ],
-    () => void renderSessionPanel(),
+    () => {
+      sessionsMoved();
+      void renderSessionPanel();
+    },
   );
 
   // Announce Codex turns, which have no hook to announce themselves.

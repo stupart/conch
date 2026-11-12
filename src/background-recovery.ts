@@ -4,6 +4,7 @@ import { BACKGROUND_NAME } from "./background-sessions.ts";
 import { followSignIn } from "./restart-recovery.ts";
 import type { StartSessionRequest } from "./session-lifecycle.ts";
 import { conchTmux, defaultTmux } from "./tmux-binary.ts";
+import { SharedLook } from "./process-look.ts";
 
 /**
  * Background sessions come back when their tmux server dies under them.
@@ -128,6 +129,25 @@ async function readServer(tmux: string[]): Promise<ServerReading> {
   }
 }
 
+function sameReading(a: ServerReading, b: ServerReading): boolean {
+  if (a.state !== b.state || a.panes.size !== b.panes.size) return false;
+  for (const [pid, name] of a.panes) if (b.panes.get(pid) !== name) return false;
+  return true;
+}
+
+/**
+ * Both servers, read through one look this process shares (process-look.ts): every complete registry read observed
+ * them, two `tmux list-panes` a render, 493 a minute in `conch evals`' scripted load (2026-11-11). The guard reads
+ * them now whenever the registry says something new (a session opened, closed or stopped running), and again before
+ * it brings anything back (`BackgroundGuard.#observe`), so a kept reading only ever confirms that nothing needs doing.
+ */
+export const backgroundServersLook = new SharedLook<Record<BackgroundServer, ServerReading>>({
+  read: async () => ({ conch: await readServer(conchTmux()), default: await readServer(defaultTmux()) }),
+  same: (a, b) => sameReading(a.conch, b.conch) && sameReading(a.default, b.default),
+  minIntervalMs: 1_000,
+  maxIntervalMs: 16_000,
+});
+
 /** A session in the registry, as much of it as recovery reads. */
 export interface ObservedSession {
   sessionId: string;
@@ -146,7 +166,8 @@ export interface BackgroundGuardOptions {
   relaunchFor(session: ObservedSession): Promise<StartSessionRequest | null>;
   launch(request: StartSessionRequest): Promise<unknown>;
   log(message: string): void;
-  readServers?(): Promise<Record<BackgroundServer, ServerReading>>;
+  /** `fresh`: a reading taken now, not a kept one. Defaults to `backgroundServersLook`. */
+  readServers?(fresh: boolean): Promise<Record<BackgroundServer, ServerReading>>;
   now?(): number;
 }
 
@@ -161,6 +182,8 @@ export class BackgroundGuard {
   #attempts = new Map<string, number[]>();
   #running: Promise<void> | null = null;
   #servers: Record<BackgroundServer, ServerReading> | null = null;
+  /** What the last observe was told: the sessions and what runs (`#observe`). */
+  #seen: string | null = null;
 
   constructor(options: BackgroundGuardOptions) {
     this.#options = options;
@@ -201,10 +224,22 @@ export class BackgroundGuard {
 
   async #observe(sessions: readonly ObservedSession[], liveConversations: ReadonlySet<string>): Promise<void> {
     const now = this.#options.now?.() ?? Date.now();
-    const servers = await (this.#options.readServers ?? (async () => ({
-      conch: await readServer(conchTmux()),
-      default: await readServer(defaultTmux()),
-    })))();
+    const read = this.#options.readServers ?? (async (fresh: boolean) =>
+      (await backgroundServersLook.get(fresh ? { maxAgeMs: 0 } : {}))
+        ?? { conch: { state: "unknown" as const, panes: new Map() }, default: { state: "unknown" as const, panes: new Map() } });
+    // A kept reading only while the registry says what it said last time: a session that opened, closed or stopped
+    // running is read about now. And a kept reading may only say that nothing is to be done: before anything is
+    // brought back, the servers are read again, now.
+    const seen = JSON.stringify([
+      sessions.map((session) => `${session.sessionId}\u0000${session.pid ?? ""}`).sort(),
+      [...liveConversations].sort(),
+    ]);
+    const moved = seen !== this.#seen;
+    this.#seen = seen;
+    let servers = await read(moved);
+    if (!moved && planRecovery({ records: this.records(), servers, liveConversations, attempts: this.#attempts, now }).resume.length) {
+      servers = await read(true);
+    }
     this.#servers = servers;
     let changed = false;
 

@@ -68,7 +68,14 @@ export class RecordStore {
       this.db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
       const version = (this.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
       if (version > RECORD_MIGRATIONS.length) throw new Error(`unsupported record schema version ${version}`);
-      this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+      // NORMAL, not FULL: in WAL mode a commit no longer waits on an fsync of the log, only a checkpoint does, and a
+      // crash of the Mac (never of conch: the log is the OS's by then) can lose the last commits but never corrupt the
+      // file. What those commits held is rebuilt: a source's items and its cursor commit together, so a lost commit
+      // is a cursor that points earlier, and the indexer reads those bytes of the transcript again. Receipts are not
+      // in any transcript: `appendReceipt` commits each one at FULL. The worker committed every poll of every live
+      // source, three times, each with an fsync: `sample` found the live daemon's active time in that fsync (112
+      // samples) and in pwrite (74), 2026-11-11.
+      this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       for (let index = version; index < RECORD_MIGRATIONS.length; index++) {
         this.db.transaction(() => {
           this.db.exec(RECORD_MIGRATIONS[index]!);
@@ -101,9 +108,30 @@ export class RecordStore {
     };
   }
 
-  /** Keep unavailable sources discoverable across restarts, before their first complete line. */
+  /** Several writes as one commit, for the indexer's one read of a source (records-indexer.ts `read`). */
+  transaction<T>(work: () => T): T {
+    return this.db.transaction(work)();
+  }
+
+  /** How far a source's coverage is, without its state: what the indexer checks before writing it again. */
+  coverage(id: string): { status: RecordCoverageStatus; error?: string } | undefined {
+    const row = this.db.query("SELECT coverage_status, coverage_error FROM sources WHERE id = ?").get(id) as
+      { coverage_status: RecordCoverageStatus; coverage_error: string | null } | null;
+    return row ? { status: row.coverage_status, ...(row.coverage_error === null ? {} : { error: row.coverage_error }) } : undefined;
+  }
+
+  /**
+   * Keep unavailable sources discoverable across restarts, before their first complete line.
+   *
+   * A source registered already, as it is, is answered without a write: the indexer registers every live session's
+   * transcript after each of the daemon's renders and every file on each reconcile (1,832 transcripts on this Mac,
+   * 2026-11-11), and each registration was a commit that rewrote the session's row to what it already said.
+   */
   registerSource(session: RecordSession, file: Pick<StoredRecordSource, "id" | "path" | "device" | "inode">): StoredRecordSource {
     if (![file.id, file.path, file.device, file.inode].every(nonempty)) throw new Error("invalid record source");
+    const known = this.source(file.id);
+    if (known && known.sessionId === session.id && known.device === file.device && known.inode === file.inode
+      && known.path === file.path && this.sessionSays(session)) return known;
     return this.db.transaction(() => {
       this.ensureSession(session);
       const previous = this.source(file.id);
@@ -253,6 +281,18 @@ export class RecordStore {
     })();
   }
 
+  /** The session's row already holds everything `ensureSession` would write. */
+  private sessionSays(session: RecordSession): boolean {
+    const row = this.db.query("SELECT owner_device_id, provider, native_id, title, cwd, parent_native_id, fork_native_id FROM sessions WHERE id = ?")
+      .get(session.id) as any;
+    if (!row || row.owner_device_id !== session.ownerDeviceId || row.provider !== session.provider || row.native_id !== session.nativeId) return false;
+    // `ensureSession` keeps a stored value wherever the session gives none.
+    return (session.title === undefined || session.title === row.title)
+      && (session.cwd === undefined || session.cwd === row.cwd)
+      && (session.parentNativeId === undefined || session.parentNativeId === row.parent_native_id)
+      && (session.forkNativeId === undefined || session.forkNativeId === row.fork_native_id);
+  }
+
   private ensureSession(session: RecordSession): void {
     const existing = this.db.query("SELECT owner_device_id, provider, native_id FROM sessions WHERE id = ?").get(session.id) as any;
     if (existing && (existing.owner_device_id !== session.ownerDeviceId || existing.provider !== session.provider || existing.native_id !== session.nativeId)) {
@@ -381,17 +421,24 @@ export class RecordStore {
     };
     const args = [receipt.id, receipt.sessionId, receipt.actionId, receipt.attemptId ?? null, receipt.turnId ?? null,
       receipt.itemId ?? null, receipt.kind, receipt.state, receipt.observedAt, json(details)] as const;
-    return this.db.transaction(() => {
-      const existing = this.db.query("SELECT * FROM receipts WHERE id=?").get(receipt.id) as any;
-      if (existing) {
-        const prior = [existing.id, existing.session_id, existing.action_id, existing.attempt_id, existing.turn_id,
-          existing.item_id, existing.kind, existing.state, existing.observed_at, existing.details_json];
-        if (JSON.stringify(prior) !== JSON.stringify(args)) throw new Error("receipt identity already has different content");
-        return false;
-      }
-      this.db.query("INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(...args);
-      return true;
-    })();
+    // A receipt is an observation no transcript holds: committed with an fsync, as every commit was before the store
+    // went to NORMAL (see the constructor). Set for this one commit and set back, whatever it did.
+    this.db.exec("PRAGMA synchronous = FULL");
+    try {
+      return this.db.transaction(() => {
+        const existing = this.db.query("SELECT * FROM receipts WHERE id=?").get(receipt.id) as any;
+        if (existing) {
+          const prior = [existing.id, existing.session_id, existing.action_id, existing.attempt_id, existing.turn_id,
+            existing.item_id, existing.kind, existing.state, existing.observed_at, existing.details_json];
+          if (JSON.stringify(prior) !== JSON.stringify(args)) throw new Error("receipt identity already has different content");
+          return false;
+        }
+        this.db.query("INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(...args);
+        return true;
+      })();
+    } finally {
+      this.db.exec("PRAGMA synchronous = NORMAL");
+    }
   }
 
   receipts(actionId: string): RecordReceipt[] {

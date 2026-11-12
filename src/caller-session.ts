@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import type { SessionInfo } from "./sessions.ts";
-import { processParentTable, windowKey } from "./window-key.ts";
+import { processParentTableWith, windowKey } from "./window-key.ts";
 
 /**
  * Which live session a process belongs to: the MCP server's own parent (mcp.ts `callerBinding`), and any process an
@@ -92,7 +92,8 @@ async function walkToSession(callerPid: unknown, dependencies: CallerPidDependen
     return { binding: unverified("callerPid must be the calling process's pid") };
   }
   const { infos, claudeDir } = dependencies;
-  const parents = await (dependencies.parents ?? processParentTable)().catch(() => null);
+  // A table that places the caller, which may be younger than the shared look (window-key.ts).
+  const parents = await (dependencies.parents ?? (() => processParentTableWith([callerPid])))().catch(() => null);
   let pid = callerPid;
   for (let hop = 0; hop < CALLER_WALK_MAX && pid > 1; hop += 1) {
     const who = pid === callerPid ? `pid ${pid}` : `pid ${pid} (an ancestor of ${callerPid})`;

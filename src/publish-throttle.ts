@@ -10,6 +10,11 @@ export interface PublishThrottle {
 
 export interface PublishThrottleOptions {
   intervalMs?: number;
+  /**
+   * Asked on each request: true publishes now, whatever the interval says, for a change a person is waiting to see.
+   * What it then publishes is still the latest value, so a burst of urgent requests can't leave an older one behind.
+   */
+  urgent?: () => boolean;
   now?: () => number;
   setTimer?: (callback: () => void, delayMs: number) => unknown;
   clearTimer?: (timer: unknown) => void;
@@ -68,6 +73,16 @@ export function createPublishThrottle(
 
   const request = (): void => {
     publishPending = true;
+    if (options.urgent?.()) {
+      if (trailingTimer !== null) {
+        clearTimer(trailingTimer);
+        trailingTimer = null;
+      }
+      publishPending = false;
+      lastPublishedAt = now();
+      publishLatest();
+      return;
+    }
     if (trailingTimer !== null) return;
     run();
   };

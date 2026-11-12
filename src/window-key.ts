@@ -1,3 +1,5 @@
+import { processLook } from "./process-look.ts";
+
 /**
  * A session id is not a window.
  *
@@ -60,7 +62,8 @@ export async function windowPidFromAncestry(
   startPid: number = process.pid,
 ): Promise<number | undefined> {
   if (candidates.size === 0) return undefined;
-  const parents = await processParentTable();
+  // A table that holds the walk's start: a hook is a process younger than any shared look.
+  const parents = await processParentTableWith([startPid]);
   if (!parents) return undefined;
   let pid = startPid;
   // A hook sits a couple of levels below its window (bun under a shell under
@@ -75,18 +78,40 @@ export async function windowPidFromAncestry(
   return undefined;
 }
 
-/** Every process's parent, from one `ps`; null when the table cannot be read. */
-export async function processParentTable(): Promise<Map<number, number> | null> {
+/**
+ * Every process's parent, from the `ps` this process shares between its callers (process-look.ts); null when the
+ * table cannot be read. `maxAgeMs` is how old a shared look may be: 0 for one taken now.
+ */
+export async function processParentTable(options: { maxAgeMs?: number } = {}): Promise<ReadonlyMap<number, number> | null> {
   try {
-    const proc = Bun.spawn(["ps", "-Ao", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" });
-    const text = await new Response(proc.stdout).text();
-    const table = new Map<number, number>();
-    for (const line of text.split("\n")) {
-      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-      if (Number.isInteger(pid) && Number.isInteger(ppid)) table.set(pid, ppid);
-    }
-    return table.size > 0 ? table : null;
+    return await processLook.get(options);
   } catch {
     return null;
+  }
+}
+
+/**
+ * `processParentTable`, holding each of `pids` that is alive: a shared look taken before a process started can't
+ * place it, so one that lacks a live pid is taken again, now. A pid that has gone (a registry file a killed session
+ * left behind) asks for nothing.
+ */
+export async function processParentTableWith(
+  pids: Iterable<number>,
+  isAlive: (pid: number) => boolean = processAlive,
+): Promise<ReadonlyMap<number, number> | null> {
+  const table = await processParentTable();
+  if (!table) return table;
+  for (const pid of pids) {
+    if (pid > 0 && !table.has(pid) && isAlive(pid)) return processParentTable({ maxAgeMs: 0 });
+  }
+  return table;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }

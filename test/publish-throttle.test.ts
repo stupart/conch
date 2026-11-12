@@ -258,4 +258,32 @@ describe("published-state throttle", () => {
     throttle.request();
     expect(writes).toEqual(["leading", "reused"]);
   });
+
+  test("an urgent request publishes at once, and the coalesced one after it is the latest", () => {
+    const clock = new FakeClock();
+    let latest = "leading";
+    let urgent = false;
+    const writes: Array<{ at: number; value: string }> = [];
+    const throttle = createPublishThrottle(() => writes.push({ at: clock.time, value: latest }), {
+      ...throttleOptions(clock), intervalMs: 500, urgent: () => urgent,
+    });
+    throttle.request();
+    clock.advance(50);
+    latest = "a conversation grew";
+    throttle.request();
+    expect(writes).toHaveLength(1);
+    clock.advance(50);
+    latest = "a row stopped working";
+    urgent = true;
+    throttle.request();
+    urgent = false;
+    expect(writes).toEqual([{ at: 0, value: "leading" }, { at: 100, value: "a row stopped working" }]);
+    expect(throttle.pending()).toBe(false);
+    latest = "grew again";
+    throttle.request();
+    clock.advance(499);
+    expect(writes).toHaveLength(2);
+    clock.advance(1);
+    expect(writes.at(-1)).toEqual({ at: 600, value: "grew again" });
+  });
 });
