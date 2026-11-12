@@ -581,7 +581,7 @@ describe("MCP tool discovery", () => {
       review_remove: ["id", "artifact"],
       conch_capture: ["url", "target", "viewport", "fullPage", "mark", "publish"],
       browser_open: ["url", "profile", "tab"],
-      browser_read: ["tab"],
+      browser_read: ["tab", "page", "find", "section", "selector", "full"],
       browser_click: ["tab", "target"],
       browser_type: ["tab", "target", "text", "submit"],
       browser_screenshot: ["tab"],
@@ -2905,6 +2905,44 @@ describe("the browser tools", () => {
   const tab = { id: "tab-1a2b3c4d", url: "https://acme.dev/pricing", title: "Pricing", profile: "default", profileName: "Default", current: true as const };
   const ok = (op: string, extra: Record<string, unknown> = {}): BrowserSend => ({ ok: true, reply: { kind: "browser-result", op: op as never, tab, ...extra } });
 
+  // 2026-11-11: one page of the words unless asked (browser-read.ts); `full` is the answer from before.
+  test("browser_read is one page unless asked: a selector goes to the app, full is the read as it came, and a view the page lacks is the agent's to fix", async () => {
+    const text = Array.from({ length: 120 }, (_, i) => `Line ${i} of the page, long enough to fill one.`).join("\n");
+    const result = { url: tab.url, title: tab.title, text, links: [{ ref: "e1", text: "Line 3 of the page, long enough to fill one.", href: "https://acme.dev/plans" }], buttons: [], fields: [] };
+    const { handlers, sent } = browserHarness((message) => ok("read", { result: { ...result, ...((message as { target?: unknown }).target ? { scope: "main" } : {}) } }));
+    const call = async (args: Record<string, unknown>) => callTool(handlers, "browser_read", args);
+    const first = JSON.parse(toolText(await call({})));
+    expect(first.page).toMatchObject({ at: 1 });
+    expect(first.page.of).toBeGreaterThan(1);
+    expect(first.links).toEqual([{ ref: "e1", text: "Line 3 of the page, long enough to fill one.", href: "/plans" }]);
+    expect(first.more).toContain("page: 2 for page 2 of");
+    expect(JSON.parse(toolText(await call({ full: true })))).toEqual({ tab: tab.id, ...result });
+    const part = JSON.parse(toolText(await call({ selector: "main", page: 2 })));
+    expect(part).toMatchObject({ scope: "main", page: { at: 2 } });
+    expect(part.links).toEqual([]);
+    const past = await call({ page: 99 });
+    expect(rpcResult(past)).toMatchObject({ isError: true });
+    expect(toolText(past)).toContain("page 99 is past the end: this page has");
+    expect(sent).toEqual([
+      { kind: "browser-command", sessionId: "session-123", op: "read" },
+      { kind: "browser-command", sessionId: "session-123", op: "read" },
+      { kind: "browser-command", sessionId: "session-123", op: "read", target: { selector: "main" } },
+      { kind: "browser-command", sessionId: "session-123", op: "read" },
+    ]);
+    // Arguments that mean nothing are refused before anything is asked of the app.
+    for (const [args, said] of [
+      [{ find: "x", section: "y" }, "pass one of find or section"],
+      [{ page: 0 }, "page must be a whole number from 1"],
+      [{ full: true, find: "x" }, "full is the whole read"],
+      [{ scroll: true }, "scroll"],
+    ] as const) {
+      const response = await call(args);
+      expect(rpcResult(response), JSON.stringify(args)).toMatchObject({ isError: true });
+      expect(toolText(response), JSON.stringify(args)).toContain(said);
+    }
+    expect(sent).toHaveLength(4);
+  });
+
   test("each tool sends one command for the verified caller's session, in the daemon's shape", async () => {
     const { handlers, sent } = browserHarness((message) => {
       const op = (message as { op: string }).op;
@@ -2916,7 +2954,8 @@ describe("the browser tools", () => {
     const call = async (name: McpToolName, args: Record<string, unknown>) => JSON.parse(toolText(await callTool(handlers, name, args)));
     expect(await call("browser_open", { url: "https://acme.dev/pricing", profile: " Work " }))
       .toEqual({ tab: tab.id, url: tab.url, title: tab.title, profile: "Default" });
-    expect(await call("browser_read", {})).toEqual({ tab: tab.id, url: tab.url, title: tab.title });
+    // 2026-11-11: compact by default (browser-read.ts), so even an empty page says it has no words or elements.
+    expect(await call("browser_read", {})).toEqual({ tab: tab.id, url: tab.url, title: tab.title, text: "", links: [], buttons: [], fields: [] });
     await call("browser_click", { tab: tab.id, target: "Sign in" });
     await call("browser_click", { target: { ref: "e4" } });
     await call("browser_type", { target: { selector: "#email" }, text: "agent@example.com", submit: true });

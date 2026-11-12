@@ -108,6 +108,7 @@ class FakeElement {
     return { left: 10, top: 10, width: this.size.width, height: this.size.height };
   }
   descendants(): FakeElement[] { return this.children.flatMap((child) => [child, ...child.descendants()]); }
+  contains(other: FakeElement): boolean { return other === this || this.descendants().includes(other); }
   matchesSimple(simple: Simple): boolean {
     if (simple.tag && this.tagName.toLowerCase() !== simple.tag) return false;
     if (simple.id && this.id !== simple.id) return false;
@@ -226,6 +227,45 @@ describe("the Workbench's page script", () => {
     expect(byName.csrf.type).toBe("hidden");
     // Reading changes nothing on the page.
     for (const field of [p.email, p.password, p.notes]) expect(field.valueSets).toBe(0);
+  });
+
+  /**
+   * 2026-11-11: a read says where the page's headings are, so conch can cut its words into sections, and reads one part
+   * of the page when asked by a selector (`browser read --selector`), each element under the ref a whole read gives it.
+   */
+  test("a read lists the headings; a read of one part has that part's words and elements, under the refs a whole read gives them", async () => {
+    const p = page();
+    const whole = await run(p, "read");
+    expect(whole.headings).toEqual([{ level: 1, text: "Sign in to Acme" }]);
+    expect(whole).not.toHaveProperty("scope");
+    const part = await run(p, "read", { how: "selector", what: ".password-box" });
+    expect(part.scope).toBe(".password-box");
+    expect(part.text).toBe("Password");
+    expect(part.links).toEqual([]);
+    expect(part.buttons).toEqual([]);
+    expect(part.headings).toEqual([]);
+    expect(part.fields.map((field: any) => field.name)).toEqual(["password"]);
+    expect(part.fields[0].ref).toBe(whole.fields.find((field: any) => field.name === "password").ref);
+    // A ref from the whole read still names the same element after the read of a part.
+    expect(await run(p, "click", { how: "ref", what: whole.buttons[0].ref })).toEqual({ clicked: 'button "Sign in"' });
+    expect((await run(p, "read", { how: "selector", what: "#nothing" })).error).toBe('nothing on the page matches "#nothing"');
+    // Only a selector narrows a read; anything else the app passes reads the page whole, as before.
+    expect((await run(p, "read", { how: "text", what: "Sign in" })).scope).toBeUndefined();
+    // Never a secret, in a part either.
+    for (const secret of SECRETS) expect(JSON.stringify(part)).not.toContain(secret);
+  });
+
+  test("the daemon passes a read's headings and its part on, checked, and an app from before sends neither", () => {
+    const passed = readPageResult({
+      url: "https://acme.dev/docs", title: "Docs", text: "Install\nRun it", links: [], buttons: [], fields: [],
+      headings: [{ level: 2, text: "Install" }, { level: "two", text: "bad" }, { level: 9, text: "deep" }, { level: 1, text: "" }],
+      scope: "main",
+    });
+    expect(passed.headings).toEqual([{ level: 2, text: "Install" }, { level: 6, text: "deep" }]);
+    expect(passed.scope).toBe("main");
+    const older = readPageResult({ url: "https://acme.dev/docs", title: "Docs", text: "", links: [], buttons: [], fields: [] });
+    expect(older).not.toHaveProperty("headings");
+    expect(older).not.toHaveProperty("scope");
   });
 
   test("the daemon reads the answer field by field, and drops a secret's value whatever the app sent", async () => {

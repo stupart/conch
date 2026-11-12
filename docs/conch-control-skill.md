@@ -448,11 +448,17 @@ conch refused (the message says why and what to do instead).
     with "the user has taken over this tab (…)". Don't retry it. Say what you
     were about to do, and carry on in a tab of your own or wait for them to hand
     it back; `conch agent browser tabs` marks it `paused`.
-  - `conch agent browser read [--tab T]` prints the page's title, URL, visible
-    text (trimmed), then its links and buttons each with a short ref (`link e12
-    "Pricing" https://…`), and its form fields (ref, type, label and value;
-    never a password's or a hidden field's value). Refs last until the page
-    changes: read again after it navigates.
+  - `conch agent browser read [--tab T]` prints the page's title and URL, one
+    page of its words (about 2,000 characters) and its sections, then the
+    links and buttons in those words, each with a short ref (`link e12
+    "Pricing" /pricing`: a same-site link by its path), and its form fields
+    (ref, type, label and value; never a password's or a hidden field's value).
+    Its last line, `more:`, says what else there is. `--page N` is the next
+    page; `--find WORDS` shows only the lines, links, buttons and fields that
+    say them; `--section HEADING` the words under that heading; `--selector
+    CSS` reads only that part of the page; `--full` the whole read, every word,
+    link, button and field. Refs are the same in every view of a page, and last
+    until it changes: read again after it navigates.
   - `conch agent browser click <target>` and `conch agent browser type <target>
     <text> [--submit]` take a ref, a CSS selector, or the visible text of the
     element (a field's label); a bare target is tried as each in that order,

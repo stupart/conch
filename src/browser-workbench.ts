@@ -66,6 +66,8 @@ export const BROWSER_READ_TEXT_MAX = 12_000;
 export const BROWSER_READ_LINKS_MAX = 150;
 export const BROWSER_READ_BUTTONS_MAX = 100;
 export const BROWSER_READ_FIELDS_MAX = 100;
+/** The headings a read lists (ConchDesign `WorkbenchScript.headingsMax`). */
+export const BROWSER_READ_HEADINGS_MAX = 60;
 /** The longest an agent's `browser_ask` reason may be: one short line, as the Workdesk shows it ("Sign in to Mobbin"). */
 export const BROWSER_ASK_REASON_MAX = 80;
 /** How often the daemon reads the sign-ins report again while an ask waits on a sign-in (`checkAsks`). */
@@ -170,7 +172,7 @@ export interface BrowserAppRequest {
   url?: string;
   /** open: the tab was made for this request, so the address it already loads is this one. */
   fresh?: true;
-  /** click, type. */
+  /** click, type; a read's `{selector}`, the part of the page it reads. */
   target?: BrowserTarget;
   /** type: press Return (submit the form) after typing. */
   submit?: boolean;
@@ -329,6 +331,13 @@ export function decodeBrowserMessage(value: unknown): BrowserMessage | { refused
         if ("error" in parsed) return no(parsed.error);
         target = parsed;
       }
+      // 2026-11-11: a read of one part of the page names it by a CSS selector (`browser read --selector`).
+      if (op === "read" && value.target !== undefined) {
+        const parsed = parseBrowserTarget(value.target);
+        if ("error" in parsed) return no(parsed.error);
+        if (!("selector" in parsed)) return no("a read's target is {selector}: the part of the page to read");
+        target = parsed;
+      }
       let text: string | undefined;
       if (op === "type") {
         if (typeof value.text !== "string" || value.text.length > BROWSER_TEXT_MAX || TYPED_CONTROL.test(value.text)) {
@@ -456,6 +465,14 @@ export function readPageResult(value: Record<string, unknown>): Record<string, u
       ...(field.disabled === true ? { disabled: true } : {}),
     }];
   });
+  // 2026-11-11: the page's headings, which `browser read` cuts the words into sections by (browser-read.ts), and the
+  // selector a read of one part was limited to. An app from before sends neither.
+  const headings = list(value.headings, BROWSER_READ_HEADINGS_MAX).flatMap((heading) => {
+    const words = said(heading.text, 120);
+    const level = typeof heading.level === "number" && Number.isInteger(heading.level) ? Math.min(6, Math.max(1, heading.level)) : undefined;
+    return words && level ? [{ level, text: words }] : [];
+  });
+  const scope = said(value.scope, BROWSER_TARGET_MAX);
   return {
     url: webUrl(value.url) ?? said(value.url, BROWSER_URL_MAX) ?? "",
     title: said(value.title, 300) ?? "",
@@ -463,6 +480,8 @@ export function readPageResult(value: Record<string, unknown>): Record<string, u
     links,
     buttons,
     fields,
+    ...(headings.length ? { headings } : {}),
+    ...(scope ? { scope } : {}),
     ...(cut || value.truncated === true ? { truncated: true } : {}),
     ...(value.popup === true ? { popup: true } : {}),
   };
