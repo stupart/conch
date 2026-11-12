@@ -60,7 +60,7 @@ test("the phone leads with its mark as well", () => {
   const view = ios.slice(ios.indexOf("struct SessionRowView: View {"));
   const body = view.slice(0, view.indexOf("\n}\n"));
   const mark = body.indexOf("Image(systemName: mark.symbol)");
-  const label = body.indexOf("Text(row.label)");
+  const label = body.indexOf("TailFadeText(row.label)");
   expect(mark).toBeGreaterThan(-1);
   expect(mark).toBeLessThan(label);
 });

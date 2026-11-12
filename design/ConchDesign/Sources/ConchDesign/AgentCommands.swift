@@ -108,13 +108,37 @@ public enum AgentCommands {
         }
     }
 
-    /// Everything a session's agent can be typed, once each, in the order a tie keeps: its own commands, its skills,
-    /// then the person's own. The first of two lines spelled alike wins; Claude Code itself prefers a skill to a command
-    /// of the same name.
+    /// Everything a session's agent can be typed, once each, in the order a tie keeps: the person's own skills and
+    /// commands, the agent's own commands, then the ones plugins brought. The first of two lines spelled alike wins, in
+    /// the agent's order: its own command, then a skill, then a command (Claude Code prefers a skill to a command of the
+    /// same name).
+    ///
+    /// Theirs lead (2026-11-06). Tyler: "can you add my skills to / slash commands on the mobile and mac app". They were
+    /// listed, after seventeen built-ins and every plugin's skills: `/hillclimb-ui` was the 38th row of a list that shows
+    /// seven, so `/` alone never showed one.
     public static func all(for backend: String?, capabilities: AgentCapabilities?) -> [AgentCommand] {
+        let builtIns = slash(for: backend)
+        let builtIn = Set(builtIns.map(\.line))
+        let theirs = Set(ownLines(in: capabilities, backend: backend)).subtracting(builtIn)
         var seen = Set<String>()
-        return (slash(for: backend) + skills(in: capabilities, backend: backend) + custom(in: capabilities))
+        let kept = (builtIns + skills(in: capabilities, backend: backend) + custom(in: capabilities))
             .filter { seen.insert($0.line).inserted }
+        return kept.filter { theirs.contains($0.line) }
+            + kept.filter { builtIn.contains($0.line) }
+            + kept.filter { !theirs.contains($0.line) && !builtIn.contains($0.line) }
+    }
+
+    /// The lines of the skills and commands the person keeps themselves (their own folder or the project's), not a
+    /// plugin's nor the agent's own (Codex's `.system` skills).
+    static func ownLines(in capabilities: AgentCapabilities?, backend: String?) -> [String] {
+        guard let capabilities else { return [] }
+        let codex = isCodex(backend)
+        return capabilities.entities.compactMap { entity in
+            guard ["user", "project", "local"].contains(entity.scope) else { return nil }
+            if let skill = entity.skill, skill.ownerPluginId == nil { return skillLine(entity, codex: codex) }
+            if let command = entity.command, command.ownerPluginId == nil { return command.invocation }
+            return nil
+        }
     }
 
     /// Skills a person may invoke, from the same read the inspector uses.
