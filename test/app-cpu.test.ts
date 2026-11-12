@@ -75,13 +75,13 @@ describe("the conversation pane is drawn again only when what it reads changed",
 
   test("the window hands it the state as it reads it, behind its own ==", () => {
     expect(dashboard).toContain(
-      "ConversationPane(\n                                state: state?.forPane(pinned: selectedSessionID),\n                                store: store,\n                                rowMessages: store.rowMessages,\n                                debugInspectRequest: store.debugInspectRequest,\n                                onSelectSession: actions.onSelectSession\n                            )\n                            .equatable()",
+      "ConversationPane(\n                                state: state?.forPane(pinned: selectedSessionID),\n                                store: store,\n                                rowMessages: store.rowMessages,\n                                outbox: store.outbox,\n                                debugInspectRequest: store.debugInspectRequest,\n                                onSelectSession: actions.onSelectSession\n                            )\n                            .equatable()",
     );
     // Every stored input but the closure is compared; the store by identity.
     const equal = section(dashboard, "extension ConversationPane: Equatable {", "\n}\n");
     const head = section(pane, "private struct ConversationPane: View {", "    @EnvironmentObject private var workspace: WorkspaceModel");
     const inputs = stored(head).filter((p) => !isClosure(p.type));
-    expect(inputs.map((p) => p.name).sort()).toEqual(["debugInspectRequest", "rowMessages", "state", "store"]);
+    expect(inputs.map((p) => p.name).sort()).toEqual(["debugInspectRequest", "outbox", "rowMessages", "state", "store"]);
     for (const { name } of inputs) {
       expect(equal).toContain(name === "store" ? "a.store === b.store" : `a.${name} == b.${name}`);
     }
@@ -163,8 +163,8 @@ describe("a sidebar row is drawn again only when what it shows changed", () => {
   });
 
   test("the rows' ages still tick on the list's own ten-second clock", () => {
-    expect(ledger).toContain("TimelineView(.periodic(from: .now, by: 10)) { timeline in");
-    expect(ledger).toContain("now: timeline.date,");
+    expect(ledger).toContain("PeriodicClock(every: 10) { now in");
+    expect(ledger).toContain("now: now,");
   });
 
   test("an agent group's == is its agents and the selection", () => {
@@ -218,5 +218,122 @@ describe("smaller things the sample named", () => {
     expect(annotate).toContain("if placed != at { placed = at }");
     expect(annotate).toContain("if pointer != under { pointer = under }");
     expect(annotate).not.toMatch(/\n\s*placed = (at|found)/);
+  });
+});
+
+/**
+ * The second round (2026-11-11): the live app still averaged ~4% of a core over two days, its main thread in SwiftUI's
+ * AttributeGraph and NSView layout while nothing on screen changed. A 10 s SwiftUI trace of it (25 rows, 15 working) and an
+ * offscreen harness on the app's own window with Tyler's sessions file named four causes, each held in place below;
+ * test/window-churn.test.ts holds the window to them by running it.
+ * - The app's body watched the store (`@StateObject`), so every publish drew the window twice more, the scene and its
+ *   menus rebuilt: the app's body ran 13 times in the trace, once a publish, and those passes were ~70% of each one's
+ *   main-thread time.
+ * - The session list was handed the whole state with closures, so every publish ran it and its eleven folder headers.
+ * - The conversation stack watched the store itself, under the pane's `==`, so every publish of any session ran it.
+ * - The list and the deliverables strip kept their ten-second clocks in `TimelineView`s, which every frame of any
+ *   animation in the window dirties: a session's turn ending cost ~115 ms of main thread offscreen, ~50 without.
+ */
+describe("the app holds its stores without watching them", () => {
+  const appSource = swift("ConchMacApp.swift");
+  const head = section(appSource, "struct ConchMacApp: App {", "    var body: some Scene {");
+
+  test("nothing in the app's struct subscribes it to an object", () => {
+    expect(head).not.toMatch(/@(StateObject|ObservedObject|EnvironmentObject|Bindable)\b/);
+    for (const store of ["    private let store: StateStore\n", "    private let remotes: RemoteMacStore\n", "    private let audio: AudioHolderStore\n"]) {
+      expect(head).toContain(store);
+    }
+    // The delegate the adaptor holds is not one either: an observable delegate would subscribe the app all the same.
+    expect(section(appSource, "private final class ConchAppDelegate: NSObject,", "{")).not.toContain("ObservableObject");
+  });
+
+  test("the window still gets every store, from the environment, where the views that draw from them watch them", () => {
+    const scene = section(appSource, '        WindowGroup("conch") {', ".defaultSize(");
+    for (const object of ["store", "remotes", "audio", "appDelegate.daemon"]) expect(scene).toContain(`.environmentObject(${object})`);
+  });
+});
+
+describe("the session list is drawn again only when what it reads changed", () => {
+  const ledger = section(dashboard, "private struct SessionLedger: View {", "private struct LedgerReveal: Equatable {");
+
+  test("the window hands it the state as it reads it, behind its own ==", () => {
+    expect(dashboard).toMatch(/SessionLedger\(\s*onSelectRemote: onSelectRemote,\s*state: state\?\.forSidebar\(\),[^]*?actions: actions\s*\)\s*\.equatable\(\)/);
+    const head = section(ledger, "private struct SessionLedger: View {", "    private var focusID: SessionRow.ID? {");
+    const equal = section(dashboard, "extension SessionLedger: Equatable {", "\n}\n");
+    // Every stored input but the actions: the window's closures, whose state lives in SwiftUI's storage.
+    const inputs = stored(head).filter((p) => !isClosure(p.type) && p.type !== "DashboardActions");
+    expect(inputs.map((p) => p.name).sort()).toEqual(["renamingSessionID", "rowMessages", "selectedSessionID", "state", "undoDismissal"]);
+    for (const { name } of inputs) expect(equal).toContain(`a.${name} == b.${name}`);
+    expect(head).toContain("@Binding var renameDraft: String");
+    expect(equal).not.toContain("renameDraft");
+  });
+
+  /** As the pane's: a field read here and dropped by `forSidebar` would read as nil or empty, always. */
+  test("everything the list reads of the state is something forSidebar carries", () => {
+    const forSidebar = section(dashboard, "func forSidebar() -> PublishedState {", "\n    }\n");
+    const carried = [...forSidebar.matchAll(/^ {12}(\w+): /gm)].map((m) => m[1]);
+    const workspace = section(swift("Workspace.swift"), "    init(_ state: PublishedState?) {", "\n    }\n");
+    const reads = new Set<string>();
+    const deep: string[] = [];
+    for (const source of [ledger, workspace]) {
+      for (const match of source.matchAll(/\bstate\??\.(\w+)(\??\.\w+)?/g)) {
+        reads.add(match[1]);
+        if (match[1] === "live" || match[1] === "reply") deep.push(`${match[1]}${match[2] ?? ""}`);
+      }
+    }
+    for (const field of ["rows", "dismissedRows", "mode", "browserTabs", "live", "reply"]) expect(reads.has(field), field).toBe(true);
+    for (const field of reads) expect(carried, `the list reads state.${field}`).toContain(field);
+    expect(reads.has("ts")).toBe(false);
+    // Of the voice and the reply it carries only what the focus rules read: the voice's state, whose reply it is.
+    expect(new Set(deep)).toEqual(new Set(["live.isExchangeActive", "reply?.sessionId"]));
+    expect(swift("Models.swift")).toContain("var isExchangeActive: Bool {\n        Self.isExchangeActive(state)\n    }");
+    expect(forSidebar).toContain("live: LiveState(state: live.state),");
+    expect(forSidebar).toContain("reply: reply.map { ConversationReply(sessionId: $0.sessionId) },");
+    expect(forSidebar).toContain("rows: rows,");
+    // The tabs a row reads are the asking ones (`browserAsks`).
+    expect(forSidebar).toContain("browserTabs: browserTabs?.filter { $0.ask != nil }");
+    expect(section(ledger, "private var browserAsks: [String: String] {", "\n    }\n")).toContain("tabs.filter { $0.ask != nil }");
+  });
+
+  test("its folder headers are behind their own ==, and the asks are worked out once a body", () => {
+    expect(ledger.split("FolderHeader(").length - 1).toBe(2);
+    expect(ledger.match(/FolderHeader\([^]*?\n\s*\)\n\s*\.equatable\(\)/g)?.length).toBe(2);
+    const head = section(dashboard, "private struct FolderHeader: View {", "    @State private var hovering = false");
+    const equal = section(dashboard, "extension FolderHeader: Equatable {", "\n}\n");
+    // `isDropTarget` has a default and no written type, so `stored` passes it by.
+    const inputs = [...stored(head).filter((p) => !isClosure(p.type)).map((p) => p.name), "isDropTarget"];
+    expect(head).toContain("    var isDropTarget = false\n");
+    expect(inputs.sort()).toEqual(["count", "isCollapsed", "isDropTarget", "name"]);
+    for (const name of inputs) expect(equal).toContain(`a.${name} == b.${name}`);
+    expect(ledger).toContain("let browserAsks = self.browserAsks");
+  });
+});
+
+describe("the conversation stack holds the store without watching it", () => {
+  test("what it draws from the store comes down from the pane, which is behind its own ==", () => {
+    const head = section(stack, "struct ConversationStackView: View {", "    var body: some View {");
+    for (const input of ["    let store: StateStore\n", "    let pending: [ConchOutboxEntry]\n", "    let rowMessage: String?\n"]) {
+      expect(head).toContain(input);
+    }
+    expect(stack).not.toMatch(/@(EnvironmentObject|ObservedObject) private var store\b/);
+    const body = section(stack, "    var body: some View {", "    private var historyEdge: HistoryEdge {");
+    expect(body).toContain("ForEach(pending) { pending in");
+    expect(body.split(".onChange(of: rowMessage) { _, message in").length - 1).toBe(2);
+    for (const read of ["store.outbox", "store.rowMessages", "store.state"]) expect(body, read).not.toContain(read);
+    expect(pane).toContain(
+      "                store: store,\n                pending: outbox.entries(for: conversation.sessionId),\n                rowMessage: rowMessages[conversation.sessionId],",
+    );
+  });
+});
+
+describe("the window's ten-second clocks are not hung off its frame clock", () => {
+  test("the list and the deliverables strip age on PeriodicClock, and no TimelineView ticks in the window's body", () => {
+    expect(dashboard.split("PeriodicClock(every: 10) { now in").length - 1).toBe(2);
+    expect(dashboard).not.toContain("TimelineView(.periodic");
+    const clock = readFileSync(new URL("../design/ConchDesign/Sources/ConchDesign/PeriodicClock.swift", import.meta.url), "utf8")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(clock).toContain("@State private var now = Date()");
+    expect(clock).toContain(".task(id: hidden) {");
+    expect(clock).not.toContain("TimelineView");
   });
 });

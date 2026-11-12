@@ -52,7 +52,7 @@ SLOW="mac ios harness"
 STAGES="install test tsc swift mac ios harness gap"
 BASE_REF=${CONCH_GATE_BASE:-origin/main}
 # The harness stage's files, test/<name>.test.ts.
-HARNESSES="sidebar-settle page-capture-render composer-editor-render lagoon-page"
+HARNESSES="sidebar-settle window-churn page-capture-render composer-editor-render lagoon-page"
 
 usage() { sed -n '/^#   scripts/,/^#   CONCH_GATE_BASE/p' "$0" | cut -c3-; }
 
@@ -121,7 +121,7 @@ inputs() { # <check>
     mac)   echo '^(design/|mac-app/|scripts/(embed|fetch)-[^/]*$|package\.json$)' ;;
     ios)   echo '^(design/|mobile/)' ;;
     # The Swift they compile, and themselves with their fixtures.
-    harness) echo "^(design/|mac-app/|test/($(echo $HARNESSES | tr ' ' '|'))\.test\.ts$|test/fixtures/(sidebar-settle|page-capture|composer-editor|lagoon))" ;;
+    harness) echo "^(design/|mac-app/|test/($(echo $HARNESSES | tr ' ' '|'))\.test\.ts$|test/fixtures/(sidebar-settle|window-churn|page-capture|composer-editor|lagoon))" ;;
   esac
 }
 affected() { # <check> → 0 when what changed can change its result
@@ -187,7 +187,7 @@ stage() { # <check>   the check itself; launch() keeps its output and exit code
     # of the suite's 381 and its three slowest files (page-capture-render 82 s, composer-editor-render 69, lagoon-page
     # 63), so every push paid for them, and they read nothing of src/. Like the sidebar settle harness before them
     # (391dc308, then in the mac stage), they run only with CONCH_APP_HARNESS=1: here, beside the app builds.
-    harness) CONCH_APP_HARNESS=1 CONCH_GATE_JOBS="$MAC_JOBS" env -u TMUX -u TMUX_PANE bun test --parallel=2 \
+    harness) CONCH_APP_HARNESS=1 CONCH_WINDOW_CHURN=1 CONCH_GATE_JOBS="$MAC_JOBS" env -u TMUX -u TMUX_PANE bun test --parallel=2 \
                $(for h in $HARNESSES; do printf 'test/%s.test.ts ' "$h"; done) ;;
     gap)     release_gap ;;
   esac

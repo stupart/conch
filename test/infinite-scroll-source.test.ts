@@ -79,7 +79,7 @@ describe("the live tail stays what the Mac chose it to be", () => {
     // window is where rows stream, so it is still built in full; only history is windowed.
     expect(macStack).not.toContain("LazyVStack");
     expect(region).not.toContain("LazyVStack");
-    const body = sliceFrom(macStack, "VStack(alignment: .leading, spacing: 22) {", "store.outbox.entries(for: conversation.sessionId)");
+    const body = sliceFrom(macStack, "VStack(alignment: .leading, spacing: 22) {", "ForEach(pending) { pending in");
     expect(body.indexOf("HistoryRegion(")).toBeGreaterThan(-1);
     expect(body.indexOf("HistoryRegion(")).toBeLessThan(body.indexOf("ForEach(conversation.items) { item in"));
     // Following the newest reply is untouched: one non-animated request per revision.

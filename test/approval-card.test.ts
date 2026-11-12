@@ -85,7 +85,8 @@ describe("the Mac card, as source (conch-mac has no XCTest target)", () => {
 
   // 2026-10-28: an Allow that went nowhere said only "Not delivered." under its bubble and on the row.
   test("an answer that didn't land says why on the card, above its buttons", () => {
-    expect(stack).toMatch(/\.onChange\(of: store\.rowMessages\[conversation\.sessionId\]\) \{ _, message in\s*if let approval \{ approvalNotices\[approval\.id\] = message \}/);
+    // The row's message is handed down by the pane (`rowMessage`, app-cpu.test.ts), which is redrawn when it changes.
+    expect(stack).toMatch(/\.onChange\(of: rowMessage\) \{ _, message in\s*if let approval \{ approvalNotices\[approval\.id\] = message \}/);
     const card = stack.slice(stack.indexOf("private func approvalCard("), stack.indexOf("private func approvalButton("));
     const notice = card.indexOf("if let failure = approvalNotices[approval.id] {");
     expect(notice).toBeGreaterThan(-1);
