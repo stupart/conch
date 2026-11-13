@@ -67,7 +67,8 @@ export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
 }
 
 /**
- * Whether this argv is a conch capture: `soxCaptureArgs` in listen.ts, or
+ * Whether this argv is a conch capture: `soxCaptureArgs` in listen.ts, the
+ * microphone check's `narrationSoxArgs` (setup.ts, into `$TMPDIR`), or
  * conch Microphone (the app's helper, or its installed copy:
  * microphone-helper.ts) as listen.ts runs it, as `ps -o command=` prints it. A pid that was reused by
  * anything else — even another sox, or seashell's own recorder — is not ours
@@ -75,7 +76,11 @@ export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
  * and its relaunched copy once that proxy is gone; this is the backstop.
  */
 export function isConchSox(command: string): boolean {
-  if (/\/(conch-microphone|conch Microphone) --sample-rate 16000( --no-disclaim)?( --seconds \d+)?$/.test(command)) return true;
+  if (/\/(conch-microphone|conch Microphone) --sample-rate 16000( --no-disclaim)?( --seconds \d+(\.\d+)?)?$/.test(command)) return true;
+  // The microphone check's WAV, `conch-mic-check-<pid>-<ms>.wav` (setup.ts `MIC_CHECK_FILE`) in $TMPDIR, for up to
+  // `MIC_CHECK_MAX_SECONDS` (a fraction is allowed). The pattern before matched only Show's narration.wav, never the
+  // check's, so a check's sox outlived a daemon that died mid-check (found 2026-11-12).
+  if (/(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t wav \S*\/conch-mic-check-\d+-\d+\.wav (gain \S+ )?trim 0 \d+(\.\d+)?$/.test(command)) return true;
   // The pre-roll stage and `-l` are optional: a daemon from before conch ended
   // captures itself (2026-11-11) may have left one of its recorders behind.
   return /(^|\/)sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw \/tmp\/conch-\S+ (gain \S+ )?(channels 1 remix 1 1 delay 0 [0-9.]+ )?silence (-l )?1 0\.15 /.test(command);
