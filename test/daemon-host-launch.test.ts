@@ -102,6 +102,21 @@ describe("the only daemon the health check may stop is the one on this socket th
   });
 });
 
+describe("a daemon an earlier conch app started, and outlived, is this app's to replace", () => {
+  // Adopted, it would never be stopped again: quitting leaves an adopted daemon alone (DaemonHost.takeOverOrphan).
+  test("started by an app that has gone (launchd is its parent): replaced", () => {
+    expect(lines.get("orphan-app-gone")).toBe("4242");
+  });
+
+  test("an app still running it, a terminal's or launchd's, another socket's, or an unknown parent: adopted as before", () => {
+    expect(lines.get("orphan-app-running")).toBe("none");
+    expect(lines.get("orphan-terminal")).toBe("none");
+    expect(lines.get("orphan-launchd")).toBe("none");
+    expect(lines.get("orphan-other-socket")).toBe("none");
+    expect(lines.get("orphan-parent-unknown")).toBe("none");
+  });
+});
+
 describe("the app and its build agree", () => {
   const host = readFileSync(repo("mac-app/conch-mac/DaemonHost.swift"), "utf8");
   const project = readFileSync(repo("mac-app/conch-mac.xcodeproj/project.pbxproj"), "utf8");

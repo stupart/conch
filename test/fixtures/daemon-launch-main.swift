@@ -85,3 +85,20 @@ signallable("older-daemon", DaemonHost.Identity(pid: 4242, version: "1", started
 signallable("reused-pid", current, processStarted: written + 60_000)
 signallable("process-gone", current, processStarted: nil)
 signallable("absent", nil, processStarted: written - 2_000)
+
+// Which daemon this app replaces rather than adopts (DaemonHost.orphanedAppDaemon): `orphan-<case> <pid>` or `none`.
+func orphan(_ name: String, _ identity: DaemonHost.Identity?, parent: Int32?) {
+    let found = DaemonHost.orphanedAppDaemon(
+        socketPath: "/tmp/test-conch.sock",
+        identity: identity,
+        processStartedAt: { _ in Date(timeIntervalSince1970: (written - 2_000) / 1_000) },
+        parentPID: { _ in parent }
+    )
+    print("orphan-\(name) \(found.map { String($0.pid) } ?? "none")")
+}
+orphan("app-gone", current, parent: 1)
+orphan("app-running", current, parent: 777)
+orphan("terminal", DaemonHost.Identity(pid: 4242, version: "1", startedBy: "terminal", startedAt: written, socketPath: "/tmp/test-conch.sock"), parent: 1)
+orphan("launchd", DaemonHost.Identity(pid: 4242, version: "1", startedBy: "launchd", startedAt: written, socketPath: "/tmp/test-conch.sock"), parent: 1)
+orphan("other-socket", DaemonHost.Identity(pid: 4242, version: "1", startedBy: "app", startedAt: written, socketPath: "/tmp/other.sock"), parent: 1)
+orphan("parent-unknown", current, parent: nil)

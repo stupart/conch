@@ -265,6 +265,12 @@ public enum DaemonHealth {
         return Date(timeIntervalSince1970: Double(started.tv_sec) + Double(started.tv_usec) / 1_000_000)
     }
 
+    /// The process's parent, from the kernel: 1 once whatever started it has gone and launchd has taken it in.
+    public static func parentPID(_ pid: Int32) -> Int32? {
+        guard pid > 0, let info = processInfo(pid) else { return nil }
+        return info.kp_eproc.e_ppid
+    }
+
     private static func processInfo(_ pid: Int32) -> kinfo_proc? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
