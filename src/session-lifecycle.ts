@@ -628,6 +628,33 @@ async function runTerminalUI(argv: string[], dependencies: SessionLifecycleDepen
   return result;
 }
 
+/**
+ * Where a resume of a conversation a server already holds can go (the adapter's `conversationServer`: Codex's
+ * app-server). A private server (`terminalFlags`, `backgroundFlags`) can't take its lock, and Codex stops the window on
+ * "This conversation is open in another app. Close it there and press R to continue here." In Terminal the window joins
+ * that server instead (`sharedServer`, `joined` naming it); in the background, where nobody would see that screen, the
+ * resume is refused.
+ *
+ * One rule for both ways a session is started. `conch start` in a shell launches on its own, not through the daemon,
+ * and on 2026-11-12 its `conch start codex --terminal --resume <id>` skipped the daemon's check and stopped on that
+ * screen, while the same resume sent to the daemon joined the server and worked.
+ */
+export async function placeHeldResume(
+  request: StartSessionRequest,
+  options: { home?: string; holding?: AgentAdapter["conversationServer"] } = {},
+): Promise<{ request: StartSessionRequest; joined?: number }> {
+  const conversation = request.resumeSessionId?.trim();
+  const holding = options.holding !== undefined ? options.holding : adapterFor(request.backend).conversationServer;
+  if (!conversation || request.fork || request.sharedServer || !holding) return { request };
+  const server = await holding(conversation, options.home ?? codexAccountForLaunch(request)?.configDir).catch(() => undefined);
+  if (!server) return { request };
+  if (request.host === "background") {
+    throw new Error(`${adapterFor(request.backend).displayName}'s app-server (pid ${server}) already has this conversation open. `
+      + "Resume it in Terminal, which joins it there, or fork it.");
+  }
+  return { request: { ...request, sharedServer: true }, joined: server };
+}
+
 /** Native Terminal prevents a launched agent from inheriting conch's tmux environment. */
 export async function startTerminalSession(
   request: StartSessionRequest,

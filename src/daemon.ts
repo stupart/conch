@@ -219,6 +219,7 @@ import {
   startClaudeSetupToken,
   startCodexAccountTerminal,
   startTerminalSession,
+  placeHeldResume,
   startBackgroundSession,
   terminalSessionCommand,
   type StartSessionRequest,
@@ -770,12 +771,9 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     // can (codex-hook-trust.ts): conch's own are trusted for this launch, and any other is said before starting.
     let launch = request;
     if (codexAccount) {
-      // Its private server (`backgroundFlags`) couldn't take the lock an app-server holds, and the pane would sit on
-      // Codex's error where nobody looks. Terminal can join that server (`joinCodexServer`); a background pane can't.
-      const server = await serverHolding(request, codexAccount.configDir);
-      if (server) {
-        throw new Error(`Codex's app-server (pid ${server}) already has this conversation open. Resume it in Terminal, which joins it there, or fork it.`);
-      }
+      // Its private server couldn't take the lock an app-server holds, and the pane would sit on Codex's error where
+      // nobody looks: refused (`placeHeldResume`).
+      await placeHeldResume(request, { home: codexAccount.configDir });
       const hooks = await readCodexHooks(codexAccount, sessionFolder(request));
       if (!hooks) log(`session-start: Codex couldn't say which hooks it would run; if it asks to review them, open the startup terminal`);
       const review = codexHookReview(hooks ?? [], codexAccount.configDir, codexHookCommand());
@@ -790,7 +788,11 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     }, (error) => log(`trust prompt in ${backgroundId}: could not be watched (${(error as Error).message})`));
     return { backgroundId };
   }
-  const { tty } = await startTerminalSession(await joinCodexServer(request, codexAccount?.configDir));
+  // A resume of a conversation an app-server holds joins it there (`placeHeldResume`), said in the log since the window
+  // shares the conversation rather than owning it.
+  const placed = await placeHeldResume(request, { ...(codexAccount ? { home: codexAccount.configDir } : {}) });
+  if (placed.joined) log(`session-start: ${adapterFor(request.backend).displayName} app-server (pid ${placed.joined}) already holds this conversation; the window joins it there`);
+  const { tty } = await startTerminalSession(placed.request);
   // The tab it opened, for a fork an agent waits on (`forkLiveSession`); every other caller reads only a background id.
   const opened = tty ? { tty } : undefined;
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
@@ -802,27 +804,6 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     }, (error) => log(`trust prompt in ${tty}: could not be watched (${(error as Error).message})`));
   }
   return opened;
-}
-
-/** The server already holding the conversation a resume names (the adapter's `conversationServer`), if one does. */
-async function serverHolding(request: StartSessionRequest, home: string | undefined): Promise<number | undefined> {
-  const conversation = request.resumeSessionId?.trim();
-  const holding = adapterFor(request.backend).conversationServer;
-  if (!conversation || request.fork || !holding) return;
-  return holding(conversation, home).catch(() => undefined);
-}
-
-/**
- * A Terminal resume of a Codex conversation an app-server already holds joins that server (`sharedServer`) rather than
- * opening a private one (`terminalFlags`), which couldn't take the thread's lock and would stop on an error in the window.
- * The shared daemon keeps a thread it hosted loaded for a while after its last window closes, so this is the usual way
- * back to one of those. Said in the log, since the window it opens shares the thread rather than owning it.
- */
-async function joinCodexServer(request: StartSessionRequest, codexHome: string | undefined): Promise<StartSessionRequest> {
-  const server = await serverHolding(request, codexHome);
-  if (!server) return request;
-  log(`session-start: codex app-server (pid ${server}) already holds this conversation; the window joins it there`);
-  return { ...request, sharedServer: true };
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
