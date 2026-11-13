@@ -175,9 +175,9 @@ section list with the open count. Showing Failures marks every ticket seen.
 **The banner** (2026-11-11). A dot on a gear was all a failure ever made, and 47 piled up behind it. A conch ticket
 that matters (`alertWorthy`: a failure to deliver what Tyler said or tapped, one seen a third time, or one back after
 its fix) is alerted once each time it opens: a line in the Mac's window, *conch bug #12: …*, with Show (Settings ›
-Failures) and Later (seen). The desk also calls the daemon's `alert`, at most three a day, which today writes the
-daemon's log; it is marked `HOOK(#602 notifyUser)` in `daemon.ts`, where the phone and the Mac's notifications go
-once that API is on main. No sound.
+Failures) and Later (seen). The desk also calls the daemon's `alert`, at most three a day, which writes the daemon's
+log and sends *conch bug #12* with the ticket's title through `notifier` (notify-user.ts): a Mac notification, and a
+push to the phone once a push key is set up. No sound.
 
 The daemon publishes only `failures: {open, unseen, fixing, agents, alert?}` in its state; the list itself is a socket request
 (`failure-tickets`), the Mac app's alone (the phone bridge refuses it, like the logins inventory).
