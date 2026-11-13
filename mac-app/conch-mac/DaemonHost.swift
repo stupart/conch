@@ -301,7 +301,7 @@ final class DaemonHost: ObservableObject {
     private func takeOverOrphan(_ orphan: Identity) {
         stopHealthWatch()
         state = .starting
-        DaemonHealth.appendToLog("app: the daemon a previous conch started (pid \(orphan.pid)) outlived it; replacing it with this app's own", path: logPath)
+        DaemonHealth.appendToLog("the daemon a previous conch started (pid \(orphan.pid)) outlived it; replacing it with this app's own", path: logPath)
         Task { @MainActor in
             guard await DaemonHealth.terminate(pid: orphan.pid) != .survived else {
                 state = .failed("A daemon a previous conch started (pid \(orphan.pid)) outlived it and could not be stopped.")
