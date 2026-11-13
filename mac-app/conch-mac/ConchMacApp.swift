@@ -148,6 +148,8 @@ private final class ConchAppDelegate: NSObject,
 {
     /// The daemon is a child of this app, not a separate install.
     let daemon = DaemonHost()
+    /// SIGTERM, as `kill <pid>` sends, quits conch the way its menu does (`quitOnTerminateSignal`).
+    private var terminateSignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -168,6 +170,7 @@ private final class ConchAppDelegate: NSObject,
         LoginItem.shared.registerAtLaunch()
         // Notifications are asked when first needed: launch reads what macOS already has and asks nothing.
         ReviewNotifications.shared.readAuthorizationAtLaunch()
+        quitOnTerminateSignal()
         // Adopts an already-listening daemon rather than starting a rival one.
         daemon.start()
         // The Mac is logging out, restarting or shutting down. Told to the daemon before anything quits, here rather
@@ -185,8 +188,23 @@ private final class ConchAppDelegate: NSObject,
     /// Quitting conch stops conch. That is the whole point of folding the
     /// daemon into the app: there is no second thing left running that the
     /// person has to know about, find, and stop separately.
+    ///
+    /// And waits until that daemon is gone (`stopAndWait`): a conch opened straight after, as scripts/build-app.sh's
+    /// relaunch is, otherwise finds the old one still answering and adopts it.
     func applicationWillTerminate(_ notification: Notification) {
-        daemon.stop()
+        daemon.stopAndWait()
+    }
+
+    /// SIGTERM's default ends the process on the spot, with no `applicationShouldTerminate` or `applicationWillTerminate`,
+    /// so the daemon this app started outlived it with nobody to stop it. scripts/build-app.sh stops a running conch with
+    /// `kill <pid>`, and on 2026-11-12 the relaunched app adopted the previous build's daemon after both installs that
+    /// evening, still running the old code. Ignored as a signal and taken as an event instead: it quits like the menu.
+    private func quitOnTerminateSignal() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        terminateSignal = source
     }
 
     /// Closing the window must not strand the app with no way back.

@@ -252,6 +252,19 @@ final class DaemonHost: ObservableObject {
         return true
     }
 
+    /// Quitting's stop: the daemon this app started is stopped and waited for, process and socket, for up to `seconds`,
+    /// on this thread. Not `stopForRelaunch`, whose wait is a Task: a quit that waits on the main queue never ends when
+    /// the quit itself runs from it (a SIGTERM's handler, a Task that quits). Usually a fraction of a second.
+    func stopAndWait(seconds: TimeInterval = 5) {
+        let task = process
+        stop()
+        guard let task else { return }
+        let deadline = Date().addingTimeInterval(seconds)
+        while task.isRunning || socketAnswers(), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
     /// A3's one button. The launchd agent is the other owner that made
     /// "adopted" a permanent state. Run the equivalent of `conch service off`
     /// — unload by label and drop the plist, never a kill by pattern — then
