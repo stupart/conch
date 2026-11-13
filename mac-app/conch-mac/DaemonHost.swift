@@ -124,6 +124,10 @@ final class DaemonHost: ObservableObject {
         // daemon's backlog fills and then refuses (2026-09-28), and one of ours started now would only lose the
         // socket's lock to it and exit, over and over. Adopt it, and the health check decides.
         if socketAnswers() || DaemonHost.signallableIdentity(socketPath: socketPath) != nil {
+            if let orphan = DaemonHost.orphanedAppDaemon(socketPath: socketPath) {
+                takeOverOrphan(orphan)
+                return
+            }
             adoptedIdentity = DaemonHost.readIdentity()
             state = .adopted
             watchHealth()
@@ -286,6 +290,24 @@ final class DaemonHost: ObservableObject {
             try task.run()
         } catch {
             state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// A daemon a conch app started, whose app has gone without stopping it (`orphanedAppDaemon`), is this app's to
+    /// replace: adopted, nothing would ever stop it again, since quitting leaves an adopted daemon alone. On 2026-11-12
+    /// an old build reopened during an install started one and was then killed; the new build adopted it, and the next
+    /// install would have done the same. Stopped by its exact pid (`DaemonHealth.terminate`), and ours started once its
+    /// socket is quiet, as `takeOverFromLaunchd` does for launchd's.
+    private func takeOverOrphan(_ orphan: Identity) {
+        stopHealthWatch()
+        state = .starting
+        DaemonHealth.appendToLog("app: the daemon a previous conch started (pid \(orphan.pid)) outlived it; replacing it with this app's own", path: logPath)
+        Task { @MainActor in
+            guard await DaemonHealth.terminate(pid: orphan.pid) != .survived else {
+                state = .failed("A daemon a previous conch started (pid \(orphan.pid)) outlived it and could not be stopped.")
+                return
+            }
+            await startOnceSocketQuiet()
         }
     }
 
@@ -552,6 +574,20 @@ final class DaemonHost: ObservableObject {
                 processStartedAt: processStartedAt(identity.pid)
               ) else { return nil }
         return identity
+    }
+
+    /// The identity file's daemon when a conch app started it and that app is gone: launchd (pid 1) is its parent now.
+    /// Started from a terminal or by launchd, or with whatever started it still running (another copy of this app, a
+    /// test's script), it is someone else's and is adopted as before.
+    nonisolated static func orphanedAppDaemon(
+        socketPath: String,
+        identity: Identity? = DaemonHost.readIdentity(),
+        processStartedAt: (Int32) -> Date? = { DaemonHealth.processStartTime($0) },
+        parentPID: (Int32) -> Int32? = { DaemonHealth.parentPID($0) }
+    ) -> Identity? {
+        guard let found = signallableIdentity(socketPath: socketPath, identity: identity, processStartedAt: processStartedAt),
+              found.startedBy == "app", parentPID(found.pid) == 1 else { return nil }
+        return found
     }
 
     // MARK: - Finding the daemon

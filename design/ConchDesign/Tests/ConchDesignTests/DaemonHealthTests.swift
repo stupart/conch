@@ -379,6 +379,14 @@ final class DaemonHealthTests: XCTestCase {
         XCTAssertNil(DaemonHealth.processStartTime(-1))
     }
 
+    func testAProcessParentIsTheKernels() throws {
+        let child = try spawnSleep()
+        defer { child.terminate(); child.waitUntilExit() }
+        XCTAssertEqual(DaemonHealth.parentPID(child.processIdentifier), getpid())
+        XCTAssertEqual(DaemonHealth.parentPID(getpid()), getppid())
+        XCTAssertNil(DaemonHealth.parentPID(-1))
+    }
+
     // MARK: - The monitor
 
     @MainActor
