@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { loadConfig } from "../src/config.ts";
 import { createConfigController } from "../src/daemon.ts";
@@ -9,7 +9,8 @@ import { dispatchSocketTurnEvent, validateSocketTurnEvent } from "../src/control
 import { appendHookTrace } from "../src/hook.ts";
 import { FRONT_TTY_SCRIPT, INJECT_DEBUG_LOG, injectKey, injectText, type OsaRunner } from "../src/inject.ts";
 import { renderServicePlist } from "../src/install.ts";
-import { soxCaptureArgs } from "../src/listen.ts";
+import { narrationSoxArgs, soxCaptureArgs } from "../src/listen.ts";
+import { MIC_CHECK_FILE } from "../src/setup.ts";
 import { anyInputDeviceRunning } from "../src/mic-claim.ts";
 import { PauseOriginLedger } from "../src/pause-origin.ts";
 import { SETTING_REGISTRY } from "../src/settings.ts";
@@ -549,6 +550,16 @@ describe("7. a dead daemon's sox is reaped", () => {
     expect(isConchSox("sox -d -q -r 16000 -c 1 -b 16 -e signed-integer -t raw /tmp/conch-normal-1-2.raw gain 6 silence -l 1 0.15 2% 1 3.5 2%")).toBe(true);
     expect(isConchSox("sox song.mp3 out.wav")).toBe(false);
     expect(isConchSox("whisper-server --port 8642")).toBe(false);
+  });
+
+  test("setup's microphone check, recording into $TMPDIR, qualifies; another WAV never does", () => {
+    const wav = join("/var/folders/ab/cd1234/T", "conch-mic-check-4242-1794540000000.wav");
+    expect(MIC_CHECK_FILE.test(basename(wav))).toBe(true);
+    expect(isConchSox(narrationSoxArgs({ micGainDb: 0 }, wav, 6).join(" "))).toBe(true);
+    expect(isConchSox(narrationSoxArgs({ micGainDb: 6, soxBin: "/Applications/conch.app/Contents/Helpers/sox" }, wav, 2.5).join(" "))).toBe(true);
+    expect(isConchSox(narrationSoxArgs({ micGainDb: 0 }, "/var/folders/ab/cd1234/T/song.wav", 6).join(" "))).toBe(false);
+    expect(isConchSox(narrationSoxArgs({ micGainDb: 0 }, "/tmp/conch-mic-check-notes.wav", 6).join(" "))).toBe(false);
+    expect(isConchSox("/Applications/conch.app/Contents/Helpers/conch-microphone --sample-rate 16000 --no-disclaim --seconds 2.5")).toBe(true);
   });
 
   test("conch Microphone, as listen.ts runs it, qualifies; seashell's own recorder never does", () => {
