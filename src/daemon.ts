@@ -2256,10 +2256,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // A conch bug worth more than the gear's dot (failure-triage.ts `alertWorthy`): the Mac window's banner comes from the
     // published digest's `alert`, and the line here is in the log. Tyler, 2026-11-11: "do u see the issues in the
     // settings of the app?" He didn't: a dot on a gear was all they ever made.
-    // HOOK(#602 notifyUser): once PR #602's Notifier is on main, send it from here as conch's own alert, e.g.
-    //   notifier.notify({ title: `conch bug #${ticket.number}`, body: ticket.title, source: "conch" })
-    // so it reaches his phone and the Mac's notifications too. Until then the banner is the alert.
-    alert: (ticket) => log(`failure alert: #${ticket.number} ${ticket.operation} · ${ticket.title} (${ticket.count}×)`),
+    // Through `notifier` too, as conch's own alert, so it reaches his phone and the Mac's notifications as well as the
+    // banner. At most `ALERTS_DAILY_CAP` a day (failure-tickets.ts `sendAlerts`).
+    alert: (ticket) => {
+      log(`failure alert: #${ticket.number} ${ticket.operation} · ${ticket.title} (${ticket.count}×)`);
+      void notifier.notify({ title: `conch bug #${ticket.number}`, body: ticket.title, source: "conch" })
+        .catch((error: unknown) => log(`failure alert notice: ${error}`));
+    },
   });
   /**
    * The Terminal button's refusals filed this run, by session and reason: once each. 2026-11-11: one session filed the
@@ -3504,8 +3507,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     notify: (notice) => {
       log(`usage limit: ${notice.text}`);
       for (const failure of notice.failures) recordDaemonError("claude-limit", failure);
-      // #602's `notifyUser` (a push to the phone and a Mac notification) isn't on main yet: when it lands, this notice
-      // goes through it too, once, from here.
+      // To the phone and the Mac too, once an episode (limit-recovery.ts `#flush`): a switch and resume he never hears
+      // about looks the same as one that never happened.
+      void notifier.notify({
+        title: notice.needsYou ? "Usage limit: something needs you" : "Usage limit",
+        body: notice.text, source: "conch",
+      }).catch((error: unknown) => log(`usage limit notice: ${error}`));
     },
     log,
   });
