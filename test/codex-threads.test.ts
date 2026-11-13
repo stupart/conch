@@ -14,6 +14,7 @@ import {
   codexThreadStatus,
   detectCodexApprovals,
   detectCodexTurnEnds,
+  hostedByAppServer,
   isInterAgentEnvelope,
   readCodexHelperThreads,
   readCodexOpenThreadIds,
@@ -864,6 +865,12 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
         { pid: 2383, args: "codex fix the app-server bug", holds: ["tui"] },
       ]);
       const byId = new Map((await rows(home, table)).map((row) => [row.sessionId, row]));
+      // The shared daemon's says what to do; the app's server's doesn't pretend a resume would help. Both still say who hosts it.
+      const shared = byId.get("daemon")!.noTerminal!;
+      expect(shared).toContain("resume this from conch's Start sheet");
+      expect(hostedByAppServer(shared, 5150)).toBe(true);
+      expect(hostedByAppServer(byId.get("desktop")!.noTerminal, 74676)).toBe(true);
+      expect(hostedByAppServer(shared, 515)).toBe(false);
       expect(byId.get("desktop")).toMatchObject({
         pid: 0,
         noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",
@@ -971,6 +978,59 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
   });
 });
 
+describe("a Codex session started and not yet spoken to", () => {
+  // codex-cli 0.167.2 takes a new thread's lock when its window opens, and writes its row, its rollout and its
+  // SessionStart hook only with the first message. Live on 2026-11-12: a background session conch started sat at "Ask
+  // Codex to do anything" holding one lock, with no row anywhere, and conch showed nothing for it.
+  const options = (home: string, processes: Array<{ pid: number; args: string; holds: string[] }>, cwds: Record<number, string>) => ({
+    codexHome: home, now: NOW,
+    ...processTable(home, processes),
+    processCwd: (pids: number[]) => new Map(pids.filter((pid) => cwds[pid]).map((pid) => [pid, cwds[pid]!])),
+  });
+
+  test("is listed from its own process's lock, in that process's folder, typed into through it", async () => {
+    const home = realCodexHome({ threads: [{ id: "spoken", name: "Has a row" }], locks: ["spoken", "fresh"] });
+    try {
+      const { entries } = await readCodexThreads(options(home, [
+        { pid: 300, args: "codex resume spoken", holds: ["spoken"] },
+        { pid: 400, args: "/opt/homebrew/bin/codex --no-daemon -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox", holds: ["fresh"] },
+      ], { 400: "/work/new" }));
+      const fresh = entries.find((row) => row.sessionId === "fresh") as CodexRow;
+      expect(fresh).toMatchObject({ pid: 400, cwd: "/work/new", status: "idle", transcriptPath: "" });
+      expect(fresh.name).toBeUndefined();
+      expect(fresh.noTerminal).toBeUndefined();
+      // The one with a row is listed the usual way, once.
+      expect(entries.filter((row) => row.sessionId === "spoken")).toHaveLength(1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("an app-server's unwritten threads, a headless run's, and a helper a session is starting are not sessions", async () => {
+    const home = realCodexHome({
+      threads: [{ id: "parent" }],
+      edges: [["parent", "helper-with-edge", "open"]],
+      locks: ["parent", "helper", "helper-with-edge", "app-new", "exec-new"],
+    });
+    try {
+      const { entries } = await readCodexThreads(options(home, [
+        // Holds its own thread and one it hasn't written yet: that one may be a helper.
+        { pid: 500, args: "codex --no-daemon", holds: ["parent", "helper"] },
+        { pid: 510, args: "codex --no-daemon", holds: ["helper-with-edge"] },
+        { pid: 600, args: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled", holds: ["app-new"] },
+        { pid: 700, args: "codex exec --json fix the tests", holds: ["exec-new"] },
+      ], { 500: "/w", 510: "/w", 600: "/", 700: "/w" }));
+      expect(entries.map((row) => row.sessionId).sort()).toEqual(["parent"]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("with no folder to show it in, it waits for the next pass rather than borrowing one", async () => {
+    const home = realCodexHome({ threads: [], locks: ["fresh"] });
+    try {
+      const { entries } = await readCodexThreads(options(home, [{ pid: 400, args: "codex", holds: ["fresh"] }], {}));
+      expect(entries).toEqual([]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
 describe("a Codex thread is named as Codex names it", () => {
   const names = async (home: string) =>
     Object.fromEntries(((await readCodexThreads({ codexHome: home, now: NOW })).entries as CodexRow[])
@@ -1069,6 +1129,31 @@ describe("Codex helpers nest under their parent", () => {
       // Helpers are never top-level sessions, so never announced.
       expect((await readCodexThreads({ codexHome: home, now: NOW, ...table })).entries.map((e) => e.sessionId))
         .toEqual(["parent"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a held helper whose turn is over is listed only while it might be handed more (2026-11-12)", async () => {
+    // Codex 0.164+ keeps a finished helper's thread open, lock and all, for as long as its parent runs.
+    const home = realCodexHome({
+      threads: [
+        { id: "parent" },
+        { id: "old", source: spawnedBy("parent"), agent_nickname: "Hypatia", updated_at_ms: NOW - 15 * 3_600_000 },
+        { id: "recent", source: spawnedBy("parent"), agent_nickname: "Euler", updated_at_ms: NOW - 5 * 60_000 },
+      ],
+      edges: [["parent", "old", "open"], ["parent", "recent", "open"]],
+      turns: [["old", 9, "completed"], ["recent", 4, "completed"]],
+      locks: ["parent", "old", "recent"],
+    });
+    try {
+      const table = processTable(home, [{ pid: 2001, args: "codex --no-daemon resume parent", holds: ["parent", "old", "recent"] }]);
+      const names = async (parentBusy: boolean) =>
+        (await readCodexHelperThreads("parent", rollout(home, "parent"), { ...table, now: NOW, parentBusy })).map((h) => h.name);
+      // The parent's turn is over: the one finished fifteen hours ago is gone; the one paused five minutes ago stays.
+      expect(await names(false)).toEqual(["Euler"]);
+      // The parent is working, and may hand either the next task.
+      expect((await names(true)).sort()).toEqual(["Euler", "Hypatia"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

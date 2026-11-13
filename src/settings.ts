@@ -2046,8 +2046,11 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     return { ok: true, value: { kind: value.kind, accounts: value.accounts.map((account) => ({
       id: account.id, label: account.label, configDir: account.configDir, status: account.status,
       ...(typeof account.email === "string" ? { email: account.email } : {}),
-      ...(["chatgpt", "apiKey", "amazonBedrock"].includes(String(account.authType)) ? { authType: account.authType as string } : {}),
+      ...(["chatgpt", "apiKey", "amazonBedrock", "gcp"].includes(String(account.authType)) ? { authType: account.authType as string } : {}),
       ...(typeof account.subscription === "string" ? { subscription: account.subscription } : {}),
+      // Why a Codex check came back unavailable (codex-accounts.ts), for the row to say.
+      ...(account.status === "unavailable" && typeof account.statusDetail === "string" && account.statusDetail.length <= 400
+        ? { statusDetail: account.statusDetail } : {}),
     })), ...(execution ? { execution } : {}), ...(usage ? { usage } : {}), ...(validAccountId(value.createdAccountId) ? { createdAccountId: value.createdAccountId } : {}), ...(value.loginOpened === true ? { loginOpened: true } : {}), ...(value.cloudOpened === true ? { cloudOpened: true } : {}) } };
   }
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);

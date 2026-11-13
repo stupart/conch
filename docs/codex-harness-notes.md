@@ -522,6 +522,38 @@ Conventions worth copying:
 (sections 1 and 4). Read `thread_items` and `thread_turns` now, since they need nothing new. Touches R,
 E8, B3.
 
+## 11. What codex-cli 0.167.2 changed under conch (2026-11-12)
+
+Read against tag `rust-v0.167.2` and the live Mac, read-only, after Tyler's "my codex accounts and making new
+sessions and lots of other codex related stuff with conch is broken".
+
+- **A plain TUI is a daemon client.** `codex` with no `-c` (other than `features.*`), `--profile`, `--oss`,
+  `--strict-config` or `--no-daemon` reuses the shared app-server daemon, and starts one if none runs
+  (`codex-rs/tui/src/daemon_startup.rs`, `exclusion`; `startup_orchestration.rs`). The daemon holds the thread's lock.
+  Nothing ties such a window to its thread: its command line names none, its `logs_2.sqlite` rows carry no
+  `thread_id` (`codex_tui::*` targets only), and the daemon logs `ConnectionId(n)`, not a client pid. conch's Terminal
+  launches now pass `--no-daemon` (`terminalFlags`), and a resume of a thread an app-server holds joins it instead
+  (`sharedServer`). The socket proof (section 2) still works for a `codex resume <id>` window: its peer is one of the
+  daemon's accepted sockets, which `lsof -U` names by the daemon's socket path.
+- **The daemon updates itself.** `codex app-server daemon pid-update-loop` (started by the first TUI, `setsid`) installs
+  a new release under `~/.codex/packages/app-server-daemon/releases/<version>/` and restarts the daemon with a 60 s
+  grace (`app-server-daemon/daemon-updater.stderr.log`). Its TUIs reconnect and `thread/resume` their threads on the new
+  pid. `app-server-daemon/daemon.pid` names the current daemon.
+- **A new thread is written lazily.** `thread/start` takes the lock at launch, but no `threads` row, rollout or
+  `session_index.jsonl` line exists until the first message, and SessionStart hooks run inside that first turn
+  (`core/src/session/turn.rs`, `run_pending_session_start_hooks`). conch lists such a thread from its holder's lock
+  (`startedCodexThreads`).
+- **Finished helpers stay open.** A parent keeps a helper's thread loaded, lock and all, after its turn completes, so it
+  can hand it more work; `thread_spawn_edges.status` still reads `open` for every edge. conch lists a held helper only
+  while it or its parent works, or for ten minutes after it last moved.
+- **Accounts.** `account/read` adds a `gcp` type and a `workspaceName` on ChatGPT accounts; `account/rateLimits/read`
+  keeps `rateLimitsByLimitId` and the window fields conch reads.
+- **Unchanged:** `--dangerously-bypass-approvals-and-sandbox`, `--sandbox`, `--ask-for-approval`, `--profile` and
+  `-c` on `codex`, `codex resume` and `codex fork`; the Stop / UserPromptSubmit / SessionStart hook fields conch reads;
+  `task_started` / `task_complete` / `turn_aborted` in rollouts (agent replies now come as `item_completed`
+  AgentMessage, which `conversation.ts` already reads); `thread_settings_applied`; the `/goal` limit line,
+  "Goal hit usage limits (/goal resume)" (`CONCH_AGENT_WORDING=1 bun test test/claude-limit-menu.test.ts`).
+
 ## Top five for conch
 
 Ranked by value.

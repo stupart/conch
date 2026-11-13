@@ -533,7 +533,7 @@ export const codexAdapter: AgentAdapter = {
   // A helper runs inside its parent's process, so it gets no pid of its own:
   // nested, never active, never announced — C4's shape.
   subagentSessions: async (parent, transcriptPath) =>
-    (await readCodexHelperThreads(parent.sessionId, transcriptPath)).map((helper) => ({
+    (await readCodexHelperThreads(parent.sessionId, transcriptPath, { parentBusy: parent.status === "busy" })).map((helper) => ({
       sessionId: helper.threadId,
       parentSessionId: parent.sessionId,
       backend: "codex" as const,

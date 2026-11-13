@@ -905,7 +905,7 @@ switch (command) {
   case "start": {
     // Launched directly, like help-session: the person is at this Terminal,
     // so an agent's own trust prompt is theirs to answer.
-    const { startRequestFromArgv, startTerminalSession, startBackgroundSession, startUsage } = await import("./session-lifecycle.ts");
+    const { placeHeldResume, startRequestFromArgv, startTerminalSession, startBackgroundSession, startUsage } = await import("./session-lifecycle.ts");
     await routeDirectStartBrowsers();
     const { adapterFor, agentAdapters } = await import("./agent-adapter.ts");
     if (rest.includes("--help") || rest.includes("-h")) {
@@ -943,6 +943,11 @@ switch (command) {
     }
     let started: { tty?: string } | { backgroundId: string };
     try {
+      // A conversation a server already holds is joined there in Terminal and refused in the background, as the daemon
+      // does when it starts one.
+      const placed = await placeHeldResume(request);
+      if (placed.joined) console.log(`[conch] ${adapter.displayName}'s app-server (pid ${placed.joined}) already holds this conversation; the window joins it there`);
+      request = placed.request;
       // The persisted default; the request's own toggle, when given, wins.
       started = await (request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request });
     } catch (error) {

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexThreadServer } from "../src/codex-threads.ts";
-import { restartRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
+import { placeHeldResume, restartRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateRuntimeControlMessage } from "../src/settings.ts";
 
 /**
@@ -40,6 +40,43 @@ describe("a Codex session opened in Terminal", () => {
     expect(built.notCarriedOver).toEqual([]);
     expect(terminalSessionCommand(built.request))
       .toBe("cd -- '/w' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox resume 't1'");
+  });
+});
+
+describe("a resume of a conversation a server already holds, from the daemon or the CLI", () => {
+  const held = (pid: number | undefined) => async () => pid;
+
+  test("in Terminal joins that server: no private one, and it says which", async () => {
+    const placed = await placeHeldResume({ backend: "codex", cwd: "/w", resumeSessionId: "t1" }, { holding: held(90170) });
+    expect(placed.joined).toBe(90170);
+    expect(terminalSessionCommand(placed.request)).toBe("cd -- '/w' && exec codex resume 't1'");
+  });
+
+  test("in the background is refused, rather than left on Codex's \"open in another app\" in a pane nobody sees", async () => {
+    await expect(placeHeldResume({ backend: "codex", host: "background", cwd: "/w", resumeSessionId: "t1" }, { holding: held(90170) }))
+      .rejects.toThrow("Codex's app-server (pid 90170) already has this conversation open");
+  });
+
+  test("a fresh start, a fork, a thread nobody holds, and an agent with no such server launch as they were", async () => {
+    for (const request of [
+      { backend: "codex" as const, cwd: "/w" },
+      { backend: "codex" as const, cwd: "/w", resumeSessionId: "t1", fork: true as const },
+    ]) expect(await placeHeldResume(request, { holding: held(90170) })).toEqual({ request });
+    const free = { backend: "codex" as const, cwd: "/w", resumeSessionId: "t1" };
+    expect(await placeHeldResume(free, { holding: held(undefined) })).toEqual({ request: free });
+    expect(await placeHeldResume(free, { holding: async () => { throw new Error("lsof timed out"); } })).toEqual({ request: free });
+    const claude = { backend: "claude" as const, cwd: "/w", resumeSessionId: "c1" };
+    expect(await placeHeldResume(claude)).toEqual({ request: claude });
+  });
+
+  test("`conch start` in a shell asks before it launches, as the daemon does (2026-11-12)", () => {
+    // The CLI launches on its own; it skipped the daemon's check and its window stopped on Codex's lock screen.
+    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    const start = cli.slice(cli.indexOf('case "start": {'));
+    expect(start.indexOf("await placeHeldResume(request)")).toBeGreaterThan(0);
+    expect(start.indexOf("await placeHeldResume(request)")).toBeLessThan(start.indexOf("startBackgroundSession : startTerminalSession"));
+    const daemon = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+    expect(daemon.match(/await placeHeldResume\(request,/g)).toHaveLength(2);
   });
 });
 

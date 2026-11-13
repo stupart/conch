@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { appServerNoTerminal } from "./codex-threads.ts";
+import { hostedByAppServer } from "./codex-threads.ts";
 import type { SessionInfo } from "./sessions.ts";
 import { processParentTableWith, windowKey } from "./window-key.ts";
 
@@ -27,7 +27,7 @@ const readText: ReadText = (path) => readFile(path, "utf8");
 
 /** A Codex app-server: many threads under this one pid. */
 export function isAppServer(pid: number, infos: readonly SessionInfo[]): boolean {
-  return infos.some((session) => session.noTerminal === appServerNoTerminal(pid));
+  return infos.some((session) => hostedByAppServer(session.noTerminal, pid));
 }
 
 /**
@@ -155,7 +155,7 @@ export async function sessionForShell(options: CallerPidDependencies & {
     };
   }
   const hosted = options.infos.filter((session) =>
-    session.backend === "codex" && session.sessionId === thread && session.noTerminal === appServerNoTerminal(walked.appServer!));
+    session.backend === "codex" && session.sessionId === thread && hostedByAppServer(session.noTerminal, walked.appServer!));
   return hosted.length === 1
     ? { binding: { status: "verified", session: hosted[0]! }, via: `${CODEX_THREAD_ENV}, one of the threads Codex app-server pid ${walked.appServer} hosts`, pid: walked.appServer }
     : { binding: unverified(`${CODEX_THREAD_ENV} ${thread} is not a thread the Codex app-server above this shell (pid ${walked.appServer}) hosts`) };

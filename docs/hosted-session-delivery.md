@@ -22,6 +22,7 @@ is a resume of a thread an app-server already holds, where a private server
 could not take the lock: that window joins the server with `codex resume <id>`
 (`sharedServer`) and is credited by the proof above. A background resume of one
 is refused with a message instead, since nobody would see the error in its pane.
+The daemon and `conch start` in a shell both decide this with `placeHeldResume`.
 
 Remaining app-server threads are checked with read-only `thread-owner-discovery`
 on the desktop follower socket. Only acknowledged owners receive `codex-app`.

@@ -4,6 +4,7 @@ import { readClaudeAccounts, type ClaudeAccount } from "./claude-accounts.ts";
 import { registryProcessAlive } from "./process-identity.ts";
 import { findTranscript, registrySnapshot, codexRegistrySnapshot, withStartedBy, type RegistrySnapshot } from "./sessions.ts";
 import { defaultIsPidAlive } from "./codex-sessions.ts";
+import { CODEX_THREAD_CLOSED } from "./codex-threads.ts";
 import type { ClaudeSwapRun } from "./claude-swap-runs.ts";
 import { canonicalDir } from "./elsewhere.ts";
 import { readResumableSessionsResult, type ReadResumableSessionsOptions, type ResumableSessionsRead } from "./resumable.ts";
@@ -167,8 +168,18 @@ export async function assertClaudeAccountIdle(account: ClaudeAccount): Promise<v
   if (snapshot.liveIds.size) throw new Error("Close this account’s live sessions before signing in again or removing it from Conch.");
 }
 
+/**
+ * The same rule for a Codex profile, over the threads some process has open. Codex's listing also carries every thread
+ * touched in the last eight hours, closed ones included (`CODEX_THREAD_CLOSED`), and counting those refused "Sign in
+ * again" for Default on any day Codex had been used, with nothing open to close. The ones that are open are named, since
+ * the ChatGPT app's own server holds some of them and they are not in a Terminal anyone would think to look at.
+ */
 export async function assertCodexAccountIdle(account: ClaudeAccount): Promise<void> {
   const snapshot = await codexRegistrySnapshot(account.configDir);
   if (!snapshot.complete) throw new Error("Could not check this account’s live sessions. Try again before changing it.");
-  if (snapshot.liveIds.size) throw new Error("Close this account’s live sessions before signing in again or removing it from Conch.");
+  const open = snapshot.infos.filter((info) => info.noTerminal !== CODEX_THREAD_CLOSED);
+  if (!open.length) return;
+  const named = open.slice(0, 3).map((info) => `“${info.name ?? info.cwd?.split("/").pop() ?? info.sessionId.slice(0, 8)}”`);
+  throw new Error(`Close this account’s live sessions before signing in again or removing it from Conch: ${named.join(", ")}`
+    + `${open.length > 3 ? ` and ${open.length - 3} more` : ""}.`);
 }

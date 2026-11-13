@@ -219,6 +219,7 @@ import {
   startClaudeSetupToken,
   startCodexAccountTerminal,
   startTerminalSession,
+  placeHeldResume,
   startBackgroundSession,
   terminalSessionCommand,
   type StartSessionRequest,
@@ -304,7 +305,7 @@ import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGr
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
-import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus } from "./claude-accounts.ts";
+import { claudeAccountForLaunch, offeredClaudeAccounts, readClaudeAccounts, addClaudeAccount, removeClaudeAccount, requireClaudeAccount, cachedClaudeAccountStatus, readClaudeAccountStatus, invalidateClaudeAccountStatus, type ClaudeAccountRequest } from "./claude-accounts.ts";
 import { codexHookCommand, conchInvocation, runInstall as installAccountHooks, repairConchHooks } from "./install.ts";
 import { setUpSessionBrowsers } from "./browser-open.ts";
 import {
@@ -770,12 +771,9 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     // can (codex-hook-trust.ts): conch's own are trusted for this launch, and any other is said before starting.
     let launch = request;
     if (codexAccount) {
-      // Its private server (`backgroundFlags`) couldn't take the lock an app-server holds, and the pane would sit on
-      // Codex's error where nobody looks. Terminal can join that server (`joinCodexServer`); a background pane can't.
-      const server = await serverHolding(request, codexAccount.configDir);
-      if (server) {
-        throw new Error(`Codex's app-server (pid ${server}) already has this conversation open. Resume it in Terminal, which joins it there, or fork it.`);
-      }
+      // Its private server couldn't take the lock an app-server holds, and the pane would sit on Codex's error where
+      // nobody looks: refused (`placeHeldResume`).
+      await placeHeldResume(request, { home: codexAccount.configDir });
       const hooks = await readCodexHooks(codexAccount, sessionFolder(request));
       if (!hooks) log(`session-start: Codex couldn't say which hooks it would run; if it asks to review them, open the startup terminal`);
       const review = codexHookReview(hooks ?? [], codexAccount.configDir, codexHookCommand());
@@ -790,7 +788,11 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     }, (error) => log(`trust prompt in ${backgroundId}: could not be watched (${(error as Error).message})`));
     return { backgroundId };
   }
-  const { tty } = await startTerminalSession(await joinCodexServer(request, codexAccount?.configDir));
+  // A resume of a conversation an app-server holds joins it there (`placeHeldResume`), said in the log since the window
+  // shares the conversation rather than owning it.
+  const placed = await placeHeldResume(request, { ...(codexAccount ? { home: codexAccount.configDir } : {}) });
+  if (placed.joined) log(`session-start: ${adapterFor(request.backend).displayName} app-server (pid ${placed.joined}) already holds this conversation; the window joins it there`);
+  const { tty } = await startTerminalSession(placed.request);
   // The tab it opened, for a fork an agent waits on (`forkLiveSession`); every other caller reads only a background id.
   const opened = tty ? { tty } : undefined;
   if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
@@ -802,27 +804,6 @@ async function launchSession(asked: StartSessionRequest): Promise<void | { backg
     }, (error) => log(`trust prompt in ${tty}: could not be watched (${(error as Error).message})`));
   }
   return opened;
-}
-
-/** The server already holding the conversation a resume names (the adapter's `conversationServer`), if one does. */
-async function serverHolding(request: StartSessionRequest, home: string | undefined): Promise<number | undefined> {
-  const conversation = request.resumeSessionId?.trim();
-  const holding = adapterFor(request.backend).conversationServer;
-  if (!conversation || request.fork || !holding) return;
-  return holding(conversation, home).catch(() => undefined);
-}
-
-/**
- * A Terminal resume of a Codex conversation an app-server already holds joins that server (`sharedServer`) rather than
- * opening a private one (`terminalFlags`), which couldn't take the thread's lock and would stop on an error in the window.
- * The shared daemon keeps a thread it hosted loaded for a while after its last window closes, so this is the usual way
- * back to one of those. Said in the log, since the window it opens shares the thread rather than owning it.
- */
-async function joinCodexServer(request: StartSessionRequest, codexHome: string | undefined): Promise<StartSessionRequest> {
-  const server = await serverHolding(request, codexHome);
-  if (!server) return request;
-  log(`session-start: codex app-server (pid ${server}) already holds this conversation; the window joins it there`);
-  return { ...request, sharedServer: true };
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
@@ -1057,6 +1038,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     latestTurnBySession,
     reportedMissingCodexPid,
   } = ledger;
+  /** Codex threads on the shared daemon already logged as out of conch's reach (the registry pass below). */
+  const reportedSharedCodexThreads = new Set<string>();
   const eventQueue = new EventQueue({
     handle,
     handoffOrder: () => cfg.handoffOrder,
@@ -2916,6 +2899,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     }
     if (snap) observeElsewhere(registryLive);
     for (const session of registryLive) {
+      // A thread on Codex's shared daemon that no window can be proven to show: the row says so, and so does the log,
+      // once per thread, since it is why nothing conch sends reaches it (codex-threads.ts `appServerNoTerminal`).
+      if (session.noTerminal?.includes("Codex's shared server") && !reportedSharedCodexThreads.has(session.sessionId)) {
+        reportedSharedCodexThreads.add(session.sessionId);
+        log(`codex: "${labelForSessionId(session.sessionId)}" is on Codex's shared app-server with no window conch can prove shows it, so conch can't type into it; resume it from conch to get one`);
+      }
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
           "session-routing",
@@ -3778,6 +3767,56 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
    * A new conversation's id is the agent's own to choose, so the session is known by where it runs, the tab or the
    * background host this start opened (session-start-wait.ts), and waited on as an agent's fork is (`awaitForkStart`).
    */
+  /**
+   * Settings › Providers' Codex side: list, add, sign in, remove, check, usage and cloud, each answered with every
+   * account's status. A read that comes back unavailable says why (`statusDetail`): logged, and filed once per account
+   * and reason until it reads again. Until 2026-11-12 a failed read was a bare "Status unavailable" in the app and
+   * nothing anywhere else, so when Tyler said his Codex accounts were broken nothing said what had gone wrong.
+   */
+  const reportedCodexReads = new Map<string, string>();
+  const codexAccounts = async (message: Extract<ClaudeAccountRequest, { kind: "codex-accounts" }>) => {
+    const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
+    if (message.action === "remove" || message.action === "login") {
+      const account = requireCodexAccount(message.id!);
+      await assertCodexAccountIdle(account);
+      invalidateCodexAccount(account);
+      if (message.action === "remove") removeCodexAccount(account.id);
+      else {
+        await runCodexInstall(account.configDir);
+        await startCodexAccountTerminal(account, "login");
+      }
+    }
+    if (message.action === "cloud") {
+      const account = requireCodexAccount(message.id!);
+      if ((await cachedCodexAccount(account, true)).account.authType !== "chatgpt") throw new Error("Connect a ChatGPT account to use Codex cloud.");
+      await startCodexAccountTerminal(account, "cloud");
+    }
+    const reads = await Promise.all(readCodexAccounts().map(account => cachedCodexAccount(account,
+      message.action === "usage" || (message.action === "refresh" && message.id === account.id))));
+    for (const { account } of reads) {
+      const why = account.status === "unavailable" ? account.statusDetail ?? "Codex gave no reason." : undefined;
+      if (!why) {
+        reportedCodexReads.delete(account.id);
+        continue;
+      }
+      if (reportedCodexReads.get(account.id) === why) continue;
+      reportedCodexReads.set(account.id, why);
+      log(`codex accounts: couldn't check "${account.label}": ${why}`);
+      recordDaemonError("codex-account-read", `Couldn't check the Codex account "${account.label}": ${why}`, undefined, { account: account.id });
+    }
+    for (const { account } of reads) {
+      if (account.usageDetail && message.action === "usage") log(`codex accounts: no usage for "${account.label}": ${account.usageDetail}`);
+    }
+    const accounts = reads.map(read => read.account);
+    void renderSessionPanel();
+    return { kind: "codex-accounts" as const, accounts,
+      execution: deviceExecutionCatalog(ownerDeviceId, hostname(), readClaudeAccounts(cfg.claudeDir), accounts),
+      usage: { state: "ready" as const, source: "codex-app-server" as const, accounts: reads.map(read => read.usage) },
+      ...(created ? { createdAccountId: created.id } : {}),
+      ...(message.action === "login" ? { loginOpened: true as const } : {}),
+      ...(message.action === "cloud" ? { cloudOpened: true as const } : {}) };
+  };
+
   const startLiveSession = async (request: StartSessionRequest, label?: string): Promise<{ sessionId?: string; label?: string; running?: string; backgroundId?: string }> => {
     const asked = { backend: request.backend, at: Date.now(), before: new Set(panelSessions.keys()) };
     const launched = await launchSession(request);
@@ -4200,32 +4239,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     benchmarks: (message) => readBenchmarks(undefined, undefined, message.offset ?? 0),
     claudeAccounts: async (message) => {
       if (message.kind === "codex-accounts") {
-        const created = message.action === "add" ? addCodexAccount(message.label!, message.configDir) : undefined;
-        if (message.action === "remove" || message.action === "login") {
-          const account = requireCodexAccount(message.id!);
-          await assertCodexAccountIdle(account);
-          invalidateCodexAccount(account);
-          if (message.action === "remove") removeCodexAccount(account.id);
-          else {
-            await runCodexInstall(account.configDir);
-            await startCodexAccountTerminal(account, "login");
+        try {
+          return await codexAccounts(message);
+        } catch (error) {
+          // The app shows it in Settings; until 2026-11-12 nothing else did. A refusal to sign in over open sessions is
+          // an answer, not a failure, so it is logged and not filed.
+          const said = (error as Error).message;
+          log(`codex accounts: ${message.action}${message.id ? ` ${message.id}` : ""} failed: ${said}`);
+          if (!/^Close this account’s live sessions/.test(said)) {
+            recordDaemonError("codex-accounts", said, undefined, { action: message.action, ...(message.id ? { account: message.id } : {}) });
           }
+          throw error;
         }
-        if (message.action === "cloud") {
-          const account = requireCodexAccount(message.id!);
-          if ((await cachedCodexAccount(account, true)).account.authType !== "chatgpt") throw new Error("Connect a ChatGPT account to use Codex cloud.");
-          await startCodexAccountTerminal(account, "cloud");
-        }
-        const reads = await Promise.all(readCodexAccounts().map(account => cachedCodexAccount(account,
-          message.action === "usage" || (message.action === "refresh" && message.id === account.id))));
-        const accounts = reads.map(read => read.account);
-        void renderSessionPanel();
-        return { kind: "codex-accounts", accounts,
-          execution: deviceExecutionCatalog(ownerDeviceId, hostname(), readClaudeAccounts(cfg.claudeDir), accounts),
-          usage: { state: "ready", source: "codex-app-server", accounts: reads.map(read => read.usage) },
-          ...(created ? { createdAccountId: created.id } : {}),
-          ...(message.action === "login" ? { loginOpened: true as const } : {}),
-          ...(message.action === "cloud" ? { cloudOpened: true as const } : {}) };
       }
       const created = message.action === "add" ? addClaudeAccount(message.label!, message.configDir) : undefined;
       if (message.action === "remove") {

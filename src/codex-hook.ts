@@ -1,5 +1,4 @@
 import { defaultCodexDir } from "./codex-accounts.ts";
-import { basename } from "node:path";
 import type { Config } from "./config.ts";
 import {
   CODEX_TURN_ID,
@@ -22,6 +21,9 @@ import { promptDigest } from "./delivery-evidence.ts";
 import { bell, speak } from "./speak.ts";
 import { askClaude } from "./model.ts";
 import { managedBackgroundSession } from "./background-sessions.ts";
+import { codexCliArgumentOffset, isCodexDesktopProcess, isCodexHeadlessProcess } from "./codex-process.ts";
+
+export { isCodexDesktopProcess, isCodexHeadlessProcess };
 
 export interface CodexHookPayload {
   hook_event_name?: string;
@@ -56,72 +58,6 @@ function processRecord(pid: number): ProcessRecord | null {
   } catch {
     return null;
   }
-}
-
-export function isCodexDesktopProcess(command: string): boolean {
-  const argv = command.trim().split(/\s+/);
-  const executable = basename(argv[0] ?? "").toLowerCase();
-  return /Codex\.app(?:\/|$)/i.test(argv[0] ?? "")
-    || executable === "app-server"
-    || (executable === "codex" && argv[1]?.toLowerCase() === "app-server");
-}
-
-const CODEX_GLOBAL_OPTIONS_WITH_VALUE = new Set([
-  "-a",
-  "--add-dir",
-  "--ask-for-approval",
-  "-c",
-  "--config",
-  "-C",
-  "--cd",
-  "--disable",
-  "--enable",
-  "-i",
-  "--image",
-  "--local-provider",
-  "-m",
-  "--model",
-  "-p",
-  "--profile",
-  "-s",
-  "--sandbox",
-]);
-
-function codexCliArgumentOffset(argv: string[]): number | null {
-  const executable = basename(argv[0] ?? "").toLowerCase();
-  if (executable === "codex") return 1;
-  if (
-    (executable === "node" || executable === "bun")
-    && basename(argv[1] ?? "").toLowerCase() === "codex.js"
-  ) {
-    return 2;
-  }
-  return null;
-}
-
-/**
- * Headless Codex commands must never announce or open conch's microphone.
- * Only inspect the command-position argument: option values, paths, and prompt
- * text containing "exec" or "review" are not subcommands.
- */
-export function isCodexHeadlessProcess(command: string): boolean {
-  const argv = command.trim().split(/\s+/);
-  const offset = codexCliArgumentOffset(argv);
-  if (offset == null) return false;
-
-  for (let index = offset; index < argv.length; index++) {
-    const argument = argv[index] ?? "";
-    const optionName = argument.split("=", 1)[0] ?? argument;
-    if (argument === "--") return false;
-    if (CODEX_GLOBAL_OPTIONS_WITH_VALUE.has(optionName)) {
-      if (!argument.includes("=")) index++;
-      continue;
-    }
-    if (argument.startsWith("-")) continue;
-    return argument.toLowerCase() === "exec"
-      || argument.toLowerCase() === "review";
-  }
-  return false;
 }
 
 async function hasMatchingCodexAncestor(
