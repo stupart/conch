@@ -23,7 +23,7 @@ export type FailureBlame = "conch" | "agent";
  */
 const AGENT_FAILED: readonly RegExp[] = [
   // browser_click / browser_type: the agent's target matched nothing, or was stale.
-  /^nothing (?:on the page matches|you can click says)\b/,
+  /^nothing (?:on the page (?:matches|is)|you can click says)\b/,
   /isn't a valid css selector/,
   /isn't a field you can type in/,
   /read it again\b.*\bfresh refs/,

@@ -59,6 +59,15 @@ public enum WorkbenchScript {
     const fail = (message) => { throw { conchWorkbench: message }; };
     const fold = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const cut = (value, max) => { const text = fold(value); return text.length > max ? text.slice(0, max - 1) + "…" : text; };
+    // Words as an agent would type them off a screenshot: the page's typography (an ellipsis, curly quotes, a dash, a
+    // zero-width space) as plain keys, in lower case. 2026-11-16: a click on "Save as..." missed a button that said
+    // "Save as…".
+    const plain = (value) => fold(String(value == null ? "" : value)
+        .replace(/[​-‍⁠﻿­]/g, "")
+        .replace(/…/g, "...")
+        .replace(/[‘’‚‛′ʼ]/g, "'")
+        .replace(/[“”„‟″«»]/g, '"')
+        .replace(/[‐-―−]/g, "-")).toLowerCase();
     const tag = (el) => String((el && el.tagName) || "").toLowerCase();
     const attr = (el, name) => String((el && el.getAttribute && el.getAttribute(name)) || "");
     const typeOf = (el) => {
@@ -175,11 +184,32 @@ public enum WorkbenchScript {
         if (!el && !quiet) fail('nothing on the page matches "' + selector + '"');
         return el;
     };
+    // Words on the page that no link, button or the like says (a menu's row drawn as a plain div, its click heard by a
+    // listener round it): the innermost visible element that says them all, or the clickable one it sits in. A click
+    // there reaches whatever listens, as a person's would. Only branches that hold the words are walked.
+    const UNSAID = ["script", "style", "noscript", "template"];
+    const sayer = (wanted) => {
+        const root = D.body || D.documentElement;
+        const holds = (el) => UNSAID.indexOf(tag(el)) < 0 && plain(el.textContent).indexOf(wanted) >= 0;
+        const innermost = [];
+        const walk = (el) => {
+            const inner = Array.from(el.children || []).filter(holds);
+            if (inner.length) inner.forEach(walk);
+            else if (el !== root && visible(el)) innermost.push(el);
+        };
+        if (!root || !wanted || !holds(root)) return null;
+        walk(root);
+        const found = innermost.find((el) => plain(el.textContent) === wanted) || innermost.find((el) => plain(el.textContent).startsWith(wanted)) || innermost[0];
+        if (!found) return null;
+        const up = found.closest ? found.closest(CLICKABLE) : null;
+        return up && visible(up) ? up : found;
+    };
     const byWords = (words, field, quiet) => {
-        const wanted = fold(words).toLowerCase();
+        const wanted = plain(words);
         const pool = all(field ? FIELDS : CLICKABLE).filter((el) => visible(el) && (!field || typeOf(el) !== "hidden"));
-        const said = (el) => fold(field ? labelOf(el) || attr(el, "name") : wordsOf(el)).toLowerCase();
-        const found = pool.find((el) => said(el) === wanted) || pool.find((el) => said(el).startsWith(wanted)) || pool.find((el) => said(el).indexOf(wanted) >= 0);
+        const said = (el) => plain(field ? labelOf(el) || attr(el, "name") : wordsOf(el));
+        const found = pool.find((el) => said(el) === wanted) || pool.find((el) => said(el).startsWith(wanted)) || pool.find((el) => said(el).indexOf(wanted) >= 0)
+            || (field ? null : sayer(wanted));
         if (!found && !quiet) fail("nothing " + (field ? "you can type in is labelled" : "you can click says") + ' "' + cut(words, 80) + '"');
         return found || null;
     };
@@ -204,37 +234,34 @@ public enum WorkbenchScript {
         state.refs = new Map();
         let next = 0;
         const ref = (el) => { const name = "e" + (++next); state.refs.set(name, el); return name; };
-        const links = [], buttons = [], fields = [], headings = [];
-        let numbered = 0;
-        for (const el of all(LINKS)) {
-            if (numbered >= LIMITS.links) break;
-            if (!visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (!inside(el)) continue;
+        let truncated = false;
+        // 2026-11-17: every element of a kind gets its ref, and a read lists those in its part up to the kind's limit,
+        // the ones on screen first, and says when it left some out. Numbering used to stop at the limit, so on a page
+        // with more than 100 buttons a menu just opened at the end of it had none: not in a read, a find, or a read
+        // of the menu alone.
+        const width = W.innerWidth || 0, height = W.innerHeight || 0;
+        const onScreen = (el) => { const box = el.getBoundingClientRect(); return box.top + box.height > 0 && box.left + box.width > 0 && box.top < height && box.left < width; };
+        const pick = (selector, limit, keep) => {
+            const found = [];
+            for (const el of all(selector)) if (keep(el)) { const name = ref(el); if (inside(el)) found.push([el, name]); }
+            if (found.length <= limit) return found;
+            truncated = true;
+            const kept = new Set(found.filter(([el]) => onScreen(el)).slice(0, limit));
+            for (const one of found) { if (kept.size >= limit) break; kept.add(one); }
+            return found.filter((one) => kept.has(one));
+        };
+        const links = pick(LINKS, LIMITS.links, visible).map(([el, name]) => {
             const href = String(el.href || "");
             const link = { ref: name, text: wordsOf(el) };
             if (/^https?:/i.test(href)) link.href = href;
-            links.push(link);
-        }
-        numbered = 0;
-        for (const el of all(BUTTONS)) {
-            if (numbered >= LIMITS.buttons) break;
-            if (!visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (inside(el)) buttons.push({ ref: name, text: wordsOf(el) });
-        }
+            return link;
+        });
+        const buttons = pick(BUTTONS, LIMITS.buttons, visible).map(([el, name]) => ({ ref: name, text: wordsOf(el) }));
+        const fields = [], headings = [];
         let hidden = 0;
-        numbered = 0;
-        for (const el of all(FIELDS)) {
-            if (numbered >= LIMITS.fields) break;
+        const fieldLike = (el) => { const type = typeOf(el); return BUTTON_TYPES.indexOf(type) < 0 && (type === "hidden" ? ++hidden <= LIMITS.hidden : visible(el)); };
+        for (const [el, name] of pick(FIELDS, LIMITS.fields, fieldLike)) {
             const type = typeOf(el);
-            if (BUTTON_TYPES.indexOf(type) >= 0) continue;
-            if (type === "hidden" ? ++hidden > LIMITS.hidden : !visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (!inside(el)) continue;
             const field = { ref: name, type, label: labelOf(el), name: cut(attr(el, "name") || attr(el, "id"), 120) };
             if (el.disabled) field.disabled = true;
             if (isSecret(el)) field.secret = true;
@@ -255,7 +282,6 @@ public enum WorkbenchScript {
         const body = scope || D.body || D.documentElement;
         let text = String((body && (body.innerText || body.textContent)) || "")
             .replace(/[^\S\n]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-        let truncated = false;
         if (text.length > LIMITS.text) { text = text.slice(0, LIMITS.text); truncated = true; }
         const page = { text, links, buttons, fields, headings };
         if (scope) page.scope = what;

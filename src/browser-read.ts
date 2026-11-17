@@ -151,10 +151,25 @@ function headingsOf(value: unknown): Heading[] {
     typeof heading.level === "number" && typeof heading.text === "string" && heading.text ? [{ level: heading.level, text: heading.text }] : []);
 }
 
+/**
+ * Words as an agent types them off a screenshot, to match the page's: its typography as plain keys (an ellipsis as three
+ * dots, curly quotes straight, dashes as hyphens, no zero-width spaces), in lower case. The page script's `plain` is the
+ * same, for a click's words (ConchDesign WorkbenchScript.swift).
+ */
+export function plainWords(value: string): string {
+  return value
+    .replace(/[\u200b-\u200d\u2060\ufeff\u00ad]/g, "")
+    .replace(/\u2026/g, "...")
+    .replace(/[\u2018\u2019\u201a\u201b\u2032\u02bc]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u201f\u2033\u00ab\u00bb]/g, "\"")
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .toLowerCase();
+}
+
 /** The first that matches, by the same words, then words it starts with, then words it holds (any case). */
 function bestMatch<T>(candidates: T[], wordsOf: (candidate: T) => string, wanted: string): T | undefined {
-  const lower = wanted.toLowerCase();
-  const said = (candidate: T) => wordsOf(candidate).replace(/…$/, "").trim().toLowerCase();
+  const lower = plainWords(wanted);
+  const said = (candidate: T) => plainWords(wordsOf(candidate).replace(/…$/, "").trim());
   return candidates.find((one) => said(one) === lower)
     ?? candidates.find((one) => said(one).startsWith(lower))
     ?? candidates.find((one) => said(one).includes(lower));
@@ -289,9 +304,9 @@ export function compactRead(read: Record<string, unknown>, view: ReadView = {}):
   });
 
   if (view.find !== undefined) {
-    const wanted = view.find.toLowerCase();
+    const wanted = plainWords(view.find);
     const lines = text.split("\n");
-    const matching = lines.flatMap((line, index) => (line.toLowerCase().includes(wanted) ? [index] : []));
+    const matching = lines.flatMap((line, index) => (plainWords(line).includes(wanted) ? [index] : []));
     const shownLines: string[] = [];
     let previous = -2;
     for (const index of matching.slice(0, READ_FIND_LINES)) {
@@ -299,14 +314,14 @@ export function compactRead(read: Record<string, unknown>, view: ReadView = {}):
       const line = lines[index]!;
       if (line.length <= READ_FIND_LINE_CHARS) shownLines.push(line);
       else {
-        const hit = line.toLowerCase().indexOf(wanted);
+        const hit = plainWords(line).indexOf(wanted);
         const start = Math.max(0, Math.min(hit - 120, line.length - READ_FIND_LINE_CHARS));
         const piece = line.slice(start, start + READ_FIND_LINE_CHARS);
         shownLines.push(`${start > 0 ? "…" : ""}${piece}${start + READ_FIND_LINE_CHARS < line.length ? "…" : ""}`);
       }
       previous = index;
     }
-    const says = (item: Item, keys: string[]) => keys.some((key) => words(item[key]).toLowerCase().includes(wanted));
+    const says = (item: Item, keys: string[]) => keys.some((key) => plainWords(words(item[key])).includes(wanted));
     const foundLinks = capped(shownLinks(links.filter((link) => says(link, ["text", "href"])), url), READ_SHOWN.links);
     const foundButtons = capped(buttons.filter((button) => says(button, ["text"])), READ_SHOWN.buttons);
     const foundFields = capped(fields.filter((field) => says(field, ["label", "name", "type", "value"])), READ_SHOWN.fields);
