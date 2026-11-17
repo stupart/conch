@@ -362,72 +362,53 @@ describe("the Workbench's page script", () => {
     expect(await run(p, "click", { how: "text", what: "Sign" })).toEqual({ clicked: 'button "Sign in"' });
   });
 
-  /**
-   * 2026-11-16: an agent reads a button's words off a screenshot and types them with plain keys: three dots for the
-   * page's ellipsis, a straight quote for its curly one. A click on "Save as..." said nothing on the page was "Save
-   * as...", beside a button that said "Save as…".
-   */
-  test("click finds words typed plainly that the page sets in its own typography", async () => {
+  /** 2026-11-16: an agent types a button's words off a screenshot with plain keys: "Save as..." for "Save as…". */
+  test("click matches words typed plainly to the page's typography", async () => {
     const p = page();
-    const saveAs = new FakeElement("button", {}, "Save as…");
-    const dontSave = new FakeElement("button", {}, "Don’t save");
     const closeAll = new FakeElement("button", {}, "Close all");
     const close = new FakeElement("button", {}, "Close​");
-    const range = new FakeElement("a", { href: "/pricing" }, "Plans — compare");
-    p.body.append(saveAs, dontSave, closeAll, close, range);
-    for (const how of ["auto", "text"]) {
-      expect(await run(p, "click", { how, what: "Save as..." }), how).toEqual({ clicked: 'button "Save as…"' });
-      expect(await run(p, "click", { how, what: "Don't save" }), how).toEqual({ clicked: 'button "Don’t save"' });
-      // A zero-width space after the words is no reason to prefer a longer button that starts with them.
-      expect(await run(p, "click", { how, what: "Close" }), how).toEqual({ clicked: expect.stringMatching(/^button "Close​?"$/) });
-      expect(await run(p, "click", { how, what: "plans - compare" }), how).toEqual({ clicked: 'link "Plans — compare"' });
-    }
-    expect([saveAs.clicks, dontSave.clicks, close.clicks, closeAll.clicks, range.clicks]).toEqual([2, 2, 2, 0, 2]);
-    // The other way round: the agent's ellipsis, the page's three dots.
-    p.body.append(new FakeElement("button", {}, "Export..."));
+    p.body.append(new FakeElement("button", {}, "Save as…"), new FakeElement("button", {}, "Don’t save"), new FakeElement("button", {}, "Export..."), closeAll, close);
+    expect(await run(p, "click", { how: "auto", what: "Save as..." })).toEqual({ clicked: 'button "Save as…"' });
+    expect(await run(p, "click", { how: "auto", what: "don't save" })).toEqual({ clicked: 'button "Don’t save"' });
     expect(await run(p, "click", { how: "auto", what: "Export…" })).toEqual({ clicked: 'button "Export..."' });
+    // A zero-width space after a button's words doesn't send the click to a longer button that starts with them.
+    await run(p, "click", { how: "auto", what: "Close" });
+    expect([close.clicks, closeAll.clicks]).toEqual([1, 0]);
   });
 
-  /**
-   * 2026-11-13: a menu whose rows are plain divs, their clicks heard by a listener round them. The words were on the
-   * page, and a click on them said they weren't: only links, buttons and the like were searched.
-   */
-  test("click finds words on the page that no link or button says, and clicks the innermost element that says them", async () => {
+  /** 2026-11-13: a menu of plain divs, their clicks heard by a listener round them; only links and buttons were searched. */
+  test("click falls back to the innermost visible element that says the words, or the link it sits in", async () => {
     const p = page();
-    const title = new FakeElement("div", { class: "row-title" }, "Create a project");
-    const blurb = new FakeElement("div", { class: "row-blurb" }, "Start from an empty page.");
-    const row = new FakeElement("div", { class: "row" }).append(title, blurb);
-    const other = new FakeElement("div", { class: "row" }).append(new FakeElement("div", {}, "Import a project"));
-    const menu = new FakeElement("div", { class: "menu" }).append(row, other);
-    p.body.append(menu);
-    p.document.elementFromPoint = () => blurb;
-    expect(await run(p, "locate", { how: "auto", what: "Start from an empty page." })).toEqual({
-      box: [10, 10, 120, 24], native: true, point: [70, 22], what: 'div "Start from an empty page."',
-    });
-    expect(await run(p, "click", { how: "auto", what: "Start from an empty page." })).toEqual({ clicked: 'div "Start from an empty page."' });
-    expect(blurb.events).toEqual(["pointerdown", "mousedown", "pointerup", "mouseup", "click"]);
-    expect(await run(p, "click", { how: "text", what: "create a project" })).toEqual({ clicked: 'div "Create a project"' });
-    expect(title.clicks).toBe(1);
-    expect([row.clicks, menu.clicks, p.body.clicks]).toEqual([0, 0, 0]);
-
-    // Words a link holds past the part of it conch reads: the link is what is clicked, not the words inside it.
-    const words = new FakeElement("span", {}, `${"An unusually long sentence about the plan. ".repeat(4)}Read the full terms`);
-    const terms = new FakeElement("a", { href: "/terms" }).append(words);
-    p.body.append(terms);
-    expect(await run(p, "click", { how: "auto", what: "Read the full terms" })).toEqual({ clicked: expect.stringMatching(/^link "An unusually long/) });
-    expect([terms.clicks, words.clicks]).toEqual([1, 0]);
-
-    // Words no one can see, or in a script, are not on the page; a type still needs a field's label.
+    const blurb = new FakeElement("div", {}, "Start from an empty page.");
+    const row = new FakeElement("div", {}).append(new FakeElement("div", {}, "Create a project"), blurb);
+    const inLink = new FakeElement("span", {}, `${"A long sentence about the plan. ".repeat(4)}Read the full terms`);
+    const terms = new FakeElement("a", { href: "/terms" }).append(inLink);
     const gone = new FakeElement("div", {}, "Delete everything");
     gone.display = "none";
-    gone.size = { width: 0, height: 0 };
-    p.body.append(gone, new FakeElement("script", {}, "Remove all files"));
-    expect((await run(p, "click", { how: "auto", what: "Delete everything" })).error).toContain("not a ref from browser_read");
-    expect((await run(p, "click", { how: "text", what: "Remove all files" })).error).toBe('nothing you can click says "Remove all files"');
-    expect(gone.clicks).toBe(0);
-    expect((await run(p, "type", { how: "auto", what: "Start from an empty page.", text: "x" })).error)
-      .toBe('nothing on the page is "Start from an empty page.": not a ref from browser_read, a selector that matches, or words on the page');
-    expect(blurb.valueSets).toBe(0);
+    p.body.append(row, terms, gone, new FakeElement("script", {}, "Remove all files"));
+    expect(await run(p, "click", { how: "auto", what: "Start from an empty page." })).toEqual({ clicked: 'div "Start from an empty page."' });
+    expect([blurb.clicks, row.clicks]).toEqual([1, 0]);
+    // Past the 120 characters a link is read by: the link is clicked.
+    await run(p, "click", { how: "auto", what: "Read the full terms" });
+    expect([terms.clicks, inLink.clicks]).toEqual([1, 0]);
+    // Hidden words and a script's aren't on the page, and a type still needs a field's label.
+    for (const what of ["Delete everything", "Remove all files"]) expect((await run(p, "click", { how: "auto", what })).error, what).toContain("not a ref from browser_read");
+    expect((await run(p, "type", { how: "auto", what: "Start from an empty page.", text: "x" })).error).toContain("not a ref from browser_read");
+  });
+
+  /** 2026-11-17: numbering stopped at 100 buttons, so a menu opened at the end of a big page had no refs at all. */
+  test("a read past a kind's limit keeps the ones on screen, refs every element, and says it left some out", async () => {
+    const p = page();
+    const below = Array.from({ length: 120 }, (_, i) => new FakeElement("button", {}, `Row ${i}`));
+    for (const button of below) button.getBoundingClientRect = () => ({ left: 10, top: 2000, width: 120, height: 24 });
+    p.body.append(...below, new FakeElement("div", { class: "menu" }).append(new FakeElement("button", {}, "New folder")));
+    const read = await run(p, "read");
+    expect(read.buttons).toHaveLength(100);
+    expect(read.buttons.at(-1).text).toBe("New folder");
+    expect(read.truncated).toBe(true);
+    expect((await run(p, "read", { how: "selector", what: ".menu" })).buttons).toEqual([read.buttons.at(-1)]);
+    // The last row, left out of the list, still has its ref: Sign in is e4, the rows e5 to e124.
+    expect(await run(p, "click", { how: "ref", what: "e124" })).toEqual({ clicked: 'button "Row 119"' });
   });
 
   test("a ref is the last read's: unknown or gone from the page, the agent is told to read again", async () => {

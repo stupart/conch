@@ -234,37 +234,34 @@ public enum WorkbenchScript {
         state.refs = new Map();
         let next = 0;
         const ref = (el) => { const name = "e" + (++next); state.refs.set(name, el); return name; };
-        const links = [], buttons = [], fields = [], headings = [];
-        let numbered = 0;
-        for (const el of all(LINKS)) {
-            if (numbered >= LIMITS.links) break;
-            if (!visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (!inside(el)) continue;
+        let truncated = false;
+        // 2026-11-17: every element of a kind gets its ref, and a read lists those in its part up to the kind's limit,
+        // the ones on screen first, and says when it left some out. Numbering used to stop at the limit, so on a page
+        // with more than 100 buttons a menu just opened at the end of it had none: not in a read, a find, or a read
+        // of the menu alone.
+        const width = W.innerWidth || 0, height = W.innerHeight || 0;
+        const onScreen = (el) => { const box = el.getBoundingClientRect(); return box.top + box.height > 0 && box.left + box.width > 0 && box.top < height && box.left < width; };
+        const pick = (selector, limit, keep) => {
+            const found = [];
+            for (const el of all(selector)) if (keep(el)) { const name = ref(el); if (inside(el)) found.push([el, name]); }
+            if (found.length <= limit) return found;
+            truncated = true;
+            const kept = new Set(found.filter(([el]) => onScreen(el)).slice(0, limit));
+            for (const one of found) { if (kept.size >= limit) break; kept.add(one); }
+            return found.filter((one) => kept.has(one));
+        };
+        const links = pick(LINKS, LIMITS.links, visible).map(([el, name]) => {
             const href = String(el.href || "");
             const link = { ref: name, text: wordsOf(el) };
             if (/^https?:/i.test(href)) link.href = href;
-            links.push(link);
-        }
-        numbered = 0;
-        for (const el of all(BUTTONS)) {
-            if (numbered >= LIMITS.buttons) break;
-            if (!visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (inside(el)) buttons.push({ ref: name, text: wordsOf(el) });
-        }
+            return link;
+        });
+        const buttons = pick(BUTTONS, LIMITS.buttons, visible).map(([el, name]) => ({ ref: name, text: wordsOf(el) }));
+        const fields = [], headings = [];
         let hidden = 0;
-        numbered = 0;
-        for (const el of all(FIELDS)) {
-            if (numbered >= LIMITS.fields) break;
+        const fieldLike = (el) => { const type = typeOf(el); return BUTTON_TYPES.indexOf(type) < 0 && (type === "hidden" ? ++hidden <= LIMITS.hidden : visible(el)); };
+        for (const [el, name] of pick(FIELDS, LIMITS.fields, fieldLike)) {
             const type = typeOf(el);
-            if (BUTTON_TYPES.indexOf(type) >= 0) continue;
-            if (type === "hidden" ? ++hidden > LIMITS.hidden : !visible(el)) continue;
-            numbered++;
-            const name = ref(el);
-            if (!inside(el)) continue;
             const field = { ref: name, type, label: labelOf(el), name: cut(attr(el, "name") || attr(el, "id"), 120) };
             if (el.disabled) field.disabled = true;
             if (isSecret(el)) field.secret = true;
@@ -285,7 +282,6 @@ public enum WorkbenchScript {
         const body = scope || D.body || D.documentElement;
         let text = String((body && (body.innerText || body.textContent)) || "")
             .replace(/[^\S\n]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-        let truncated = false;
         if (text.length > LIMITS.text) { text = text.slice(0, LIMITS.text); truncated = true; }
         const page = { text, links, buttons, fields, headings };
         if (scope) page.scope = what;
