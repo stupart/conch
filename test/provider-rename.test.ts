@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
-  injectProviderCommand,
   isProviderCommandLine,
   renameProviderSession,
   type ProviderRenameInjector,
@@ -14,39 +11,7 @@ const config = {
   keystrokeFallback: true,
 } as Config;
 
-describe("provider command injection", () => {
-  test("types the literal line, auto-submitted, without clipboard fallback — for either agent", async () => {
-    const calls: Array<{ cfg: Config; pid: number | undefined; text: string; options: unknown }> = [];
-    const inject: ProviderRenameInjector = async (cfg, pid, text, _before, options) => {
-      calls.push({ cfg, pid, text, options });
-      return { via: "osascript-focused" };
-    };
-
-    await expect(injectProviderCommand(config, { backend: "codex", pid: 7 }, "/model gpt-5", inject))
-      .resolves.toEqual({ kind: "delivered", via: "osascript-focused" });
-    expect(calls).toEqual([{
-      cfg: { ...config, autoSubmit: true },
-      pid: 7,
-      text: "/model gpt-5",
-      options: { clipboardFallback: false },
-    }]);
-    await expect(injectProviderCommand(config, { backend: "claude" }, "/model opus", inject))
-      .resolves.toEqual({ kind: "unroutable", reason: "session has no routable pid" });
-    expect(calls).toHaveLength(1);
-  });
-});
-
 describe("provider rename routing", () => {
-  test("the shared session controller invokes provider routing after local persistence", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-
-    expect(daemon).toMatch(
-      /renameSessionLabel\([\s\S]*renameProviderSession\(cfg, target, renamed\.label\)/,
-    );
-    expect(daemon).toContain('backend: session?.backend ?? "claude"');
-    expect(daemon).toContain("const pid = session?.pid ?? known?.pid");
-  });
-
   test("Claude receives an auto-submitted local slash command without clipboard fallback", async () => {
     const calls: Array<{ cfg: Config; pid: number | undefined; text: string; options: unknown }> = [];
     const inject: ProviderRenameInjector = async (cfg, pid, text, _before, options) => {

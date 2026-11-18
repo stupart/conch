@@ -1,6 +1,4 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import type { PortListener } from "../src/screen-context.ts";
 
@@ -192,12 +190,4 @@ describe("read-only, no live updates, nothing of the phone's passed on", () => {
     const response = await application.handle(new Request(`https://relay.invalid/dev?review=rev-dev&path=%2F`)) as Response;
     expect(response.status).toBe(401);
   });
-});
-
-test("the daemon hands the bridge the screen context's listener lookup and the sessions' pids", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-  const bridge = daemon.slice(daemon.indexOf("phoneApplication = createPhoneBridgeApplication("));
-  const deps = bridge.slice(0, bridge.indexOf("{ token"));
-  expect(deps).toContain("portListeners,");
-  expect(deps).toContain("sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,");
 });

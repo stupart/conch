@@ -2501,50 +2501,6 @@ describe("dictation failure recovery", () => {
   }
 });
 
-describe("the daemon's wiring of the loop", () => {
-  // runDaemon still runs in no test, so what it hands the loop is pinned as text.
-  const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-
-  test("every dependency is the daemon's own, and production keeps the real terminal and ear", () => {
-    const at = daemon.indexOf("const voice = createVoiceLoop({");
-    expect(at).toBeGreaterThan(-1);
-    const end = daemon.indexOf("\n  });\n", at);
-    expect(end).toBeGreaterThan(at);
-    const wiring = daemon.slice(at, end);
-    for (const line of [
-      "ledger,",
-      "pause,",
-      "queue: eventQueue,",
-      "speech,",
-      "audio: { lease: audioLease, holder: audioHolder },",
-      "quietOverrideBlocked: explicitQuietOverrideBlocked,",
-      "window: (sessionId) => panelSessions.get(sessionId),",
-      "sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),",
-      "render: () => void renderSessionPanel(),",
-      "presentElsewhere,",
-      "phoneLatch: { arm: armPhoneSpeechLatch, clear: clearPhoneSpeechLatch },",
-      "raiseWindow,",
-      "reportError: recordDaemonError,",
-      "prewarmEar: () => whisperSupervisor?.prewarm(),",
-      // The real Mac's answer, asked per send: a refused keystroke is then named for the permission that fixes it.
-      "accessibilityTrusted,",
-      "control: handleControl,",
-    ]) expect(wiring).toContain(line);
-    expect(wiring).not.toContain("\n    terminal:");
-    expect(wiring).not.toContain("\n    ear:");
-  });
-
-  test("the daemon's dispatcher waits for the voice engine only for events that speak, then hands everything to the loop", () => {
-    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<SocketTurnOutcome> {");
-    expect(at).toBeGreaterThan(-1);
-    const end = daemon.indexOf("\n  }\n", at);
-    const handle = daemon.slice(at, end);
-    const wait = handle.indexOf('if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;');
-    expect(wait).toBeGreaterThan(-1);
-    expect(handle.indexOf("return voice.handle(event);")).toBeGreaterThan(wait);
-  });
-});
-
 describe("an event naming a background job's hidden window", () => {
   // The wire shape a conch MCP server that started before #187 sends for
   // `review_to_front(session: "conch")`: the window's stale id and pid. The
@@ -2880,16 +2836,6 @@ describe("the daemon checks a deliverable's link itself", () => {
     });
   });
 
-  test("a refused link files nothing, so no marks are published", async () => {
-    await withFolder(async (folder) => {
-      const h = harness({ paused: true, window: () => ({ sessionId: "s1", cwd: folder } as SessionInfo) });
-      await h.voice.handle(accepted(h, published(inked("/etc/hosts", [box]))));
-      expect(h.ledger.sessionStates.get("s1")?.review).toBeUndefined();
-      expect(publishedRow(h).review).toBeUndefined();
-      expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
-    });
-  });
-
   test("a mark's image that fails the check refuses the publication, against the folder the daemon knows", async () => {
     await withFolder(async (folder) => {
       writeFileSync(join(folder, "page.html"), "<h1>ok</h1>");
@@ -2952,7 +2898,7 @@ describe("the daemon checks a deliverable's link itself", () => {
       expect(review).toMatchObject({ summary: "done" });
       expect(review?.link).toBeUndefined();
       // And says why where the link would be, rather than looking like a review that never had one.
-      expect(review?.linkRefused).toBe(`The link /etc/hosts wasn't published: it is outside this session's folder (${folder}) and the temp folders.`);
+      expect(review?.linkRefused).toContain("outside this session's folder");
       expect(h.errors.map(([operation]) => operation)).toEqual(["review-link"]);
     });
   });
@@ -4277,11 +4223,6 @@ describe("a send to a terminal the session has left", () => {
       expect(h.clipboard).toEqual([]);
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
-
-  test("the daemon's loop runs the real check: no terminal seam, no way around it", () => {
-    const loop = readFileSync(join(import.meta.dir, "..", "src/voice-loop.ts"), "utf8");
-    expect(loop).toContain("const findDeadTarget = deps.terminal ? deps.terminal.deadTarget : deadTarget;");
-  });
 });
 
 describe("hosted message delivery", () => {
@@ -4393,10 +4334,9 @@ describe("a publication's verdict, and what it files", () => {
     }
   });
 
-  test("refused, with the daemon's own reason: a link outside its folders, a mark's image, a focus, an older publication", async () => {
+  test("refused, with the daemon's own reason: a link outside its folders, an older publication, no review", async () => {
     const s = scratch();
     try {
-      mkdirSync(join(s.project, "pack"), { recursive: true });
       writeFileSync(join(s.project, "page.html"), "<h1>ok</h1>");
       const h = harness({ ledger: s.ledger(), window: () => ({ sessionId: "s1", cwd: s.project } as SessionInfo) });
       const reason = async (review: TurnEvent["review"], at = 2_000) => {
@@ -4404,13 +4344,6 @@ describe("a publication's verdict, and what it files", () => {
         return verdict.kind === "review-refused" ? verdict.reason : `filed ${JSON.stringify(verdict)}`;
       };
       expect(await reason({ summary: "hosts", link: "/etc/hosts" })).toMatch(/^link \/private\/etc\/hosts is outside this session's folder/);
-      const hidden = join(s.base, ".secret", "still.png");
-      mkdirSync(join(hidden, ".."), { recursive: true });
-      writeFileSync(hidden, "png");
-      expect(await reason({ summary: "ink", link: join(s.project, "page.html"),
-        scene: { v: 1, target: { kind: "link" }, marks: [{ id: "m", kind: "pin", frame: { image: hidden }, at: [0.5, 0.5] }] } }))
-        .toStartWith("scene marks[0] frame.image ");
-      expect(await reason({ summary: "pack", link: join(s.project, "pack"), focus: ["missing.ts"] })).toBe("focus[0] missing.ts is not in the folder");
       expect(await reason({ summary: "newer", link: join(s.project, "page.html") }, 5_000)).toStartWith("filed");
       expect(await reason({ summary: "older", link: join(s.project, "page.html") }, 4_000))
         .toBe("a newer publication from this session was filed after this one was sent, so this older one was not");

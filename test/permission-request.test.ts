@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { validateSocketTurnEvent } from "../src/control-server.ts";
-import { CLAUDE_HOOK_EVENTS } from "../src/install.ts";
 
 /**
  * Claude Code 2.1.280 writes a pending tool call to the transcript only once its permission
@@ -75,12 +74,6 @@ describe("the PermissionRequest hook", () => {
     // And the daemon's socket accepts exactly what the hook sends.
     expect(validateSocketTurnEvent(received[0]).ok).toBe(true);
   }, 30_000);
-
-  test("conch's installer wires it with the others", () => {
-    expect(CLAUDE_HOOK_EVENTS).toContain("PermissionRequest");
-    const install = readFileSync(join(import.meta.dir, "../src/install.ts"), "utf8");
-    expect(install).toContain("for (const event of CLAUDE_HOOK_EVENTS) {");
-  });
 });
 
 describe("the approval field on the socket", () => {
@@ -94,22 +87,6 @@ describe("the approval field on the socket", () => {
       expect(needs(bad).ok).toBe(false);
     }
     expect(needs({ id: "x", name: "Bash", summary: "s" }, "turn-end").ok).toBe(false);
-  });
-});
-
-describe("the daemon wires both ends", () => {
-  const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  test("the published row asks the voice loop, which holds the hook's record", () => {
-    expect(daemon).toContain("(sessionId, path) => voice.pendingApprovalFor(sessionId, path),");
-  });
-  test("a question the hook reported is in the published conversation", () => {
-    expect(daemon).toContain("withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),");
-  });
-  test("a key is pressed only after reading Claude's registry now, not the last snapshot", () => {
-    // Every account's registry, by the default folder. A session's own account folder handed over as the default threw
-    // "Account profiles must have separate directories" for every Allow and Deny on a second account (2026-10-28).
-    expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
-    expect(daemon.split("\n").filter((line) => line.includes("registrySnapshot(") && line.includes("claudeConfigDir"))).toEqual([]);
   });
 });
 

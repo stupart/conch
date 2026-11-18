@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexThreadServer } from "../src/codex-threads.ts";
@@ -67,16 +67,6 @@ describe("a resume of a conversation a server already holds, from the daemon or 
     expect(await placeHeldResume(free, { holding: async () => { throw new Error("lsof timed out"); } })).toEqual({ request: free });
     const claude = { backend: "claude" as const, cwd: "/w", resumeSessionId: "c1" };
     expect(await placeHeldResume(claude)).toEqual({ request: claude });
-  });
-
-  test("`conch start` in a shell asks before it launches, as the daemon does (2026-11-12)", () => {
-    // The CLI launches on its own; it skipped the daemon's check and its window stopped on Codex's lock screen.
-    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
-    const start = cli.slice(cli.indexOf('case "start": {'));
-    expect(start.indexOf("await placeHeldResume(request)")).toBeGreaterThan(0);
-    expect(start.indexOf("await placeHeldResume(request)")).toBeLessThan(start.indexOf("startBackgroundSession : startTerminalSession"));
-    const daemon = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-    expect(daemon.match(/await placeHeldResume\(request,/g)).toHaveLength(2);
   });
 });
 

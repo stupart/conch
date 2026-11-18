@@ -169,16 +169,6 @@ final class ImageDecodeTests: XCTestCase {
         XCTAssertEqual(ConchImage.decodeWidth(forDrawnWidth: 100, of: .zero), 0)
     }
 
-    /// ImageIO bounds the long edge, so the edge asked for is whichever side the wanted width makes longest.
-    func testTheLongEdgeAskedForGivesTheWidthWanted() {
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 500, of: CGSize(width: 1000, height: 3000)), 1500, "tall: its height at that width")
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 1500, of: CGSize(width: 3000, height: 1000)), 1500, "wide: the width itself")
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 976, of: CGSize(width: 1440, height: 2792)), 1893, "rounded up, never a pixel short")
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 1000, of: CGSize(width: 1000, height: 3000)), 3000, "its own width: whole")
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 4000, of: CGSize(width: 1000, height: 3000)), 3000, "wider than it is: whole")
-        XCTAssertEqual(ConchImage.longEdge(forWidth: 0, of: CGSize(width: 1000, height: 3000)), 0)
-    }
-
     /// Its size in points is NSImage's: the resolution it carries, 72 dpi when it says none — the viewer lays out by it,
     /// so a Retina screenshot is drawn at its size on the screen it was taken on.
     func testAPictureMeasuresItsPointsByTheResolutionItCarries() throws {

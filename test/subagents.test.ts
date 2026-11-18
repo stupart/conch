@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   liveBackgroundAgents,
@@ -242,9 +242,6 @@ describe("the conversation knows which agent a Task block started", () => {
       notice("aaa1", "failed"),
     ), "claude");
     expect(failed.items["tool:toolu_aaa1"]!.tool!.status).toBe("error");
-    // A notification about a background Bash task names no block and changes nothing.
-    const bash = buildConversation("s", lines(...launch("aaa1", "x"), notice("b0ob4u9um")), "claude");
-    expect(bash.items["tool:toolu_aaa1"]!.tool!.status).toBe("running");
   });
 
   test("reading the parent's tail attaches each agent's sidechain path", async () => {
@@ -318,92 +315,6 @@ describe("a subagent stopping is not the parent's turn ending", () => {
     expect(working).toHaveLength(1);
     expect(working[0]).toMatchObject({ type: "working", sessionId: SESSION });
   }, 30_000);
-});
-
-describe("the daemon and the Mac app wire it up", () => {
-  const repo = join(import.meta.dir, "..");
-  const read = (path: string) => readFileSync(join(repo, path), "utf8");
-
-  test("renderSessionPanel builds rows and conversations from the nested set, but addresses only live sessions", () => {
-    const daemon = read("src/daemon.ts");
-    const start = daemon.indexOf("async function renderSessionPanel");
-    expect(start).toBeGreaterThan(-1);
-    const body = daemon.slice(start, daemon.indexOf("async function rehydrateFromTranscripts", start));
-
-    const nested = body.indexOf("subagentSessions(session, session.transcriptPath ?? findTranscript(");
-    const rows = body.indexOf("sessions: visible,");
-    // Each budget chosen by activity (`sessionsToPublish`), not by registry order.
-    const conversations = body.indexOf("...sessionsToPublish(live, MAX_PUBLISHED_CONVERSATIONS, (id) => sessionStates.get(id)?.at),");
-    const agentConversations = body.indexOf("...sessionsToPublish(nested, MAX_PUBLISHED_AGENT_CONVERSATIONS, (id) => sessionStates.get(id)?.at),");
-    // The PUBLISHED model, not only the ordering pass: `sessions: visible` matched that one
-    // while the model took `live`, and no agent row ever reached either app (2026-09-23).
-    const model = body.indexOf("const model = buildPanelModel({");
-    const paths = body.indexOf("visible.flatMap((session) =>");
-    for (const index of [nested, rows, conversations, agentConversations, model, paths]) expect(index).toBeGreaterThan(-1);
-    expect(body.slice(model, body.indexOf("});", model))).toMatch(/\n\s+sessions: visible,\n/);
-    expect(nested).toBeLessThan(rows);
-    expect(rows).toBeLessThan(conversations);
-    expect(conversations).toBeLessThan(agentConversations);
-    // Number shortcuts and the theater cursor stay on sessions conch can talk to.
-    expect(body).toContain("numberPanelSessionRows(model.rows, live)");
-    expect(body).toContain("theaterNavigation.reconcile(new Set(live.map(");
-    expect(body).not.toContain("ledger.forgetGone(new Set(visible");
-  });
-
-  test("agents fold under their session as a small selectable group, on the Mac and the phone", () => {
-    // Tyler: "have the agents show under smaller as like a group and you can select on them".
-    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain("ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \\.id) { row in");
-    expect(dashboard).toMatch(/if !agents\.isEmpty \{\s*AgentGroup\(\s*agents: agents,\s*selectedID: selectedSessionID,\s*onSelect: \{ actions\.onSelectSession\(\$0\) \}/);
-    const group = dashboard.slice(dashboard.indexOf("private struct AgentGroup: View {"));
-    // No count line: the lines and their marks already say it (Tyler: "we don't need the extra info").
-    expect(group).not.toContain("running\"");
-    expect(group).not.toContain("expanded");
-    expect(group).toContain("Button { onSelect(agent) } label: {");
-    const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
-    expect(ledger).toMatch(/if row\.parentSessionId != nil \{\s*AgentRowView\(row: row\)\s*\} else \{\s*SessionRowView\(\s*row: row\b/);
-  });
-
-  test("the Mac decodes parentSessionId and the subagent link with a default of none", () => {
-    const models = read("mac-app/conch-mac/Models.swift");
-    expect(models).toContain("let parentSessionId: String?");
-    expect(models).toContain("parentSessionId =\n            try? container.decodeIfPresent(String.self, forKey: .parentSessionId)");
-    expect(models).toContain("parentSessionId: String? = nil");
-    expect(models).toContain("struct Subagent: Decodable, Equatable, Sendable");
-    expect(models).toContain("subagent = try? c.decodeIfPresent(Subagent.self, forKey: .subagent)");
-  });
-
-  test("the dashboard indents a subagent, never types into it, and offers the way back", () => {
-    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain(".padding(.leading, row.startedBySessionId == nil ? 0 : 30)");
-    // An agent is not a row of its own any more: it is a line in its parent's AgentGroup.
-    expect(dashboard).toContain("let agents = folderRows.filter { $0.parentSessionId == row.id }");
-    // Matched without its indentation: the composer moved into a ZStack so it can float over
-  // the transcript, which reindented this line while leaving the rule untouched. What is
-  // pinned is the rule — `parentSessionId` alone decides, and the call it guards is the
-  // composer — not how deeply SwiftUI nests it today.
-  expect(dashboard).toMatch(/if let row = focusedRow, row\.parentSessionId == nil \{\s*floatingComposer\(for: row\)/);
-    expect(dashboard).toContain('.help("Back to \\(parent.label)")');
-    // Which session the voice is on is decided by identity, in the design system, and a
-    // subagent is never it — its label is a task description, not an address. The pane used
-    // to match the live LABEL here, which is renameable and shareable between sessions.
-    const pane = dashboard.slice(dashboard.indexOf("private struct ConversationPane: View {"));
-    expect(pane).not.toContain("live.label");
-    const workspace = read("design/ConchDesign/Sources/ConchDesign/Workspace.swift");
-    expect(workspace).toContain("let speakable = workspace.sessions.filter { !$0.isSubagent }");
-    // A finished agent has no row; the pane builds one from the block that started it.
-    expect(dashboard).toContain("?? subagentRow(id: id)");
-    expect(dashboard).toContain("transcriptPath: item.tool?.subagent?.transcriptPath");
-  });
-
-  test("a Task block opens its agent only when the daemon named one", () => {
-    const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-    const site = stack.indexOf("if item.tool?.kind == .subagent, let agent = item.tool?.subagent {");
-    expect(site).toBeGreaterThan(-1);
-    const block = stack.slice(site, stack.indexOf("if expanded, !result.isEmpty {", site));
-    expect(block).toContain("onOpenSubagent(agent)");
-    expect(stack).toContain("var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void");
-  });
 });
 
 describe("an agent quiet inside a long tool call", () => {

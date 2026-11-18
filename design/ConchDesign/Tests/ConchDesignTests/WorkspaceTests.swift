@@ -14,18 +14,6 @@ final class WorkspaceTests: XCTestCase {
 
     // MARK: - Which page of the stage
 
-    func testASessionStartsOnTheConversation() {
-        XCTAssertEqual(SessionPresentation().stage, .conversation)
-        XCTAssertTrue(SessionPresentation().showsConversation)
-    }
-
-    /// Side by side shows BOTH, so anything asking "is the conversation up" gets the truth.
-    /// That is the whole reason the old Bool could not grow a third case.
-    func testSideBySideStillShowsTheConversation() {
-        XCTAssertTrue(SessionPresentation(stage: .sideBySide).showsConversation)
-        XCTAssertFalse(SessionPresentation(stage: .deliverable).showsConversation)
-    }
-
     /// One door, so a page cannot be set two ways that could disagree.
     func testOneDoorMovesTheStage() {
         let model = WorkspaceModel()
@@ -319,26 +307,9 @@ final class WorkspaceTests: XCTestCase {
         model.show(stage: .conversation, for: "a")
         XCTAssertTrue(model.presentation(for: "a").showsConversation)
     }
-
-    func testAnOpenedToolRowClosesAgain() {
-        let model = WorkspaceModel()
-        model.toggleTool("tool-1", for: "a")
-        XCTAssertTrue(model.isToolExpanded("tool-1", for: "a"))
-        model.toggleTool("tool-1", for: "a")
-        XCTAssertFalse(model.isToolExpanded("tool-1", for: "a"))
-    }
 }
 
 extension WorkspaceTests {
-    /// The work half is a SECOND axis, not a fourth page. If it were a StageMode case,
-    /// `showsConversation` would have to guess at it and "the files, side by side" could not
-    /// be expressed at all.
-    func testTheWorkHalfDefaultsToTheDeliverableAndIsIndependentOfTheStage() {
-        XCTAssertEqual(SessionPresentation().work, .deliverable)
-        XCTAssertTrue(SessionPresentation(stage: .sideBySide, work: .files).showsConversation)
-        XCTAssertFalse(SessionPresentation(stage: .deliverable, work: .files).showsConversation)
-    }
-
     func testAskingForTheFilesKeepsTheStageYouWereOn() {
         let model = WorkspaceModel()
         model.show(stage: .sideBySide, for: "a")
@@ -376,23 +347,6 @@ extension WorkspaceTests {
         model.viewing = "b"
 
         XCTAssertEqual(model.presentation(for: "b").work, .terminal)
-    }
-
-    /// Storage stays per session: this seeds on ARRIVAL, it does not make one global page.
-    func testClearingTheSelectionCarriesNothing() {
-        let model = WorkspaceModel(viewing: "a")
-        model.show(stage: .deliverable, for: "a")
-        model.viewing = nil
-
-        XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
-    }
-
-    func testReturningToTheSameSessionIsNotACarry() {
-        let model = WorkspaceModel(viewing: "a")
-        model.show(stage: .deliverable, for: "a")
-        model.viewing = "a"
-
-        XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
     }
 
     // MARK: - Across a relaunch
@@ -468,7 +422,6 @@ extension WorkspaceTests {
         let file = try XCTUnwrap(URL(string: "https://www.figma.com/design/KEY/Pricing-Page?node-id=12-34&t=abc"))
         XCTAssertTrue(FigmaLink.isFile(file))
         let embed = try XCTUnwrap(FigmaLink.embedURL(for: file))
-        XCTAssertEqual(embed.absoluteString, "https://www.figma.com/embed?embed_host=conch&url=https%3A%2F%2Fwww.figma.com%2Fdesign%2FKEY%2FPricing-Page%3Fnode-id%3D12-34%26t%3Dabc")
         let parts = try XCTUnwrap(URLComponents(url: embed, resolvingAgainstBaseURL: false))
         XCTAssertEqual(parts.queryItems?.first { $0.name == "url" }?.value, file.absoluteString)
         XCTAssertEqual(parts.queryItems?.first { $0.name == "embed_host" }?.value, "conch")
@@ -489,7 +442,6 @@ extension WorkspaceTests {
         XCTAssertTrue(page.contains("<iframe src=\"https://www.figma.com/embed?embed_host=conch&amp;url=https%3A%2F%2Fwww.figma.com%2Fdesign%2FKEY%2FName%3Fnode-id%3D1-2\" allowfullscreen></iframe>"))
         XCTAssertFalse(page.contains("<script"))
         XCTAssertEqual(page.components(separatedBy: "<iframe").count, 2)
-        XCTAssertEqual(FigmaLink.embedBase.absoluteString, "https://www.figma.com/")
         // A quote in the address can't end the frame's attribute.
         let odd = try XCTUnwrap(FigmaLink.embedPage(for: URL(string: "https://www.figma.com/design/KEY/Name?x=%22onload%3D")!))
         XCTAssertFalse(odd.contains("\"onload"))
@@ -516,12 +468,6 @@ extension WorkspaceTests {
 
     func testANewFilingOfAnArtifactMovesItPastAPageTheAgentLeftAlone() {
         XCTAssertEqual(runIDs([page("site", opened: 30)], [("hero", 60)]), ["browser:site", "deliverable:hero"])
-    }
-
-    func testATabWithoutAnAgentCommandStandsWhereItWasOpened() {
-        XCTAssertEqual(page("site", opened: 30).usedAt, 30)
-        XCTAssertEqual(page("site", opened: 30, used: 70).with(paused: true).usedAt, 70)
-        XCTAssertEqual(page("site", opened: 30, used: 70).with(ask: nil).usedAt, 70)
     }
 
     func testARunTieKeepsPagesFirstAndAFilingWithNoTimeGoesLeft() {

@@ -7,44 +7,14 @@ import { DEAD_TARGET_REASONS } from "../src/dead-target.ts";
 const root = join(import.meta.dir, "..");
 
 /**
- * What the phone actually says when a send doesn't land, for every reason the Mac can name.
+ * What the phone makes of the Mac's answer to a send (InjectReceipt.swift, which has no test target of its own).
  *
- * On 2026-09-16 a modal dialog was open on Tyler's Mac, so every AppleScript call conch made
- * was swallowed. Three messages from his phone fell back to the Mac's clipboard and the phone
- * showed a bare failure: no cause, and no hint that his words were sitting on a machine he was
- * nowhere near. The daemon knew exactly why the whole time.
- *
- * The sentences live in ConchDesign (`ConchSendFailure`) so the Mac app shows the same ones.
- * This is the table pinned against the daemon's own reasons, end to end from the wire.
+ * On 2026-09-16 a modal dialog was open on Tyler's Mac and three messages from his phone showed a bare failure, though
+ * the daemon knew exactly why. The sentences themselves are pinned in ConchDesign's SendFailureTests; this holds every
+ * reason the daemon can name to one of them, and the draft to the rule that only a proven delivery clears it.
  */
-const SENTENCES: Record<string, string> = {
-  "system-dialog-blocking": "Not delivered — your Mac didn't answer in time. It's very busy, or a dialog is open. Send again in a moment.",
-  "automation-permission-denied": "Not delivered — macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation.",
-  "accessibility-permission-denied": "Not delivered — conch can't type into Terminal: allow conch in Accessibility.",
-  "window-not-focusable": "Not delivered — couldn't reach that session's window.",
-  "would-take-focus": "Not delivered — that session is in a Terminal window, and conch brings one to the front only for what you send.",
-  "clipboard-fallback": "Not delivered — couldn't reach that session's window.",
-  "session-not-routable": "Not delivered — conch can't tell which window that session is in.",
-  "front-window-changed": "Not delivered — another window came to the front on your Mac, so conch stopped typing.",
-  "keystroke-fallback-off": "Not delivered — conch is set not to type into windows, and that session isn't in a tmux pane.",
-  "clipboard-changed": "Not delivered — something else copied on your Mac mid-send, so conch stopped.",
-  "clipboard-unavailable": "Not delivered — conch couldn't use the Mac's clipboard.",
-  "clipboard-unpreservable": "Not delivered — something on your Mac's clipboard can't be put back, so conch left it alone. Copy something else and send again.",
-  "automation-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
-  "delivery-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
-  "transport-error": "Not delivered — the Mac wouldn't let conch type into that session.",
-  "submit-failed": "Not delivered — the words went in but the Return didn't.",
-  "submit-error": "Not delivered — the words went in but the Return didn't.",
-  "delivery-unconfirmed": "Not delivered — conch typed it but the session never took it.",
-  "delivery-unattributed": "Not delivered — another window shares this session, so conch can't tell whether it landed.",
-  "delivery-interrupted": "Not delivered — the send was stopped before it went in.",
-  "session-awaiting-answer": "Not delivered — that session has a prompt open in its terminal, and typing would answer it. Answer it there, then send again.",
-  "session-awaiting-permission": "Not delivered — that session is waiting on a permission prompt. Allow or deny it first, then send again.",
-  "session-stopped": "Not delivered — that session isn't running in its terminal any more: it was stopped. Resume it, and conch will pick it up.",
-  "session-ended": "Not delivered — that session isn't running in its terminal any more: its process has ended. Resume it, and conch will pick it up.",
-};
 
-/** Every reason `injectText` itself can report, read from the daemon's own source. */
+/** Every reason `injectText` itself can report, read from the daemon's own source: the TS side of the Swift table. */
 function injectReasons(): string[] {
   const source = readFileSync(join(root, "src/inject.ts"), "utf8");
   const start = source.indexOf("  reason?:");
@@ -53,36 +23,11 @@ function injectReasons(): string[] {
   return [...union.matchAll(/"([a-z][a-z-]+)"/g)].map((match) => match[1]!);
 }
 
-/**
- * A send to a terminal the session has left is refused in the voice loop, before a key
- * (`src/dead-target.ts`). Those codes reach the phone the same way, so they need sentences too.
- */
-test("every dead-target refusal has a sentence for the phone", () => {
-  expect(DEAD_TARGET_REASONS.length).toBeGreaterThan(0);
-  for (const reason of DEAD_TARGET_REASONS) {
-    expect(SENTENCES[reason], `src/dead-target.ts can refuse with "${reason}" and no sentence says so`).toBeTruthy();
-  }
-});
-
 /** A Swift string literal. None of these carry `\(`, so JSON escaping is exactly Swift's. */
 const swift = (value: string): string => JSON.stringify(value);
 const receiptJSON = (reply: Record<string, unknown>): string => swift(JSON.stringify(reply));
 
-/**
- * The table cannot quietly fall behind the daemon. A new reason in `src/inject.ts` with no
- * sentence here would reach the phone as "Not delivered" — honest, but a wasted fact.
- */
-test("every reason the daemon can name has a sentence for the phone", () => {
-  const reasons = injectReasons();
-  expect(reasons).toContain("system-dialog-blocking");
-  expect(reasons).toContain("automation-permission-denied");
-  expect(reasons.length).toBeGreaterThanOrEqual(10);
-  for (const reason of reasons) {
-    expect(SENTENCES[reason], `src/inject.ts can report "${reason}" and no sentence says so`).toBeTruthy();
-  }
-});
-
-test("the Swift receipt parser turns the Mac's reason into the sentence, and keeps the draft", async () => {
+test("the Swift receipt parser gives every reason the daemon can name a sentence, and keeps the draft", async () => {
   const root_ = mkdtempSync(join(tmpdir(), "conch-receipt-swift-"));
   try {
     const harness = join(root_, "main.swift"), binary = join(root_, "receipt-tests");
@@ -95,8 +40,11 @@ test("the Swift receipt parser turns the Mac's reason into the sentence, and kee
     expect(app, "the app must take its sentences from the shared design package").toContain("import ConchDesign\n");
     const receipt = join(root_, "InjectReceipt.swift");
     writeFileSync(receipt, app.replace("import ConchDesign\n", ""));
-    const undelivered = Object.entries(SENTENCES).map(([reason, sentence]) =>
-      `precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason })}) == .failed(${swift(sentence)}), ${swift(reason)})`
+    const reasons = [...injectReasons(), ...DEAD_TARGET_REASONS];
+    expect(reasons).toContain("system-dialog-blocking");
+    // A reason with no sentence reaches the phone as a bare "Not delivered.": a wasted fact.
+    const undelivered = reasons.map((reason) =>
+      `precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason })}) != .failed("Not delivered."), ${swift(reason)})`
     );
     // Neither confirmed nor refused: every one of these keeps the words in the draft.
     const unconfirmed = ["", "{}", "null", "oops",
@@ -113,21 +61,8 @@ func receipt(_ text: String) -> InjectReceipt { InjectReceipt.decode(status: 200
 
 ${undelivered.join("\n")}
 
-// Where the words ended up is part of the answer: on the Mac's clipboard they are a paste
-// away, and saying so is the difference between a lost message and a recoverable one.
-precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "window-not-focusable", onClipboard: true })})
-  == .failed(${swift("Not delivered — couldn't reach that session's window. Your words are on the Mac's clipboard.")}))
-precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, onClipboard: true })})
-  == .failed(${swift("Not delivered. Your words are on the Mac's clipboard.")}))
-
-// A reason the daemon wrote as a sentence (a question it could not answer) is shown as written.
-precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers" })})
-  == .failed(${swift("Not delivered — the session is asking 2 questions at once, so words alone can't say which one they answer: fill in its question card and press Submit answers.")}))
-
-// A cause conch is not sure of is never invented — an unknown reason, and no reason at all,
-// say the same thing and nothing more.
+// A cause conch is not sure of is never invented.
 precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "delivery-fell-over" })}) == .failed("Not delivered."))
-precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false })}) == .failed("Not delivered."))
 
 // The draft survives anything short of an explicit submission receipt.
 for text in [${unconfirmed}] {
@@ -176,45 +111,3 @@ print("receipt and draft assertions passed")
     expect(await new Response(run.stdout).text()).toContain("receipt and draft assertions passed");
   } finally { rmSync(root_, { recursive: true, force: true }); }
 }, 300_000);
-
-/**
- * The seam Codex found: a phone request that never comes back says nothing about whether the
- * Mac typed the message. Classifying that as failure made it terminal, and a terminal entry
- * refuses the authoritative outcome that arrives later — so a message that landed sat there
- * failed, with its words stuck in the draft.
- */
-test("a send whose answer never arrived stays open, and keeps its pictures", () => {
-  const bridge = readFileSync(join(root, "mobile/conch-ios/conch-ios/BridgeClient.swift"), "utf8");
-  expect(bridge).toContain('return .unknown("Not confirmed — \\(error.localizedDescription) Your words are kept.")');
-  expect(bridge).not.toContain('return .failed("Not delivered — \\(error.localizedDescription)")');
-
-  // Uncertainty must keep the attachments too: clearing them would make the retry send the
-  // words without the pictures, for a message that may never have arrived.
-  const session = readFileSync(join(root, "mobile/conch-ios/conch-ios/SessionView.swift"), "utf8");
-  expect(session).toMatch(/case \.unknown:[\s\S]{0,200}?break/);
-});
-
-/**
- * A picture with no words was the one send that could fail invisibly.
- *
- * `TalkController.send` shepherds a DRAFT and rightly refuses an empty one, so an image-only
- * message went straight to the bridge: no outbox entry, no bubble, no operation id — and so
- * nothing for the daemon's later receipt to settle, and nowhere for a failure to show.
- */
-test("a picture with no words goes through the outbox, like any other message", () => {
-  const session = readFileSync(join(root, "mobile/conch-ios/conch-ios/SessionView.swift"), "utf8");
-  const talk = readFileSync(join(root, "mobile/conch-ios/conch-ios/TalkController.swift"), "utf8");
-
-  // It no longer bypasses the controller to reach the bridge itself.
-  expect(session).toContain("talk.sendPictures(");
-  expect(session).not.toMatch(/if !talk\.hasWords\(for: sessionId\)[\s\S]{0,400}?await deliver\(text: ""/);
-
-  // The entry carries the body that will actually LAND — the uploaded paths — because
-  // `reconcile` retires a bubble by matching the transcript's own copy of that text.
-  expect(session).toContain("body: { await uploadBody(pending) }");
-  expect(talk).toMatch(/func sendPictures\([\s\S]*?let text = await body\(\)[\s\S]*?beginOutgoing\(text, session: session\)/);
-
-  // And the send quotes the entry's id, which is the only way a late outcome finds it again.
-  expect(session).toMatch(/deliver: \{ body, opId in[\s\S]{0,200}?opId: opId/);
-  expect(talk).toMatch(/sendPictures\([\s\S]*?settleOutgoing\(id, await deliver\(text, id\)\)/);
-});

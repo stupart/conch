@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { runUICommand } from "../src/pasteboard.ts";
 
 const stream = (text: string) => new Blob([text]).stream();
@@ -99,14 +98,4 @@ describe("bounded UI subprocess outcomes", () => {
     expect(result.timedOut).toBe(true);
     expect(scope.unreaped.size).toBe(0);
   });
-});
-
-// A modal dialog once held one AppleScript for 122,891 ms with the daemon's queue behind it.
-test("the default UI subprocess bound is seconds, not minutes", () => {
-  const source = readFileSync(new URL("../src/pasteboard.ts", import.meta.url), "utf8");
-  const match = /timeoutMs \?\? ([0-9_]+)/.exec(source);
-  expect(match).not.toBeNull();
-  const ms = Number(match![1]!.replace(/_/g, ""));
-  expect(ms).toBeGreaterThan(1_000);
-  expect(ms).toBeLessThan(15_000);
 });

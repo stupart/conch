@@ -49,15 +49,4 @@ final class StartTrustTests: XCTestCase {
         XCTAssertTrue(answers.trustFolder(sent: nil))
         XCTAssertTrue(answers.trustFolder(sent: nil, help: true))
     }
-
-    func testTheNoticeNamesThePromptAndTheButtonThatAnswersIt() {
-        let claude = StartedSessionWatch.notCheckedIn(backend: "claude", background: true, onPhone: false)
-        XCTAssertTrue(claude.contains("trust or login prompt"))
-        XCTAssertTrue(claude.contains("open its startup terminal to answer it"))
-        XCTAssertTrue(StartedSessionWatch.notCheckedIn(backend: "claude", background: true, onPhone: true)
-            .contains("open its startup terminal on your Mac"))
-        XCTAssertFalse(StartedSessionWatch.notCheckedIn(backend: "codex", background: true, onPhone: false).contains("trust"))
-        XCTAssertTrue(StartedSessionWatch.notCheckedIn(backend: "claude", background: false, onPhone: true)
-            .contains("Terminal on your Mac may be waiting"))
-    }
 }

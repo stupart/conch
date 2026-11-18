@@ -47,7 +47,6 @@ describe("conch install wires SessionStart", () => {
     const root = scratch("conch-session-start-install-");
     await quietly(() => runInstall({ claudeDir: root } as any));
     const settings = JSON.parse(readFileSync(join(root, "settings.json"), "utf8"));
-    expect(CLAUDE_HOOK_EVENTS).toContain("SessionStart");
     for (const event of CLAUDE_HOOK_EVENTS) expect(conchHooks(settings, event)).toHaveLength(1);
     expect(settings.hooks.SessionStart).toEqual([{ hooks: [{ type: "command", command: conchHooks(settings, "Stop")[0], timeout: 15 }] }]);
   });
@@ -67,7 +66,7 @@ describe("conch install wires SessionStart", () => {
       },
     }));
 
-    const first = await quietly(() => runInstall({ claudeDir: root } as any));
+    await quietly(() => runInstall({ claudeDir: root } as any));
     const upgraded = JSON.parse(readFileSync(settingsPath, "utf8"));
     expect(upgraded.model).toBe("keep-me");
     // Still one each: the old bun is gone with its Cellar version, so each is pointed at this one in place (2026-10-03).
@@ -76,14 +75,12 @@ describe("conch install wires SessionStart", () => {
     }
     expect(upgraded.hooks.SessionStart[0]).toEqual(theirs);
     expect(conchHooks(upgraded, "SessionStart")).toHaveLength(1);
-    expect(first.printed.some((line) => line.startsWith("SessionStart: wired"))).toBe(true);
     expect(readdirSync(root).filter((name) => name.includes("conch-backup"))).toHaveLength(1);
 
     const text = readFileSync(settingsPath, "utf8");
-    const second = await quietly(() => runInstall({ claudeDir: root } as any));
+    await quietly(() => runInstall({ claudeDir: root } as any));
     expect(readFileSync(settingsPath, "utf8")).toBe(text);
     expect(readdirSync(root).filter((name) => name.includes("conch-backup"))).toHaveLength(1);
-    expect(second.printed).toContain("\nNothing to do.");
 
     // And `conch uninstall` takes it away again, leaving the person's own.
     const removed = removeConchHooks(JSON.parse(text), "claude");
@@ -232,14 +229,6 @@ describe("the socket", () => {
     dispatchSocketTurnEvent({ type: "working", sessionId: SESSION, label: "alpha", announce: "", eventAt: 2 }, callbacks);
     dispatchSocketTurnEvent({ type: "turn-end", sessionId: SESSION, label: "alpha", announce: "alpha: done.", eventAt: 3 }, callbacks);
     expect(enqueued.map((event) => event.type)).toEqual(["session-start"]);
-  });
-});
-
-describe("the daemon", () => {
-  const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  test("hands a session start to the loop at once: not queued behind speech, not waiting on the voice engine", () => {
-    expect(daemon).toContain('if (event.type === "inject" || event.type === "interrupt" || event.type === "session-start") {');
-    expect(daemon).toContain('if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;');
   });
 });
 

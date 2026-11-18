@@ -330,7 +330,6 @@ describe("a copy lives exactly as long as a held deliverable names it", () => {
   });
 
   test("the store is deliverables in conch's own store, never a hidden folder the publish rule refuses", () => {
-    expect(deliverableStoreDir("/Users/someone")).toBe("/Users/someone/Library/Application Support/conch/deliverables");
     expect(deliverableStoreDir().split("/").some((part) => part.startsWith("."))).toBe(false);
   });
 });

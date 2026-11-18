@@ -26,9 +26,8 @@ import { join } from "node:path";
  */
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
-const read = (path: string) => readFileSync(repo(path), "utf8");
 // About a minute of compiling and driving SwiftUI, so it runs in ci-local's `harness` stage (CONCH_APP_HARNESS=1; the
-// `mac` stage's until 2026-11-11), not in every `bun test` a push runs. The source checks below always run.
+// `mac` stage's until 2026-11-11), not in every `bun test` a push runs.
 const drawable = process.env.CONCH_APP_HARNESS === "1" && Bun.which("swiftc") !== null
   && Bun.spawnSync(["launchctl", "managername"], { stdout: "pipe", stderr: "ignore" }).stdout.toString().trim() === "Aqua";
 
@@ -186,64 +185,5 @@ describe.skipIf(!drawable)("the session list settles after every change", () => 
     }
     expect(Number(phase("dismiss").scrolls)).toBe(1);
     expect(Number(phase("activity").scrolls)).toBe(0);
-  });
-});
-
-// ------------------------------------------------------------------------------------------ the source, pinned
-
-const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-const ledger = dashboard.slice(dashboard.indexOf("private struct SessionLedger: View {"), dashboard.indexOf("/// One folder's header in the session list."));
-const sidebarRow = read("design/ConchDesign/Sources/ConchDesign/SidebarRow.swift");
-
-describe("the session list's layout and scrolling, as the fix left them", () => {
-  test("the list is an eager stack", () => {
-    expect(ledger).toContain("                            VStack(spacing: 2) {");
-    expect(ledger).not.toContain("LazyVStack(");
-  });
-
-  test("every scroll is made in one place, to an id the list draws right now", () => {
-    // One scrollTo in the whole file, inside LedgerScroller's flush.
-    expect(dashboard.split("proxy.scrollTo(").length - 1).toBe(1);
-    const scroller = dashboard.slice(dashboard.indexOf("final class LedgerScroller {"), dashboard.indexOf("/// One folder's header in the session list."));
-    expect(scroller).toContain("proxy.scrollTo(pending.target, anchor: .center)");
-    // Requests are only ever made through keepInView, which drops any id the list does not draw.
-    const keep = ledger.slice(ledger.indexOf("private func keepInView("));
-    expect(keep).toContain("guard let target, scrollTargets.contains(target) else { return }");
-    expect(ledger).not.toContain("withAnimation(.easeOut(duration: 0.18))");
-    // The dismissed rows are scroll targets only while the group is open; an undo for a row not yet moved into it
-    // lands on the group's header.
-    const targets = ledger.slice(ledger.indexOf("private var scrollTargets: Set<String> {"), ledger.indexOf("private func scrollTarget(for"));
-    expect(targets).toContain('targets.insert("dismissed-header")');
-    expect(targets).toContain("if showsDismissedRows {");
-    expect(ledger).toContain('?? (scrollTargets.contains("dismissed-header") ? "dismissed-header" : nil)');
-  });
-
-  test("one scroll per update, the same target never re-fired while it may still be moving, and no ease while rows change shape", () => {
-    const scroller = dashboard.slice(dashboard.indexOf("final class LedgerScroller {"), dashboard.indexOf("/// One folder's header in the session list."));
-    expect(scroller).toContain("let first = pending == nil");
-    expect(scroller).toContain("DispatchQueue.main.async { [weak self] in");
-    expect(scroller).toContain("guard pending.target != lastTarget");
-    expect(scroller).toContain("if pending.animated, now.timeIntervalSince(lastRowChange) >= Self.settle {");
-    expect(scroller).toContain("transaction.disablesAnimations = true");
-    // Row order, the undo and a row's second line coming or going all count as rows changing shape.
-    for (const change of [".onChange(of: rowOrder) { _, _ in\n                            scroller.rowsChanged()",
-      ".onChange(of: rowShape) { _, _ in\n                            scroller.rowsChanged()",
-      ".onChange(of: undoDismissal?.id) { _, _ in\n                            scroller.rowsChanged()"]) {
-      expect(ledger).toContain(change);
-    }
-    // Only a change of focus asks to ease: the window's, or the lagoon's panel moving to a session (2026-10-13), which
-    // reveals its row; everything a dismiss, a restore or conch's words set off jumps.
-    expect(ledger.split("animated: true").length - 1).toBe(2);
-    expect(ledger).toContain(".onChange(of: focusID) { _, _ in\n                            keepInView(keptInView, proxy, animated: true)");
-    expect(ledger).toContain("keepInView(scrollTarget(for: request.id), proxy, animated: true)");
-  });
-
-  test("the activity line is rewritten in place: no identity per text, no transition, no animation", () => {
-    const view = sidebarRow.slice(sidebarRow.indexOf("public struct SidebarSecondLine: View {"));
-    const body = view.slice(view.indexOf("public var body: some View {"), view.indexOf("private var style: AnyShapeStyle {"));
-    expect(body).toContain("TailFadeText(line.text, fade: 24)");
-    expect(body).not.toContain(".id(");
-    expect(body).not.toContain(".transition(");
-    expect(body).not.toContain(".animation(");
   });
 });

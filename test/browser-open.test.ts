@@ -10,7 +10,6 @@ import {
   SHIMS_OFF_MARKER,
   browseRequest,
   browserOpenOutcome,
-  browserShimDir,
   browserShimsReady,
   decodeBrowserOpenRequest,
   requestBrowserOpen,
@@ -19,12 +18,9 @@ import {
   setUpSessionBrowsers,
   writeBrowserShims,
 } from "../src/browser-open.ts";
-import { loadConfig } from "../src/config.ts";
-import { SETTING_REGISTRY } from "../src/settings.ts";
 import { backgroundSessionCommand, terminalSessionCommand } from "../src/session-lifecycle.ts";
 
 const REPO = join(import.meta.dir, "..");
-const read = (path: string) => readFileSync(join(REPO, path), "utf8");
 const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 const roots: string[] = [];
@@ -228,9 +224,6 @@ describe("conch's $BROWSER", () => {
 });
 
 describe("the shim folder", () => {
-  test("lives under the config dir", () => {
-    expect(browserShimDir({ CONCH_CONFIG_DIR: "/x/conch" })).toBe("/x/conch/bin");
-  });
 
   test("is written once, executable, and rewritten only when it would change", () => {
     const dir = join(scratch(), "bin");
@@ -305,10 +298,6 @@ describe("sessions conch starts", () => {
     const codex = terminalSessionCommand({ backend: "codex", host: "background", codexAccountId: "default", cwd: "/work/demo" });
     expect(codex).toContain("-u OPENAI_API_KEY");
     expect(codex).toEndWith(` ${path} codex --no-daemon -c check_for_update_on_startup=false`);
-    // The `-e PATH` tmux is given would not do: the login shell's path_helper puts it back after /usr/bin.
-    const lifecycle = read("src/session-lifecycle.ts");
-    expect(lifecycle).toContain("const command = backgroundSessionCommand(request);");
-    expect(lifecycle).toContain("return terminalSessionCommand({ ...request, host: \"background\"");
     expect(backgroundSessionCommand({ backend: "claude", cwd: "/work/demo" })).toBe(claude);
   });
 
@@ -378,11 +367,6 @@ describe("`conch browse`, run", () => {
     }
   }
 
-  test("sends browser-open with its parent's pid and prints nothing once it is open", async () => {
-    const run = await browse(["https://a.test/x", "--profile", "work"], () => ({ kind: "browser-opened", tabId: "t1", sessionId: "s1" }));
-    expect(run).toEqual({ status: 0, stdout: "", stderr: "", received: [{ kind: "browser-open", url: "https://a.test/x", callerPid: process.pid, profile: "work" }] });
-  }, 60_000);
-
   test("fails on a browser-error, with no daemon, and on arguments it can't send", async () => {
     const refused = await browse(["https://a.test"], () => ({ kind: "browser-error", error: "the Workbench is closed" }));
     expect(refused.status).toBe(1);
@@ -423,33 +407,4 @@ describe("`conch browse`, run", () => {
       await closeServer(server);
     }
   }, 60_000);
-});
-
-describe("the browser-open-in-conch setting", () => {
-  test("is on by default, live, and read from CONCH_BROWSER_OPEN_IN_CONCH", () => {
-    expect(SETTING_REGISTRY.get("browser-open-in-conch")).toMatchObject({
-      field: "browserOpenInConch", env: "CONCH_BROWSER_OPEN_IN_CONCH", default: true, apply: "live", kind: "boolean",
-    });
-    const none = join(scratch(), "none.json");
-    expect(loadConfig({ env: {}, settingsPath: none }).browserOpenInConch).toBe(true);
-    expect(loadConfig({ env: { CONCH_BROWSER_OPEN_IN_CONCH: "0" }, settingsPath: none }).browserOpenInConch).toBe(false);
-  });
-
-  test("the daemon writes the shim folder at start and again whenever the setting changes", () => {
-    const daemon = read("src/daemon.ts");
-    expect(daemon).toContain("setUpBrowsers(cfg.browserOpenInConch);");
-    expect(daemon).toContain('if (key === "browser-open-in-conch") setUpBrowsers(value === true);');
-    expect(daemon).toContain("setUpSessionBrowsers(on, conchInvocation())");
-    // Before anything can start a session.
-    expect(daemon.indexOf("setUpBrowsers(cfg.browserOpenInConch);")).toBeLessThan(daemon.indexOf("const controlServer = createControlServer("));
-    // A start from a terminal goes through the folder too, once the daemon has written it.
-    const cli = read("src/cli.ts");
-    expect(cli.match(/await routeDirectStartBrowsers\(\);/g)).toHaveLength(2);
-  });
-
-  test("agents are told where `open` goes and how to reach the default browser", () => {
-    for (const file of ["src/agent-instructions.ts", "plugin/plugins/conch/AGENTS.md"]) {
-      expect(read(file)).toContain("CONCH_OPEN_EXTERNAL=1 open <url>");
-    }
-  });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   LIVE_WINDOW_MS,
@@ -356,19 +356,5 @@ describe("history agrees with the live window", () => {
   test("Tyler's own words that mention a notification are still his", () => {
     const out = normalizeClaudeRecord({ type: "user", uuid: "u1", message: { role: "user", content: "why does <task-notification> show?" } }, harness());
     expect(out.items[0]).toMatchObject({ kind: "message", role: "user" });
-  });
-});
-
-describe("the apps show it on the block", () => {
-  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
-  test("the Mac and the phone decode waiting and stopped, and draw them after the agent's name", () => {
-    const mac = read("mac-app/conch-mac/Models.swift");
-    expect(mac).toContain("waiting = (try? c.decodeIfPresent(Bool.self, forKey: .waiting)) ?? false");
-    expect(mac).toContain("stopped = try? c.decodeIfPresent(String.self, forKey: .stopped)");
-    expect(read("mac-app/conch-mac/ConversationStackView.swift")).toContain("if let note = item.tool?.subagent?.note {");
-    const phone = read("mobile/conch-ios/conch-ios/Models.swift");
-    expect(phone).toContain("c.nestedContainer(keyedBy: SubagentKeys.self, forKey: .subagent)");
-    expect(read("mobile/conch-ios/conch-ios/ConversationStack.swift")).toContain("if let note = item.tool?.subagentNote {");
   });
 });

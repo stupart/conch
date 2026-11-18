@@ -438,7 +438,7 @@ struct WorkspaceFilesView: View {
                 // `raised`, never `bg`. Nothing inside the stage repaints the WINDOW ground:
                 // the pane is a panel sitting on that ground, and painting it again in here
                 // punches a hole in the panel — the "right shape, wrong colour" §3 fixed once
-                // already, and which `mac-phase1-source` pins for this whole file.
+                // already.
                 //
                 // In light mode `raised` and `surface` are the same white, so the rail is told
                 // apart by the hairline beside it rather than by its fill — exactly how the

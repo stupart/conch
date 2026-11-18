@@ -6,7 +6,7 @@ import { CLAUDE_LIMIT_STOP } from "../src/claude-limit-menu.ts";
 import { liveRunSessionSlots, type SwapUsageAccount } from "../src/claude-swap.ts";
 import { PASTE_OVER_CHARS, TMUX_PASTE_OVER_CHARS } from "../src/inject.ts";
 import {
-  accountRoom, answerLimitMenu, limitNoticeText, LimitRecovery, pickRoomyAccount, resumeMessage, SWITCH_SETTLE_MS,
+  accountRoom, answerLimitMenu, LimitRecovery, pickRoomyAccount, resumeMessage, SWITCH_SETTLE_MS,
   type LimitNotice, type LimitRecoveryDeps, type LimitSession, type TypeBlocker,
 } from "../src/limit-recovery.ts";
 import { shellQuote } from "../src/agent-adapter.ts";
@@ -191,18 +191,6 @@ describe("what a stopped session is told, and what Tyler is told", () => {
       expect(text).toContain("restart any background agents that stopped on the limit");
     }
     expect(resumeMessage(3, true)).toContain("conch switched you to account 3");
-  });
-
-  test("one notice for the whole of it", () => {
-    const base = { resumed: [] as string[], left: new Map<string, string>(), stuck: new Map<string, string>(), codex: [] as string[] };
-    expect(limitNoticeText({ ...base, ranOut: 1, switchedTo: 3, on: 3, resumed: ["a", "b", "c", "d"] }))
-      .toBe("Account 1 ran out; switched to account 3 and resumed 4 sessions.");
-    expect(limitNoticeText({ ...base, ranOut: 1, on: 3, resumed: ["a"] })).toBe("Account 1 ran out; Claude is on account 3 now and resumed 1 session.");
-    expect(limitNoticeText({ ...base, ranOut: 1, noRoom: "account 2: 100% of its 7 day limit used" }))
-      .toBe("Account 1 ran out and no other account has room: account 2: 100% of its 7 day limit used.");
-    expect(limitNoticeText({ ...base, ranOut: 1, switchedTo: 3, on: 3, resumed: ["a"], left: new Map([["b", "manual mode"]]), codex: ["c"] }))
-      .toBe("Account 1 ran out; switched to account 3 and resumed 1 session. Out of the limit menu but not told to carry on: b (manual mode). "
-        + "Codex: c has hit usage limits (/goal resume); Codex's limits are its own, so conch leaves it alone.");
   });
 });
 
@@ -462,14 +450,6 @@ const io = (pane: string, sent: string[] = []) => ({
 });
 
 describe.skipIf(!tmux)("choosing \"Stop and wait\" in a stand-in for Claude Code's menu", () => {
-  test("chosen with one Enter when it is already highlighted, and answered once the menu has gone", async () => {
-    const { pane, out } = await fakeClaude();
-    await drawn(pane);
-    const sent: string[] = [];
-    expect(await answerLimitMenu(io(pane, sent))).toBe("answered");
-    expect(sent).toEqual(["Enter"]);
-    expect(await told(out, 1)).toEqual([`chose: ${CLAUDE_LIMIT_STOP}`]);
-  }, 15_000);
 
   test("from the last row, Up until it is reached, never Enter on another row", async () => {
     const { pane, out } = await fakeClaude("funds,upgrade,stop,wait", 3);

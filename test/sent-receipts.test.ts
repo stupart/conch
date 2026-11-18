@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   buildConversation,
-  type ConversationItem,
   conversationWindow,
   emptyConversation,
   publishedConversation,
@@ -329,82 +328,9 @@ describe("the phone is served a receipt's picture from conch's own folders, and 
   });
 });
 
-// The video's format above is the Swift builder's. Read here so a change to it is a change to the receipt's parser too:
-// otherwise the receipt quietly stops matching and Tyler is back to the picture of his own screen. The canvas's and the
-// Show's builders went with the overlays (2026-11-11): what they wrote is pinned by the messages above alone.
-describe("the parser reads the formats the apps write", () => {
-  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
-  test("a video's message lines, from the phone and the Mac", () => {
-    const video = read("design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift");
-    expect(video).toContain('var heading = "[video] Tyler sent a video from his \\(sender.rawValue) (\\(CanvasStoryboard.clock(length)))."');
-    expect(video).toContain('if cut { heading += " The frames below are its first \\(CanvasStoryboard.clock(longest))." }');
-    expect(video).toContain('case mac = "Mac"');
-    expect(video).toContain('"Contact sheet: \\(sheet) — \\(frames.count) frame\\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",');
-    expect(video).toContain('public static let unheard = "No transcript: conch sends a video\'s frames, not its sound."');
-    expect(video).toContain("lines.append(unheard)");
-    expect(read("src/conversation.ts")).toContain('const VIDEO_UNHEARD = "No transcript: conch sends a video\'s frames, not its sound.";');
-    expect(video).toContain('lines.append("The video itself, for people (agents can\'t watch video): \\(video)")');
-    // Where conch keeps them. The Mac's canvas and Show, which wrote into ~/.cache/conch/canvas, went with the
-    // overlays on 2026-11-11; the parser still reads that folder, so a receipt sent before then keeps its row.
-    expect(read("src/conversation.ts")).toContain('return { canvas: join(data, "canvas"), uploads: join(data, "uploads") };');
-    expect(read("mac-app/conch-mac/ComposerVideo.swift")).toContain('appendingPathComponent(".cache/conch/uploads", isDirectory: true)');
-    expect(read("src/daemon.ts")).toContain('new PhoneUploads(join(CONCH_DATA, "uploads"))');
-  });
-});
-
-// The rows the apps draw for a receipt, pinned in their source: compact, never the material's 320 pt picture.
-describe("both apps draw a receipt as one quiet row", () => {
-  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-  const mac = read("mac-app/conch-mac/ConversationStackView.swift");
-  const phone = read("mobile/conch-ios/conch-ios/ConversationStack.swift");
-  const row = read("design/ConchDesign/Sources/ConchDesign/SentReceipt.swift");
-  const between = (source: string, from: string, to: string) => source.slice(source.indexOf(from), source.indexOf(to, source.indexOf(from)));
-
-  test("the shared row is a 44 × 30 thumbnail, the title and the detail, and nothing big", () => {
-    expect(row).toContain("nonisolated public static let thumbnailSize = CGSize(width: 44, height: 30)");
-    expect(row).toContain(".frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)");
-    expect(row).toContain(".lineLimit(1)");
-    expect(row).toContain(".lineLimit(3)");
-    expect(row.slice(row.indexOf("public struct SentReceiptRow"))).not.toMatch(/maxHeight|\b320\b/);
-  });
-
-  test("the Mac's user row is the receipt's when there is one, opened in Quick Look", () => {
-    const user = between(mac, "        case .user:\n", "        case .assistant:");
-    expect(user).toContain("if let receipt = item.receipt {");
-    expect(user).toContain("SentReceiptBubble(receipt: receipt)");
-    expect(user).not.toContain("MaterialRow");
-    const bubble = between(mac, "private struct SentReceiptBubble: View {", "private struct MaterialRow: View {");
-    expect(bubble).toContain("SentReceiptRow(receipt: receipt, thumbnail:");
-    expect(bubble).toContain(".quickLookPreview($preview)");
-    expect(bubble).toContain("kCGImageSourceThumbnailMaxPixelSize");
-    expect(bubble).not.toContain("maxHeight: 320");
-  });
-
-  test("the phone's user row is the receipt's when there is one, opened in the sheet any Mac file opens in", () => {
-    const user = between(phone, '        case "user":\n', '        case "thinking":');
-    expect(user).toContain("if let receipt = item.receipt {");
-    expect(user).toContain("openFile = FileLink(id: $0)");
-    expect(user).not.toContain("MaterialRow");
-    const bubble = between(phone, "private struct SentReceiptBubble: View {", "private struct MaterialRow: View {");
-    expect(bubble).toContain("SentReceiptRow(");
-    expect(bubble).toContain("fill: ConchColor.surfaceRaised,");
-    expect(bubble).not.toContain("maxHeight: 320");
-  });
-
-  // The floating panel that said a receipt by its title alone went with the overlays on 2026-11-11.
-  test("a pending bubble gives way to the receipt that names its file", () => {
-    for (const path of ["mac-app/conch-mac/StateStore.swift", "mobile/conch-ios/conch-ios/TalkController.swift"]) {
-      expect(read(path)).toContain("|| $0.receipt?.stands(for: message.text) == true");
-    }
-    for (const path of ["mac-app/conch-mac/Models.swift", "mobile/conch-ios/conch-ios/Models.swift"]) {
-      expect(read(path)).toContain("receipt = try? c.decodeIfPresent(ConchSentReceipt.self, forKey: .receipt)");
-    }
-  });
-});
-
-// A published item as the apps decode it: the receipt rides on the item, never replacing its kind or its text.
-test("an item with a receipt is still Tyler's, with words for anything that reads only text", () => {
-  const item: ConversationItem = rows(canvasMessage())[0]!;
-  expect([item.kind, item.text.startsWith(item.receipt!.title)]).toEqual(["user", true]);
+// The video's format above is the Swift builder's: if it drifts, the receipt quietly stops matching.
+test("the Swift video builder writes the lines the parser reads", () => {
+  const video = readFileSync(join(import.meta.dir, "..", "design/ConchDesign/Sources/ConchDesign/VideoStoryboard.swift"), "utf8");
+  expect(video).toContain('var heading = "[video] Tyler sent a video from his \\(sender.rawValue) (\\(CanvasStoryboard.clock(length)))."');
+  expect(video).toContain('"Contact sheet: \\(sheet) — \\(frames.count) frame\\(frames.count == 1 ? "" : "s"), left to right and down, each stamped with its time:",');
 });

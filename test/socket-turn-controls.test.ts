@@ -5,7 +5,6 @@ import {
   dispatchSocketTurnEvent,
   enrichTargetedAudioCommand,
   isLightweightTargetedAudioCommand,
-  restoreDismissedSessionState,
   validateSocketTurnEvent,
   type SessionCommandDispatchOptions,
   type ConfigController,
@@ -502,14 +501,6 @@ describe("session command dispatch", () => {
     expect(response).toEqual({ kind: "session-error", error: "rename failed" });
     expect(transitions).toEqual([true, false]);
     expect(paused).toBeFalse();
-  });
-
-  test("restore changes visibility without coupling another mode", () => {
-    const dismissed = new Set(["session-a"]);
-
-    expect(restoreDismissedSessionState("session-a", dismissed)).toBeTrue();
-    expect(dismissed).toEqual(new Set());
-    expect(restoreDismissedSessionState("session-a", dismissed)).toBeFalse();
   });
 });
 

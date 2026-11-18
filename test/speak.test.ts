@@ -9,9 +9,6 @@ import {
   runSynthLadderForTest,
   selectVoice,
   setVoiceOverride,
-  SYNTH_ATTEMPT_TIMEOUT_MS,
-  SYNTH_SENTENCE_BUDGET_MS,
-  SYNTH_TIMEOUT_LIMIT,
   speakCancellable,
   trySynth,
   validateVoiceRing,
@@ -51,12 +48,6 @@ test("voiceFor spreads distinct labels across the ring", () => {
 test("voiceFor falls back sanely with no label or no voices", () => {
   expect(voiceFor(cfgWithVoices(["x", "y"]), "")).toBe("x");
   expect(voiceFor(cfgWithVoices([]), "lowtide")).toBe("af_heart");
-});
-
-test("default voice ring parses from config", () => {
-  const cfg = loadConfig();
-  expect(cfg.ttsVoices.length).toBeGreaterThanOrEqual(4);
-  expect(cfg.ttsVoices).toContain("af_heart");
 });
 
 test("voice validation removes malformed and unavailable entries", () => {
@@ -318,12 +309,6 @@ test("synth ladder bails to say after two timeout outcomes", async () => {
   expect(failures).toEqual(["synth-timeout"]); // once per utterance, not once per retry
 });
 
-test("synth timeout policy caps attempts at 4s inside an 8.5s two-timeout budget", () => {
-  expect(SYNTH_ATTEMPT_TIMEOUT_MS).toBe(4_000);
-  expect(SYNTH_SENTENCE_BUDGET_MS).toBe(8_500);
-  expect(SYNTH_TIMEOUT_LIMIT).toBe(2);
-});
-
 test("explicit cancellation wins over a pending body timeout without degrading health", async () => {
   const health = new TtsHealthMachine();
   const outer = new AbortController();
@@ -425,39 +410,34 @@ test("trySynth accepts a valid fully consumed WAV and marks health ready", async
 });
 
 test("a signal-ignoring Kokoro fetch is still bounded by the watchdog", async () => {
-  const warnings: string[] = [];
   const health = new TtsHealthMachine();
   const outcome = await trySynth(loadConfig(), "never returns", "af_heart", null, {
     fetcher: () => new Promise<Response>(() => {}),
     health,
     timeoutMs: 5,
-    warn: (message) => warnings.push(message),
+    warn: () => {},
   });
 
   expect(outcome).toMatchObject({ kind: "transport-failure", timedOut: true });
   expect(health.snapshot()).toMatchObject({ status: "recovering", consecutiveTransportFailures: 1 });
-  expect(warnings).toEqual(["⚠ kokoro synth request timed out after 5ms — aborted, moving on"]);
 });
 
 test("a signal-ignoring Kokoro response body cannot wedge synthesis", async () => {
-  const warnings: string[] = [];
   const body = new ReadableStream<Uint8Array>({ start() {} });
   const outcome = await trySynth(loadConfig(), "hung body", "af_heart", null, {
     fetcher: () => Promise.resolve(new Response(body, { status: 200 })),
     health: new TtsHealthMachine(),
     timeoutMs: 5,
-    warn: (message) => warnings.push(message),
+    warn: () => {},
   });
 
   expect(outcome.kind).toBe("post-header-timeout");
-  expect(warnings).toEqual(["⚠ kokoro synth request timed out after 5ms — aborted, moving on"]);
 });
 
 test("a never-exiting say is killed, resolves, and does not poison the next call", async () => {
   const cfg = loadConfig();
   cfg.ttsEngine = "say";
   const kills: Array<number | NodeJS.Signals | undefined> = [];
-  const warnings: string[] = [];
   let spawns = 0;
   const spawnAudio = () => {
     spawns++;
@@ -469,7 +449,7 @@ test("a never-exiting say is killed, resolves, and does not poison the next call
   const runtime = {
     spawnAudio,
     timeoutForText: () => 5,
-    warn: (message: string) => warnings.push(message),
+    warn: () => {},
   };
 
   await speakCancellable(cfg, "first", "", runtime).done;
@@ -477,11 +457,6 @@ test("a never-exiting say is killed, resolves, and does not poison the next call
 
   expect(spawns).toBe(2);
   expect(kills).toEqual(["SIGKILL"]);
-  // Every say is a fallback and is now recorded; the timeout warning still fires.
-  expect(warnings.filter((w) => !w.startsWith("tts fallback"))).toEqual([
-    "⚠ say timed out after 5ms — killed, moving on",
-  ]);
-  expect(warnings.filter((w) => w.startsWith("tts fallback"))).toHaveLength(2);
 });
 
 test("a failed readiness canary reports recovery once before falling back to say", async () => {

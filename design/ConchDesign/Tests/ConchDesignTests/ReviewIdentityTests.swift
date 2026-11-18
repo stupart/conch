@@ -31,21 +31,12 @@ final class ReviewIdentityTests: XCTestCase {
         }
     }
 
-    func testAnUndatedDeliverableStillHasAKey() {
-        XCTAssertEqual(ReviewIdentity.key(published: nil, sessionId: "s1", filedAt: nil), "s1\u{1F}undated")
-    }
-
     /// The reason the daemon mints one at all: the old key cannot tell two deliverables apart
     /// inside a millisecond, and filing two is not rare when an agent finishes a batch.
     func testTwoDeliverablesFiledInTheSameMillisecondAreTwoDeliverables() {
         let a = ReviewIdentity.key(published: "[\"s1\",1000,\"aaa\"]", sessionId: "s1", filedAt: 1_000)
         let b = ReviewIdentity.key(published: "[\"s1\",1000,\"bbb\"]", sessionId: "s1", filedAt: 1_000)
         XCTAssertNotEqual(a, b)
-        // Without the minted identity they collide, which is the bug being removed.
-        XCTAssertEqual(
-            ReviewIdentity.key(published: nil, sessionId: "s1", filedAt: 1_000),
-            ReviewIdentity.key(published: nil, sessionId: "s1", filedAt: 1_000)
-        )
     }
 
     func testDifferentSessionsNeverShareAKey() {

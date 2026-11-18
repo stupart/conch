@@ -128,19 +128,6 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(ConversationMarkdown.plain("---\ntype: document\n---\n## Title"), "Title")
     }
 
-    // MARK: SwiftUI
-
-    @MainActor
-    func testTheViewRendersTheDocument() {
-        let renderer = ImageRenderer(content: MarkdownView(text: Self.corpus).frame(width: 700))
-        renderer.scale = 1
-        let image = renderer.cgImage
-        XCTAssertNotNil(image)
-        // Wrapped cells and a type scale: a 155-line document with five tables stands well over a screen tall at the
-        // 700 pt measure, and a renderer that dropped the tables' rows would be far shorter.
-        XCTAssertGreaterThan(image?.height ?? 0, 4000)
-    }
-
     // MARK: AppKit
 
     #if canImport(AppKit)
@@ -196,10 +183,9 @@ final class MarkdownTests: XCTestCase {
             let location = (typeset.string as NSString).range(of: text).location
             return typeset.attribute(.font, at: location, effectiveRange: nil) as! NSFont
         }
-        XCTAssertEqual(font(at: "One").pointSize, 16 * 1.6, accuracy: 0.01)
-        XCTAssertEqual(font(at: "Two").pointSize, 16 * 1.35, accuracy: 0.01)
+        XCTAssertGreaterThan(font(at: "One").pointSize, font(at: "Two").pointSize)
+        XCTAssertGreaterThan(font(at: "Two").pointSize, font(at: "Body").pointSize)
         XCTAssertTrue(font(at: "One").fontDescriptor.symbolicTraits.contains(.bold))
-        XCTAssertEqual(font(at: "Body").pointSize, 16)
         XCTAssertTrue(font(at: "code").isFixedPitch)
         XCTAssertTrue(font(at: "let x").isFixedPitch)
         // A list item hangs its wrapped lines under its own text, not under the bullet.

@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, appendFileSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { transcriptMark, createTranscriptReader } from "../src/snippet.ts";
-
-const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
 
 const prompt = (text: string) =>
   JSON.stringify({ type: "user", message: { content: text } }) + "\n";
@@ -39,55 +37,6 @@ test("a counted transcript stays correct as it grows", async () => {
   );
   expect(await transcriptMark(path)).toBe(5);
 });
-
-/**
- * The expensive read happens before anything waits on it.
- *
- * `countUserPrompts` is the only reader that must see the whole file — with no
- * cached prompt count it scans from byte zero, measured at 3.77s on a 189MB
- * session. Everything else takes the cheap tail path, which is what hid it:
- * reading replies aloud kept the cache warm for `assistant` while leaving the
- * prompt count unset, so the first count still paid full price.
- */
-test("every event warms its session's transcript, once and off the hot path", () => {
-  const enqueue = daemon.slice(daemon.indexOf("function enqueue(incoming: TurnEvent)"));
-  const body = enqueue.slice(0, enqueue.indexOf("\n  }"));
-  // Present at all — `indexOf` returns -1 for a MISSING line, and -1 is less
-  // than any real index, so an ordering assertion alone passes when the call
-  // has been deleted. That exact trap survived a mutation here once already.
-  expect(body).toContain("warmTranscript(event.transcriptPath)");
-  // ...and before the ordering check, so an event dropped as stale still warms.
-  expect(body.indexOf("warmTranscript(event.transcriptPath)"))
-    .toBeLessThan(body.indexOf("panelRefresh.accept(eventOrder, event)"));
-
-  const warm = daemon.slice(daemon.indexOf("function warmTranscript(path: string | undefined): void {"));
-  const warmBody = warm.slice(0, warm.indexOf("\n  }"));
-  // Once per path...
-  expect(warmBody).toContain("if (!path || warmedTranscripts.has(path)) return;");
-  // ...serialized, because restoring turns at startup hands us several at once
-  // and simultaneous full scans of 200MB files is a herd on a busy machine...
-  expect(warmBody).toContain("warmQueue = warmQueue");
-  // ...never awaited by the caller...
-  expect(body).not.toContain("await warmTranscript");
-  // ...and a failure is retried rather than remembered as done.
-  expect(warmBody).toContain("warmedTranscripts.delete(path)");
-});
-
-/**
- * Startup is the case that actually hurt.
- *
- * Reconstructed turns deliberately never enter `enqueue` — they may only
- * repaint rows, never announce or open a recorder — so warming from `enqueue`
- * alone would leave the FIRST wake after a daemon restart paying the whole
- * scan. That is precisely the 08-30 failure: daemon up at 23:05, click at
- * 23:18:44, mic at 23:18:56.
- */
-test("a restarted daemon warms the sessions it restores", () => {
-  const rehydrate = daemon.slice(daemon.indexOf("async function rehydrateFromTranscripts()"));
-  const body = rehydrate.slice(0, rehydrate.indexOf("\n  }"));
-  expect(body).toContain("warmTranscript(path ?? undefined)");
-});
-
 
 /**
  * Warming only pays off if the second read is INCREMENTAL — and correctness

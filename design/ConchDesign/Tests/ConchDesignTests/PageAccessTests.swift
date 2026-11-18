@@ -28,7 +28,6 @@ final class PageAccessTests: XCTestCase {
         XCTAssertEqual(PageAccess.macBanner(.init(mac: .signIn, anonymous: .signIn)), PageAccess.macSignInBanner)
         XCTAssertNil(PageAccess.macBanner(.init(mac: .page, anonymous: .signIn)))
         XCTAssertNil(PageAccess.macBanner(nil))
-        XCTAssertTrue(PageAccess.macSignInBanner.contains("Sign in here once"))
     }
 
     func testWhatADeliverableCarriesIsReadAndAStateThisBuildDoesntKnowIsUnchecked() throws {

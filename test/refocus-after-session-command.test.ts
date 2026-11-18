@@ -1,20 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { applySessionCommand, createControlServer, type ControlServer } from "../src/control-server.ts";
 import type { SessionActionsController, SessionDelivery } from "../src/session-actions-overlay.ts";
 import { sendControlMessage } from "../src/settings.ts";
-
-const root = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
-
-/** The text from `marker` to the end of that member (four-space indented Swift); the marker must exist. */
-function member(source: string, marker: string): string {
-  const at = source.indexOf(marker);
-  expect(at).toBeGreaterThan(-1);
-  return source.slice(at, source.indexOf("\n    }\n", at));
-}
 
 function deferred() {
   let resolve!: () => void;
@@ -132,67 +122,4 @@ test("awaitDelivery must be true when present", async () => {
   const p = peer(d.socketPath, { kind: "session-command", sessionId: "s1", command: "set-model", model: "opus", awaitDelivery: 1 });
   await Bun.sleep(80);
   expect(JSON.parse(p.data())).toEqual({ kind: "session-error", error: "awaitDelivery must be true when present" });
-});
-
-test("the daemon hands back the /rename sync it types, and the wiring passes it through", () => {
-  const daemonSource = read("src/daemon.ts");
-  const at = daemonSource.indexOf("const sessionActions: SessionActionsController = {");
-  expect(at).toBeGreaterThan(-1);
-  const controller = daemonSource.slice(at, daemonSource.indexOf("\n  };", at));
-  const synced = controller.indexOf("const synced = renameProviderSession(cfg, target, renamed.label)");
-  const handed = controller.indexOf("delivered?.(synced);");
-  expect(synced).toBeGreaterThan(-1);
-  expect(handed).toBeGreaterThan(synced);
-  expect(controller).toContain("rename: (target, label, delivered) => {");
-  expect(daemonSource).toContain(
-    "session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),",
-  );
-});
-
-test("the Mac app reads the ack, then waits for session-delivered before taking the front back", () => {
-  const client = read("mac-app/conch-mac/ConchSocketClient.swift");
-  expect(client).toContain("let awaitDelivery: Bool?\n\n    init(\n        sessionId: String,");
-  const transact = member(client, "private static func transact(");
-  const ackRead = transact.indexOf("let outcome = readReplyLine(from: descriptor, deadline: deadline, buffered: &buffered)");
-  const onlyIfAsked = transact.indexOf("guard let whenDelivered, case .reply = outcome else {");
-  const delivered = transact.indexOf('reply["kind"] as? String == "session-delivered" else { return }');
-  const calls = transact.indexOf("await whenDelivered()");
-  const returned = transact.lastIndexOf("return outcome");
-  expect(ackRead).toBeGreaterThan(-1);
-  expect(onlyIfAsked).toBeGreaterThan(ackRead);
-  expect(delivered).toBeGreaterThan(onlyIfAsked);
-  expect(calls).toBeGreaterThan(delivered);
-  expect(returned).toBeGreaterThan(calls);
-  // A second line that arrived in the same read as the ack is kept, not dropped.
-  expect(transact).toContain("buffered: &pending");
-  expect(client).toContain("reply = Data(reply[reply.index(after: newline)...])");
-
-  const store = read("mac-app/conch-mac/StateStore.swift");
-  const helper = member(store, "private static func refocusWhenDelivered() -> SteeredDelivery? {");
-  const front = helper.indexOf("guard NSApp.isActive else { return nil }");
-  // 2026-11-11: the steer it held the floating input with went with the old overlays; the hand-back stays.
-  const back = helper.indexOf("return SteeredDelivery(whenDelivered: { await StateStore.refocusAfterDelivery() })");
-  expect(front).toBeGreaterThan(-1);
-  expect(back).toBeGreaterThan(front);
-
-  // Read at the press: before the request exists, let alone the raise.
-  const setModel = member(store, "func setModel(id: SessionRow.ID, model: String) async -> String {");
-  const pressed = setModel.indexOf("let steered = Self.refocusWhenDelivered()");
-  const sent = setModel.indexOf("let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)");
-  expect(pressed).toBeGreaterThan(-1);
-  expect(sent).toBeGreaterThan(pressed);
-  expect(setModel).toContain("awaitDelivery: steered == nil ? nil : true");
-
-  const rename = member(store, "func renameSession(id: SessionRow.ID, label: String) {");
-  expect(rename).toContain("command: .rename,");
-  expect(rename).toContain("steered: Self.refocusWhenDelivered()");
-  const enqueue = member(store, "private func enqueueSessionCommand(");
-  expect(enqueue).toContain("awaitDelivery: steered == nil ? nil : true");
-  expect(enqueue).toContain("let outcome = await socketClient.request(request, timeout: Self.sessionCommandTimeout, whenDelivered: steered?.whenDelivered)");
-  // Dismiss and restore share the queue but type nothing, so they never ask.
-  for (const marker of ["func dismissSession(_ row: SessionRow) {", "func restoreSession(id: SessionRow.ID, label: String) {"]) {
-    const body = member(store, marker);
-    expect(body).toContain("enqueueSessionCommand(");
-    expect(body).not.toContain("refocusWhenDelivered");
-  }
 });

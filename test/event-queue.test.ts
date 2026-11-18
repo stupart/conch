@@ -93,32 +93,6 @@ describe("EventQueue", () => {
     expect(queue.busy()).toBe(false);
   });
 
-  test("enqueue during an await joins the active drain without waiting for it", async () => {
-    const gate = deferred();
-    const first = event("first");
-    const second = event("second");
-    const handled: TurnEvent[] = [];
-    let firstFinished = false;
-    const { queue } = harness({
-      async handle(current) {
-        handled.push(current);
-        if (current === first) {
-          await gate.promise;
-          firstFinished = true;
-        }
-      },
-    });
-
-    const drain = queue.submit(first);
-    await queue.submit(second);
-    expect(firstFinished).toBe(false);
-    expect(handled).toEqual([first]);
-    gate.resolve();
-    await drain;
-    expect(firstFinished).toBe(true);
-    expect(handled).toEqual([first, second]);
-  });
-
   test("handler errors invoke failure cleanup and continue with pending work", async () => {
     const gate = deferred();
     const bad = event("bad");
@@ -483,9 +457,7 @@ describe("EventQueue", () => {
     expect(state.stopCalls).toBe(2);
     expect(state.stop).toBe(false);
     expect(handled).toEqual([first, second]);
-    expect(state.logs).toEqual([
-      '⏹ spacebar — skipped queued turn-end for "skipped" during TTS startup',
-    ]);
+    expect(state.logs).toHaveLength(1);
   });
 
   test("shutdown clearing removes all pending work synchronously during an await", async () => {

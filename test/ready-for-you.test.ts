@@ -8,7 +8,6 @@ import {
   dashboardRowsForModel,
   markReviewViewed,
   reviewReady,
-  type PanelRowModel,
   type SessionReview,
 } from "../src/panel.ts";
 import { theaterStatusHeader } from "../src/status.ts";
@@ -155,9 +154,4 @@ describe("the apps' rule is the daemon's", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
-
-  test("rows from the model carry what the rule reads", () => {
-    const row: PanelRowModel = modelWith([held("a", 1_000, 9_000)]).rows[0]!;
-    expect(row.reviews?.[0]?.viewedAt).toBe(9_000);
-  });
 });

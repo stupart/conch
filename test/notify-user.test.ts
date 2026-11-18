@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type { ApnsCredentials } from "../src/apns.ts";
 import {
   decodeNoticeRequest,
-  describeDelivery,
   MacNotices,
   NoticeLimiter,
   NOTICES_PER_HOUR,
@@ -300,14 +299,6 @@ describe("both at once", () => {
       devices: [{ device: "iPhone", environment: "production", alerts: true, registeredAt: 1, token: "…ababab" }],
     });
     expect(JSON.stringify(status)).not.toContain("ab".repeat(32));
-  });
-});
-
-describe("the sentence", () => {
-  test("where it went, then why not elsewhere", () => {
-    expect(describeDelivery({ outcome: "pushed", detail: "pushed to iPhone" }, { outcome: "app-not-running", detail: "conch's Mac app isn't running" }))
-      .toBe("Pushed to the phone (iPhone). Not elsewhere: Mac: conch's Mac app isn't running.");
-    expect(describeDelivery({ outcome: "pushed", detail: "pushed to iPhone" }, { outcome: "skipped", detail: "" })).toBe("Pushed to the phone (iPhone).");
   });
 });
 

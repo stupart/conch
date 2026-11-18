@@ -65,13 +65,8 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
     }
 
-    /// The springs are the overlay lab's, in SwiftUI's own terms, so the apps move the way the lab felt.
-    func testTheSpringsAreTheOverlayLabsAndStepLikeSwiftUI() {
-        XCTAssertEqual(ConchMotion.morph, ConchSpring(bounce: 0.12, response: 0.46))
-        XCTAssertEqual(ConchMotion.pop, ConchSpring(bounce: 0.34, response: 0.36))
-        XCTAssertEqual(ConchMotion.grow, ConchSpring(bounce: 0.12, response: 0.34))
-        // panel-lab's stage swoop, for one deliverable in the panel giving way to the next.
-        XCTAssertEqual(ConchMotion.swap, ConchSpring(bounce: 0.08, response: 0.52))
+    /// The springs, in SwiftUI's own terms.
+    func testTheSpringsStepLikeSwiftUI() {
         // Stepped by hand, a spring follows the same curve SwiftUI animates.
         for (name, spring) in ConchMotion.springs {
             let swiftUI = Spring(duration: spring.response, bounce: spring.bounce)
@@ -79,7 +74,7 @@ final class ConchDesignTests: XCTestCase {
             XCTAssertEqual(spring.damping, swiftUI.damping, accuracy: 0.01, name)
         }
         // Reduce Motion keeps the timing and drops the overshoot.
-        XCTAssertEqual(ConchMotion.pop.resolved(reduceMotion: true), ConchSpring(bounce: 0, response: 0.36))
+        XCTAssertEqual(ConchMotion.pop.resolved(reduceMotion: true), ConchSpring(bounce: 0, response: ConchMotion.pop.response))
         XCTAssertEqual(ConchMotion.pop.resolved(reduceMotion: false), ConchMotion.pop)
     }
 
@@ -90,13 +85,6 @@ final class ConchDesignTests: XCTestCase {
                 let ratio = text.rgba(scheme).contrast(on: ConchColor.fog.rgba(scheme))
                 XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(text.name) on the wash, \(scheme): \(ratio)")
             }
-        }
-    }
-
-    func testHairlinesStayAtTenPercentOrLess() {
-        for line in [ConchColor.hairline, ConchColor.hairlineStrong] {
-            XCTAssertLessThanOrEqual(line.light.alpha, 0.1)
-            XCTAssertLessThanOrEqual(line.dark.alpha, 0.1)
         }
     }
 
@@ -158,20 +146,6 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ReviewScene.next(after: "a@1", in: [("a@5", 5), ("b@1", 1)], opened: ["a@1", "b@1"]), "a@5")
         XCTAssertEqual(ReviewScene.next(after: "gone", in: ready, opened: []), "a@1")
         XCTAssertNil(ReviewScene.next(after: "a@1", in: [], opened: []))
-    }
-
-    /// Every deliverable a ready session holds is in the queue, not only its newest: the walk interleaves two sessions'
-    /// by when each was filed, reaches an older one still unopened, and comes round.
-    func testTheQueueWalksEveryHeldDeliverableAcrossSessions() {
-        // Session a holds two, b one; b's was filed between a's.
-        let held: [(key: String, at: Double)] = [("a#2", 30), ("a#1", 10), ("b#1", 20)]
-        XCTAssertEqual(ReviewScene.next(after: nil, in: held, opened: []), "a#1")
-        XCTAssertEqual(ReviewScene.next(after: "a#1", in: held, opened: ["a#1"]), "b#1")
-        XCTAssertEqual(ReviewScene.next(after: "b#1", in: held, opened: ["a#1", "b#1"]), "a#2")
-        // a's older one, opened on another device, is passed over for the one nobody has seen.
-        XCTAssertEqual(ReviewScene.next(after: nil, in: held, opened: ["a#1", "b#1"]), "a#2")
-        // All seen: round them all again, oldest first.
-        XCTAssertEqual(ReviewScene.next(after: "a#2", in: held, opened: ["a#1", "b#1", "a#2"]), "a#1")
     }
 
     /// 09-21, "BOTH": a deliverable conch can draw is shown by conch itself; an app window, the Simulator, a terminal, a

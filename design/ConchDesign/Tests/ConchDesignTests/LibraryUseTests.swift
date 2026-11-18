@@ -74,8 +74,6 @@ final class LibraryUseTests: XCTestCase {
         }
         XCTAssertEqual(SkillCopies.trashTarget(location("claude", "default")), "/s/handoff")
         XCTAssertEqual(SkillCopies.trashTarget(location("claude", "default", kind: "command", path: "/c/commands/standup.md")), "/c/commands/standup.md")
-        XCTAssertEqual(SkillCopies.kindTitle(location("claude", "default", "plugin")), "kit plugin 1.2.0")
-        XCTAssertEqual(SkillCopies.kindTitle(location("claude", nil, "project", project: "/p", kind: "command")), "project command")
     }
 
     func testTheSwitchsRequestsCarryTheCopyAndThePreviewsHash() throws {

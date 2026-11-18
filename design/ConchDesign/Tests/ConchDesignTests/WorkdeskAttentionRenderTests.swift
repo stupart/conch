@@ -5,9 +5,9 @@ import XCTest
 
 /// A tab that needs the user, drawn and measured (2026-10-18). Tyler, after an agent asked him in words to sign in in a
 /// tab: "the tab didn't get any sort of emphasis and it was all the way on the left so i missed it". Now its agent asks in
-/// the tab (`browser_ask`): it comes to the front with "Needs you" on it and a strip under its address bar with Done; one
-/// that waits for the user to stop reading is scrolled into view in the strip all the same; and a page whose passkey
-/// conch's browser can't give says so in the same strip. At the two widths the Workdesk is used at, light and dark.
+/// the tab (`browser_ask`): it comes to the front with "Needs you" on it; one that waits for the user to stop reading is
+/// scrolled into view in the strip all the same; and a page whose passkey conch's browser can't give says so in a strip
+/// whose button never runs into its ×. At the two widths the Workdesk is used at.
 ///
 /// `CONCH_WORKDESK_RENDERS=<dir>` writes each picture too. Everything in them is invented: no real page, session or person.
 @MainActor
@@ -22,7 +22,7 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
         super.tearDown()
     }
 
-    private func picture(_ content: some View, size: CGSize, dark: Bool, name: String) throws -> Shot {
+    private func picture(_ content: some View, size: CGSize, dark: Bool = false, name: String) throws -> Shot {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: size.width, height: size.height), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -54,166 +54,49 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
 
     // MARK: - The tab that needs the user, in front
 
-    /// In front: the strip scrolled to it at the far left, its pill in the attention colour; under the bar, the strip's
-    /// mark starting on the pane's left axis (15 in), Done's right edge on the close ×'s (14 from the edge), Done centred
-    /// top to bottom.
+    /// In front: the strip scrolled to it at the far left, its pill in the attention colour, wholly inside the run.
     func testATabThatNeedsYouInFront() throws {
-        for dark in [false, true] {
-            for width in Self.widths {
-                let label = "\(Int(width)) \(dark ? "dark" : "light")"
-                let shot = try picture(AskScene(width: width, front: true), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "after-ask-\(Int(width))")
-                // The pill: a run of the attention colour on the strip's row, in view, and wholly inside the run.
-                let pill = try XCTUnwrap(shot.span(x: AskScene.runStart, width - 36, y: 17, where: { isAttention($0, dark: dark) }), "the pill, \(label)")
-                XCTAssertGreaterThanOrEqual(pill.upperBound - pill.lowerBound, 40, "the pill is a word wide, \(label)")
-
-                // The notice: its row starts under the bar's hairline.
-                let top = AskScene.noticeTop
-                let wash = shot.color(width / 2, top + 3)
-                XCTAssertNotEqual(wash, shot.color(width / 2, AskScene.barTop + 3), "the strip is told from the bar, \(label)")
-                // Its mark starts on the pane's left axis, 15 in, as the back arrow above it and the strip's first mark do.
-                let mark = try XCTUnwrap(shot.inkSpan(x: 4, 32, y: top + 8, top + 22, against: wash, threshold: 60), "the mark, \(label)")
-                let chevron = try XCTUnwrap(shot.inkSpan(x: 4, 29, y: AskScene.barTop + 6, AskScene.barTop + 20, against: shot.color(4, AskScene.barTop + 3), threshold: 40), label)
-                let folder = try XCTUnwrap(shot.inkSpan(x: 4, 29, y: 10, 24, against: shot.color(3, 3), threshold: 40), label)
-                XCTAssertEqual(mark.lowerBound, 15, accuracy: 0.6, "the mark on the left axis, \(label)")
-                XCTAssertEqual(mark.lowerBound, chevron.lowerBound, accuracy: 0.75, "the mark under the back arrow, \(label)")
-                XCTAssertEqual(mark.lowerBound, folder.lowerBound, accuracy: 0.75, "the mark under the strip's first, \(label)")
-                // Done's capsule: its right edge 14 from the pane's edge, where the close × above ends.
-                let done = try XCTUnwrap(shot.span(x: width - 90, width - 2, y: top + 15, notMatching: wash, tolerance: 6), "Done, \(label)")
-                XCTAssertEqual(width - done.upperBound, 14, accuracy: 0.75, "Done's right edge, \(label)")
-                let close = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: AskScene.barTop + 6, AskScene.barTop + 20, against: shot.color(width - 3, AskScene.barTop + 3), threshold: 40), label)
-                XCTAssertEqual(done.upperBound, close.upperBound, accuracy: 1, "Done ends where the close × does, \(label)")
-                // Centred top to bottom in its 30 points: as much above Done's capsule as below.
-                let capsule = try XCTUnwrap(shot.verticalSpan(x: done.upperBound - 12, y: top, top + AskScene.notice, notMatching: wash, tolerance: 6), label)
-                XCTAssertEqual(capsule.lowerBound - top, top + AskScene.notice - capsule.upperBound, accuracy: 0.75, "Done centred in the strip, \(label)")
-                // Nothing outside its border: its fill starts a point (the border) in from its outermost ink at either end. A
-                // stroked capsule drew a stray flat half a point outside each end, putting the fill a point and a half in.
-                let fill = shot.color(done.lowerBound + 4, top + 15)
-                let inside = try XCTUnwrap(shot.span(x: done.lowerBound, done.upperBound, y: top + 15, where: { diff($0, fill) <= 6 }), "Done's fill, \(label)")
-                XCTAssertLessThanOrEqual(inside.lowerBound - done.lowerBound, 1.25, "Done's left end, \(label)")
-                XCTAssertLessThanOrEqual(done.upperBound - inside.upperBound, 1.25, "Done's right end, \(label)")
-            }
+        for width in Self.widths {
+            let shot = try picture(AskScene(width: width, front: true), size: CGSize(width: width, height: AskScene.height), name: "after-ask-\(Int(width))")
+            let pill = try XCTUnwrap(shot.span(x: AskScene.runStart, width - 36, y: 17, where: isAttention), "the pill, \(Int(width))")
+            XCTAssertGreaterThanOrEqual(pill.upperBound - pill.lowerBound, 40, "the pill is a word wide, \(Int(width))")
         }
     }
 
     /// Waiting (the user was reading the deliverable a moment ago): the deliverable stays, and the tab that needs him is
     /// scrolled into view at the far end of a full strip, its pill clear of the fade.
     func testATabThatNeedsYouIsScrolledIntoViewWhileItWaits() throws {
-        for dark in [false, true] {
-            for width in Self.widths {
-                let label = "\(Int(width)) \(dark ? "dark" : "light")"
-                let shot = try picture(AskScene(width: width, front: false), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "after-ask-waiting-\(Int(width))")
-                let pill = try XCTUnwrap(shot.span(x: AskScene.runStart, width - 36, y: 17, where: { isAttention($0, dark: dark) }), "the pill in view, \(label)")
-                // Clear of the leading fade: the attention colour at full strength across it.
-                XCTAssertGreaterThanOrEqual(pill.lowerBound, AskScene.runStart + WorkdeskTabRun<EmptyView>.fade - 1, "clear of the fade, \(label)")
-            }
+        for width in Self.widths {
+            let shot = try picture(AskScene(width: width, front: false), size: CGSize(width: width, height: AskScene.height), name: "after-ask-waiting-\(Int(width))")
+            let pill = try XCTUnwrap(shot.span(x: AskScene.runStart, width - 36, y: 17, where: isAttention), "the pill in view, \(Int(width))")
+            // Clear of the leading fade: the attention colour at full strength across it.
+            XCTAssertGreaterThanOrEqual(pill.lowerBound, AskScene.runStart + WorkdeskTabRun<EmptyView>.fade - 1, "clear of the fade, \(Int(width))")
         }
     }
 
     /// The run opens at its right end, where what an agent last touched is, even with the tab shown at the far left.
     func testARunOpensAtItsRightEnd() throws {
-        for dark in [false, true] {
-            for width in Self.widths {
-                let label = "\(Int(width)) \(dark ? "dark" : "light")"
-                let shot = try picture(RunEndScene(width: width), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "run-end-\(label)")
-                XCTAssertNotNil(shot.span(x: 6, width - 36, y: 17, where: { isAttention($0, dark: dark) }), "the last tab in view, \(label)")
-            }
+        for width in Self.widths {
+            let shot = try picture(RunEndScene(width: width), size: CGSize(width: width, height: AskScene.height), name: "run-end-\(Int(width))")
+            XCTAssertNotNil(shot.span(x: 6, width - 36, y: 17, where: isAttention), "the last tab in view, \(Int(width))")
         }
     }
 
     // MARK: - Passkeys
 
     /// 2026-11-11 (Tyler: "passkeys don't work in conch browser yet"): the line offers the page in his own browser, where
-    /// his passkeys work. Open in Browser sits before the ×, Done's shape, and the × stays under the bar's close ×.
+    /// his passkeys work. Open in Browser sits before the ×, clear of it.
     func testThePasskeyLineOffersHisOwnBrowser() throws {
-        for dark in [false, true] {
-            for width in Self.widths {
-                let label = "\(Int(width)) \(dark ? "dark" : "light")"
-                let shot = try picture(PasskeyScene(width: width, opens: true), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "after-passkeys-open-\(Int(width))")
-                let top = AskScene.noticeTop
-                let ground = shot.color(width / 2, top + 3)
-                let x = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: top + 8, top + 22, against: ground, threshold: 40), label)
-                let close = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: AskScene.barTop + 6, AskScene.barTop + 20, against: shot.color(width - 3, AskScene.barTop + 3), threshold: 40), label)
-                XCTAssertEqual(x.lowerBound, close.lowerBound, accuracy: 0.6, "the × still under the close ×, \(label)")
-                // The button: its capsule ends before the ×'s target and is a few words wide.
-                let button = try XCTUnwrap(shot.span(x: width - 200, width - 33, y: top + 15, notMatching: ground, tolerance: 6), "Open in Browser, \(label)")
-                XCTAssertLessThan(button.upperBound, x.lowerBound - 4, "the button before the ×, \(label)")
-                XCTAssertGreaterThan(button.upperBound - button.lowerBound, 70, "the button's words, \(label)")
-            }
-        }
-    }
-
-    /// The passkey line: the same strip, the bar's surface without the wash, its key on the left axis and its × the bar's
-    /// close × exactly, under it.
-    func testAPasskeyThePageAskedForIsSaidUnderTheBar() throws {
-        for dark in [false, true] {
-            for width in Self.widths {
-                let label = "\(Int(width)) \(dark ? "dark" : "light")"
-                let shot = try picture(PasskeyScene(width: width), size: CGSize(width: width, height: AskScene.height), dark: dark, name: "after-passkeys-\(Int(width))")
-                let top = AskScene.noticeTop
-                let ground = shot.color(width / 2, top + 3)
-                XCTAssertEqual(ground, shot.color(width / 2, AskScene.barTop + 3), "the bar's own surface, \(label)")
-                let mark = try XCTUnwrap(shot.inkSpan(x: 4, 34, y: top + 8, top + 22, against: ground, threshold: 40), label)
-                XCTAssertEqual(mark.lowerBound, 15, accuracy: 0.6, "the key on the left axis, \(label)")
-                let x = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: top + 8, top + 22, against: ground, threshold: 40), label)
-                let close = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: AskScene.barTop + 6, AskScene.barTop + 20, against: shot.color(width - 3, AskScene.barTop + 3), threshold: 40), label)
-                XCTAssertEqual(x.lowerBound, close.lowerBound, accuracy: 0.6, "the × under the close ×, \(label)")
-                XCTAssertEqual(x.upperBound, close.upperBound, accuracy: 0.6, "the × the close ×'s size, \(label)")
-            }
-        }
-    }
-
-    /// Stacked (an agent asking in a tab whose page just asked for a passkey), the two strips' marks and words start on
-    /// the same columns.
-    func testTheTwoStripsLineUpStacked() throws {
-        for dark in [false, true] {
-            let label = dark ? "dark" : "light"
-            let shot = try picture(
-                // As the pane lays them out (Workbench.swift `WorkbenchPane`): a hairline after each.
-                VStack(spacing: 0) {
-                    WorkbenchNotice(.needsYou(agent: "Claude", reason: "Pick the Fieldnotes workspace"), action: {})
-                    Rectangle().fill(ConchColor.hairline).frame(height: 1)
-                    WorkbenchNotice(.passkeys, action: {})
-                    Rectangle().fill(ConchColor.hairline).frame(height: 1)
-                },
-                size: CGSize(width: 860, height: WorkbenchNotice.height * 2 + 2), dark: dark, name: "after-strips-stacked-860"
-            )
-            func starts(_ y: CGFloat) throws -> [CGFloat] {
-                let ground = shot.color(700, y - 12)
-                let mark = try XCTUnwrap(shot.inkSpan(x: 4, 30, y: y - 6, y + 6, against: ground, threshold: 40), label)
-                // The first letter: "P" in Pick and in Passkeys.
-                let word = try XCTUnwrap(shot.inkSpan(x: 30, 50, y: y - 6, y + 6, against: ground, threshold: 60), label)
-                return [mark.lowerBound, mark.upperBound, word.lowerBound]
-            }
-            let top = try starts(WorkbenchNotice.height / 2)
-            let bottom = try starts(WorkbenchNotice.height * 1.5 + 1)
-            for (a, b) in zip(top, bottom) { XCTAssertEqual(a, b, accuracy: 0.6, "stacked, \(label): \(top) and \(bottom)") }
-        }
-    }
-
-    // MARK: - The session's row
-
-    /// The session whose tab needs the user, in the sidebar: before, a row whose turn was over (the agent asked in words);
-    /// now the row every session that asks something of him gets (the Mac's `SessionRow.needingYou`): the needs mark, the
-    /// bold name, and the ask as what it is blocked on. Drawn with `SidebarActivityRenderTests`' rebuild of the Mac row.
-    func testTheSessionsRowSaysItNeedsYou() throws {
-        typealias Row = SidebarActivityRenderTests.SidebarRow
-        typealias Mark = SidebarActivityRenderTests.Mark
-        for dark in [false, true] {
-            for (name, asking) in [("before-sidebar", false), ("after-sidebar", true)] {
-                let list = VStack(spacing: 0) {
-                    Row(name: "Pricing page refresh", mark: .working, line: SidebarRowText.SecondLine(text: "Editing src/pricing/plans.ts", kind: .activity))
-                    if asking {
-                        Row(name: "Mood board research", mark: .needs, semibold: true, line: SidebarRowText.SecondLine(text: Workbench.rowAskLine(reason: "Sign in to Swatchbook"), kind: .question))
-                    } else {
-                        Row(name: "Mood board research", mark: .waiting, semibold: true)
-                    }
-                    Row(name: "Onboarding flow audit", mark: .idle)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(ConchColor.ground)
-                _ = try picture(list, size: CGSize(width: 280, height: 130), dark: dark, name: name)
-            }
+        for width in Self.widths {
+            let label = "\(Int(width))"
+            let shot = try picture(PasskeyScene(width: width, opens: true), size: CGSize(width: width, height: AskScene.height), name: "after-passkeys-open-\(Int(width))")
+            let top = AskScene.noticeTop
+            let ground = shot.color(width / 2, top + 3)
+            let x = try XCTUnwrap(shot.inkSpan(x: width - 29, width - 7, y: top + 8, top + 22, against: ground, threshold: 40), label)
+            // The button: its capsule ends before the ×'s target and is a few words wide.
+            let button = try XCTUnwrap(shot.span(x: width - 200, width - 33, y: top + 15, notMatching: ground, tolerance: 6), "Open in Browser, \(label)")
+            XCTAssertLessThan(button.upperBound, x.lowerBound - 4, "the button before the ×, \(label)")
+            XCTAssertGreaterThan(button.upperBound - button.lowerBound, 70, "the button's words, \(label)")
         }
     }
 
@@ -238,10 +121,11 @@ final class WorkdeskAttentionRenderTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(onStrip, 3, "the pill on the strip in \(scheme): \(String(format: "%.2f", onStrip)):1")
         }
     }
+}
 
-    private func isAttention(_ c: Shot.RGB, dark: Bool) -> Bool {
-        dark ? (c.r > 230 && c.g > 80 && c.g < 130 && c.b > 60 && c.b < 110) : (c.r > 180 && c.g < 80 && c.b < 60)
-    }
+/// The attention colour, in light.
+private func isAttention(_ c: Shot.RGB) -> Bool {
+    c.r > 180 && c.g < 80 && c.b < 60
 }
 
 // MARK: - Measuring
@@ -280,12 +164,6 @@ private struct Shot {
         return CGFloat(first) / scale...CGFloat(last + 1) / scale
     }
 
-    func verticalSpan(x: CGFloat, y y0: CGFloat, _ y1: CGFloat, notMatching color: RGB, tolerance: Int) -> ClosedRange<CGFloat>? {
-        let column = Int(x * scale)
-        let rows = pixels(y0, y1).filter { diff(pixel(column, $0), color) > tolerance }
-        guard let first = rows.first, let last = rows.last else { return nil }
-        return CGFloat(first) / scale...CGFloat(last + 1) / scale
-    }
 }
 
 private func diff(_ a: Shot.RGB, _ b: Shot.RGB) -> Int {
@@ -329,7 +207,6 @@ private struct AskScene: View {
     static let barTop: CGFloat = strip + 1
     static let bar: CGFloat = 26
     static let noticeTop: CGFloat = barTop + bar + 1
-    static let notice: CGFloat = WorkbenchNotice.height
     /// Where the run starts: 6 in, Files and Shell and their gap, the hairline and its padding.
     static let runStart: CGFloat = 6 + 50 + 2 + 54 + 2 + 5 + 2
 

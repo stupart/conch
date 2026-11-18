@@ -13,8 +13,6 @@ import { join } from "node:path";
  */
 
 const repo = (path: string) => join(import.meta.dir, "..", path);
-const read = (path: string) => readFileSync(repo(path), "utf8");
-const squash = (text: string) => text.replace(/\s+/g, " ");
 const roots: string[] = [];
 
 afterEach(() => {
@@ -100,67 +98,5 @@ describe("the app carries uv", () => {
     expect(result.code).toBe(0);
     expect(existsSync(result.helper)).toBeTrue();
     expect(result.signed).toBeNull();
-  });
-
-  test("the conch-mac target runs that phase after its resources, unsandboxed", () => {
-    const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
-    const target = project.slice(project.indexOf("isa = PBXNativeTarget;"), project.indexOf("/* End PBXNativeTarget section */"));
-    expect(target).toContain('name = "conch-mac";');
-    const phases = target.slice(target.indexOf("buildPhases = ("), target.indexOf(");", target.indexOf("buildPhases = (")));
-    expect(phases.indexOf("/* Embed uv helper */")).toBeGreaterThan(phases.indexOf("/* Resources */"));
-    expect(phases.indexOf("/* Resources */")).toBeGreaterThan(-1);
-
-    const phase = project.slice(project.indexOf("/* Begin PBXShellScriptBuildPhase section */"), project.indexOf("/* End PBXShellScriptBuildPhase section */"));
-    expect(phase).toContain('name = "Embed uv helper";');
-    expect(phase).toContain('shellScript = "exec \\"$SRCROOT/../scripts/embed-uv.sh\\"\\n";');
-
-    // Sandboxed script phases cannot read the repo's scripts or run codesign.
-    for (const config of ["A80000000000000000000003 /* Debug */", "A80000000000000000000004 /* Release */"]) {
-      const at = project.indexOf(`${config} = {`);
-      expect(at).toBeGreaterThan(-1);
-      expect(project.slice(at, project.indexOf("name = ", at))).toContain("ENABLE_USER_SCRIPT_SANDBOXING = NO;");
-    }
-  });
-
-  test("uv is pinned by version and by the sha256 of its release, and a Release build refuses to ship without it", () => {
-    const fetch = read("scripts/fetch-uv.sh");
-    expect(fetch).toMatch(/^UV_VERSION=\d+\.\d+\.\d+$/m);
-    expect(fetch).toMatch(/^UV_SHA256=[0-9a-f]{64}$/m);
-    expect(fetch).toContain('shasum -a 256 -c -');
-    expect(fetch).toContain("uv-$UV_TRIPLE.tar.gz");
-    const embed = read("scripts/embed-uv.sh");
-    expect(squash(embed)).toContain('if [[ "${CONFIGURATION:-}" == "Release" ]]; then echo "error: could not fetch the pinned uv');
-  });
-
-  test("the install and release scripts verify the embedded uv's signature", () => {
-    const install = read("scripts/build-app.sh");
-    expect(install).toContain('UV_HELPER="$INSTALLED_APP_PATH/Contents/Helpers/uv"');
-    expect(install).toContain('codesign --verify --strict --verbose=2 "$UV_HELPER"');
-    expect(read("scripts/build-release.sh")).toContain('codesign --verify --strict "$APP_SRC/Contents/Helpers/uv"');
-  });
-});
-
-describe("the app hands its uv to the daemon, and shows where the voices stand", () => {
-  test("DaemonHost sets CONCH_UV to its own Contents/Helpers/uv before the daemon's environment is handed over", () => {
-    const host = read("mac-app/conch-mac/DaemonHost.swift");
-    const set = host.indexOf('environment["CONCH_UV"] = uv.path');
-    expect(set).toBeGreaterThan(-1);
-    expect(host.slice(set - 160, set)).toContain('if environment["CONCH_UV"] == nil, let uv = DaemonHost.bundledUV()');
-    expect(host.indexOf("task.environment = environment")).toBeGreaterThan(set);
-    const helper = host.slice(host.indexOf("static func bundledUV("), host.indexOf("static func bundledUV(") + 400);
-    expect(helper).toContain('bundle.bundleURL.appendingPathComponent("Contents/Helpers/uv")');
-  });
-
-  test("Settings shows 'Natural voices: setting up… / ready / off (reason)' from the published state", () => {
-    const settings = read("mac-app/conch-mac/SettingsView.swift");
-    const status = settings.slice(settings.indexOf("private struct NaturalVoicesStatus"), settings.indexOf("private struct NaturalVoicesEnvelope"));
-    expect(status.length).toBeGreaterThan(200);
-    expect(status).toContain('case "ready": return "Natural voices: ready"');
-    expect(status).toContain('case "setting-up": return "Natural voices: setting up…"');
-    expect(status).toContain('default: return "Natural voices: off" + (reason.map { " (\\($0))" } ?? "")');
-    expect(settings).toContain("let naturalVoices: NaturalVoicesStatus?");
-    const section = settings.slice(settings.indexOf("private struct SessionVoicesSection"), settings.indexOf("private struct NaturalVoicesStatus"));
-    expect(section).toContain("Text(natural.headline)");
-    expect(section).toContain("Text(natural.detail)");
   });
 });

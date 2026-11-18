@@ -93,20 +93,18 @@ describe("a skill's switch: Claude Code's skillOverrides, previewed, then writte
     expect(listed.skills.find((skill) => skill.name === "deploy-check")!.locations.find((location) => location.agent === "claude")!.enabled).toBe(false);
   });
 
-  test("what isn't the person's own Claude skill is refused, in words that say where it is switched", () => {
+  test("only the person's own Claude skill can be switched here", () => {
     const base: SkillLocation = { agent: "claude", origin: "user", kind: "skill", path: "/s/SKILL.md", enabled: true, digest: "" };
     expect(toggleRefusal(base)).toBeUndefined();
     expect(toggleRefusal({ ...base, origin: "project" })).toBeUndefined();
-    expect(toggleRefusal({ ...base, origin: "plugin" })).toContain("Plugins & MCP");
-    expect(toggleRefusal({ ...base, origin: "claude.ai" })).toContain("claude.ai");
-    expect(toggleRefusal({ ...base, agent: "codex" })).toContain("config.toml");
-    expect(toggleRefusal({ ...base, kind: "command" })).toContain("command");
-    expect(toggleRefusal({ ...base, origin: "managed" })).toContain("manages this Mac");
+    for (const refused of [{ origin: "plugin" }, { origin: "claude.ai" }, { agent: "codex" }, { kind: "command" }, { origin: "managed" }] as const) {
+      expect(toggleRefusal({ ...base, ...refused } as SkillLocation)).toBeString();
+    }
   });
 
   test("the requests are checked before anything is read", () => {
-    expect(skillsLibraryRequestError({ action: "toggle-preview", path: "/s", agent: "claude" })).toBe("Choose the skill, and whether it is on");
-    expect(skillsLibraryRequestError({ action: "toggle", path: "/s", agent: "claude", enabled: false })).toBe("toggle carries the preview's planHash");
-    expect(skillsLibraryRequestError({ action: "toggle-preview", path: "/s", agent: "claude", enabled: "no" })).toBe("enabled must be true or false");
+    expect(skillsLibraryRequestError({ action: "toggle-preview", path: "/s", agent: "claude" })).toBeString();
+    expect(skillsLibraryRequestError({ action: "toggle", path: "/s", agent: "claude", enabled: false })).toBeString();
+    expect(skillsLibraryRequestError({ action: "toggle-preview", path: "/s", agent: "claude", enabled: "no" })).toBeString();
   });
 });

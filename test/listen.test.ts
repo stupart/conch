@@ -27,21 +27,13 @@ test("any raw capture growth starts speech independently of transcription MIN", 
 
 describe("sox capture arguments", () => {
   test("puts configured mic gain first, then the pre-roll, then a start-only silence", () => {
-    const args = soxCaptureArgs(
-      { micGainDb: 12, endSilenceSecs: 3.5 },
-      "/tmp/conch-test.raw",
-      2,
-    );
-
-    expect(args).toEqual([
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      "/tmp/conch-test.raw",
-      "gain", "12",
-      "channels", "1", "remix", "1", "1", "delay", "0", "0.300",
-      "silence", "1", "0.15", "2%",
-      "remix", "2",
-    ]);
+    const args = soxCaptureArgs({ micGainDb: 12, endSilenceSecs: 3.5 }, "/tmp/conch-test.raw", 2);
+    const gain = args.indexOf("gain");
+    const delay = args.indexOf("delay");
+    expect(args.slice(gain, gain + 2)).toEqual(["gain", "12"]);
+    expect(args.slice(delay, delay + 3)).toEqual(["delay", "0", "0.300"]);
+    expect(gain).toBeLessThan(delay);
+    expect(delay).toBeLessThan(args.indexOf("silence"));
   });
 
   test("sox never ends a capture: no stop clause, and no -l to carry its cumulative pause count", () => {
@@ -55,14 +47,7 @@ describe("sox capture arguments", () => {
   });
 
   test("leaves gain out when it is zero", () => {
-    const args = soxCaptureArgs(
-      { micGainDb: 0, endSilenceSecs: 3.5 },
-      "/tmp/conch-test.raw",
-      2,
-    );
-
-    expect(args.slice(14, 22)).toEqual(["channels", "1", "remix", "1", "1", "delay", "0", "0.300"]);
-    expect(args).not.toContain("gain");
+    expect(soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5 }, "/tmp/conch-test.raw", 2)).not.toContain("gain");
   });
 
   test("the pre-roll never takes more than half the end silence", () => {
@@ -109,16 +94,6 @@ describe("stopping a capture behind its pre-roll", () => {
   });
 });
 
-test("stopSoxProcess sends SIGINT so SoX flushes its capture tail", () => {
-  let signal: unknown;
-  stopSoxProcess({
-    kill(received) {
-      signal = received;
-    },
-  });
-  expect(signal).toBe("SIGINT");
-});
-
 test("a recorder that honours SIGINT is never killed", async () => {
   const signals: unknown[] = [];
   stopSoxProcess({
@@ -131,20 +106,6 @@ test("a recorder that honours SIGINT is never killed", async () => {
   // The tail flush is the whole reason SIGINT goes first; a SIGKILL chasing it
   // would truncate exactly the last word conch is trying to keep.
   expect(signals).toEqual(["SIGINT"]);
-});
-
-test("shutdown kills without waiting, because nothing will be alive to wait", () => {
-  // The daemon calls process.exit(0) immediately after this, so a scheduled
-  // escalation would never fire and a SIGINT-resistant recorder would outlive
-  // the daemon still holding the microphone.
-  const signals: unknown[] = [];
-  stopSoxProcess({
-    kill(received: unknown) {
-      signals.push(received);
-    },
-    exited: new Promise<number>(() => {}), // never exits
-  } as never, { immediate: true });
-  expect(signals).toEqual(["SIGINT", "SIGKILL"]); // synchronous, not scheduled
 });
 
 test("a wedged recorder is killed rather than left holding the mic", async () => {

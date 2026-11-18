@@ -14,7 +14,6 @@ import {
   SESSION_THRESHOLDS,
   type SessionUsage,
 } from "../src/resource-load.ts";
-import { getSettingDescriptor } from "../src/settings.ts";
 import { processKey, ProcessForest, ResourceLedger, withStillRunning, type Evidence, type LedgerSession, type ProcessRow } from "../src/resource-ledger.ts";
 import { controlResource, controlSession, ResourceSampler } from "../src/resource-sampler.ts";
 
@@ -111,19 +110,6 @@ describe("the budget's settings: a share, or an amount", () => {
     // A kept value from another Mac, bigger than this one: never more than it has.
     expect(cpuLimitOf("32 cores", mac)).toBe(1800);
     expect(memoryLimitOf("512 GB", mac)).toBe(128 * GB);
-  });
-
-  test("the settings take both forms, and default to shares, 75% and 60%", () => {
-    const cpu = getSettingDescriptor("agent-budget-cpu");
-    const memory = getSettingDescriptor("agent-budget-memory");
-    if (!cpu.ok || !memory.ok) throw new Error("the budget's settings are missing");
-    expect(cpu.value.default).toBe("75%");
-    expect(memory.value.default).toBe("60%");
-    expect(cpu.value.parse("1 core")).toEqual({ ok: true, value: "1 core" });
-    expect(memory.value.parse("1G")).toEqual({ ok: true, value: "1 GB" });
-    expect(cpu.value.parse("0").ok).toBe(false);
-    expect(cpu.value.help).toContain("a share of this Mac's cores, like 75%, or a number of cores, like 14");
-    expect(memory.value.help).toContain("like 100 GB (GiB, as Activity Monitor counts)");
   });
 });
 

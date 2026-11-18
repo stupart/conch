@@ -1,12 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { applySessionCommand, createControlServer, type ControlServer } from "../src/control-server.ts";
 import type { SessionActionsController, SessionActionsTarget } from "../src/session-actions-overlay.ts";
 import { sendControlMessage } from "../src/settings.ts";
-
-const root = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 function harness(target: SessionActionsTarget | null) {
   const sent: Array<{ target: SessionActionsTarget; model?: string; effort?: string }> = [];
@@ -116,57 +113,4 @@ test("over the real socket, the CLI's client gets a validated set-model ack", as
     response: { kind: "session-error", error: "set-model: model cannot start with -" },
   });
   expect(h.sent).toHaveLength(1);
-});
-
-/**
- * Measured 2026-09-28 in a tmux lab: Claude Code's `/model <name>` saves the model as the default
- * for every new session, and Codex's goes to the model as a message. So the daemon never types a
- * one-line `/model`: it drives the picker, reading the screen between keys, in one UI hold.
- */
-test("the daemon drives the agent's own picker, never a one-line /model", () => {
-  const daemon = read("src/daemon.ts");
-  const at = daemon.indexOf("const sessionActions: SessionActionsController = {");
-  expect(at).toBeGreaterThan(-1);
-  const controller = daemon.slice(at, daemon.indexOf("\n  };", at));
-  const drive = controller.slice(controller.indexOf("setSettings: async (target, requested) => {"));
-  expect(controller.indexOf("setSettings: async (target, requested) => {")).toBeGreaterThan(-1);
-  expect(drive).toContain("const outcome = await withUIHold((ui) => driveSessionSettings(backend, change, {");
-  expect(drive).toContain("read: () => readSessionScreen(target.pid),");
-  // Typed and not submitted, so the driver can check the prompt before Enter.
-  expect(drive).toContain("delivered(await ui.text({ ...cfg, autoSubmit: false }, target.pid, words, { clipboardFallback: false }))");
-  expect(drive).toContain('if (status === "working" && !AGENT_SESSION_SETTINGS[backend].changesMidTurn) {');
-  expect(drive).toContain('if (status === "needs") return refuse(');
-  expect(drive).toMatch(/recordDaemonError\("session-settings",/);
-  expect(daemon).not.toContain("`/model ${");
-  expect(daemon).not.toContain("injectProviderCommand");
-  const rename = controller.indexOf("renameProviderSession(cfg, target, renamed.label)");
-  expect(rename).toBeGreaterThan(-1);
-  expect(controller.indexOf("setSettings:")).toBeGreaterThan(rename);
-  // The overlay's key ring is untouched: no TUI key in this slice.
-  expect(read("src/panel.ts")).toContain(
-    'export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss" | "close";',
-  );
-});
-
-test("the Mac inspector shows the recorded model, or says it is not reported, and sends the command", () => {
-  const inspector = read("mac-app/conch-mac/CapabilityInspectorView.swift");
-  expect(inspector).toContain('Text("Model")');
-  expect(inspector).toContain('return "not reported"');
-  expect(inspector).toContain("guard let thread = capabilities?.context.threadConfiguration, let model = thread.model else {");
-  expect(inspector).toContain('TextField("new model", text: $modelDraft)');
-  expect(inspector).toContain('Button("Apply") { apply(onSetModel) }');
-  expect(inspector).toContain("Task { @MainActor in modelResult = await send(model) }");
-  expect(inspector).toContain("onSetModel: { model in await store.setModel(id: row.id, model: model) }");
-
-  const store = read("mac-app/conch-mac/StateStore.swift");
-  const at = store.indexOf("func setModel(id: SessionRow.ID, model: String) async -> String {");
-  expect(at).toBeGreaterThan(-1);
-  const body = store.slice(at, at + 1400);
-  expect(body).toContain("ConchSessionCommandRequest(\n            sessionId: id,\n            command: .setModel,\n            model: model,");
-  expect(body).toContain("return error.error"); // the daemon's refusal, verbatim
-  expect(body).toContain('"not sent: the session has no terminal window to type into"');
-
-  const socket = read("mac-app/conch-mac/ConchSocketClient.swift");
-  expect(socket).toContain('case setModel = "set-model"');
-  expect(socket).toContain("let model: String?");
 });

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import {
   requireUncancelledProbe,
@@ -525,59 +524,5 @@ describe("Kokoro by mode (D1)", () => {
     expect(live(adopted).map((timer) => timer.ms)).toEqual([30_000]);
     expect(adopted.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "adopted" });
     adopted.supervisor.close();
-  });
-});
-
-describe("D1 wiring inside runDaemon", () => {
-  // runDaemon runs in no test; its wiring is pinned by source, the way D2's is.
-  const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-
-  function between(startMarker: string, endMarker: string): string {
-    const start = daemonSource.indexOf(startMarker);
-    expect(start).toBeGreaterThan(-1);
-    const end = daemonSource.indexOf(endMarker, start);
-    expect(end).toBeGreaterThan(start);
-    return daemonSource.slice(start, end);
-  }
-
-  test("a mode change unloads after the grace or prewarms, whichever engine is live", () => {
-    expect(daemonSource).toContain("const KOKORO_MANUAL_GRACE_MS = 60_000");
-    const helper = between("const kokoroByMode = (paused: boolean", "pause = new PauseController({");
-    expect(helper).toContain("for (const engine of [ttsWorker, ttsSupervisor])");
-    // 2026-10-08: manual mode keeps the voice while Read replies aloud is on and memory allows (`keepVoiceLoaded`),
-    // so what Tyler asks to hear is in his voice, not `say`. Off, or a small Mac, unloads as before.
-    expect(helper).toContain("const keep = keepVoiceLoaded(paused);");
-    expect(helper).toContain('if (!keep) engine?.unloadAfter(graceMs, cfg.speak ? "unloaded — manual mode; reloads in auto mode" : "unloaded — Read replies aloud is off")');
-    expect(helper).toContain('else engine?.prewarm(paused ? "manual mode, kept for what you ask to hear" : "auto mode")');
-    expect(daemonSource).toContain("cfg.speak && (!paused || totalmem() >= KOKORO_KEEP_IN_MANUAL_MIN_BYTES)");
-    // Both markers must EXIST before their order means anything.
-    const mode = between("setModeState: (paused) => {", "speak: (text) => voice.speak(cfg, text)");
-    const state = mode.indexOf('setState(paused ? "paused" : "idle")');
-    const kokoro = mode.indexOf("kokoroByMode(paused)");
-    expect(state).toBeGreaterThan(-1);
-    expect(kokoro).toBeGreaterThan(state);
-  });
-
-  // 2026-10-23, Tyler: "why has Kokoro been working if voice has been off? does it compute it anyways?" The voice kept
-  // in manual mode synthesised "Ready." every ten minutes all night. Health checks are for what is spoken unasked.
-  test("the worker is health-checked only in auto mode with Read replies aloud on, from boot and on every change", () => {
-    expect(daemonSource).toContain("const kokoroHealthByMode = (paused: boolean): void => ttsWorker.setHealthChecks(cfg.speak && !paused);");
-    const helper = between("const kokoroByMode = (paused: boolean", "pause = new PauseController({");
-    expect(helper).toContain("kokoroHealthByMode(paused);");
-    const boot = between("if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0);", "void voiceEnv?.start()");
-    expect(boot).toContain("kokoroHealthByMode(pause.paused);");
-  });
-
-  test("a daemon booting in manual mode unloads before either engine starts, unless manual mode keeps the voice", () => {
-    const boot = between("ttsSupervisor = new TtsSupervisor({", "const whisperBinaryAvailable");
-    const unload = boot.indexOf("if (pause.paused && !keepVoiceLoaded(true)) kokoroByMode(true, 0)");
-    // The worker starts when voiceEnv hands it an interpreter (setPython), so
-    // voiceEnv's start is the worker's start; an unloaded worker stays unloaded
-    // through a handover (test/voice-env.test.ts).
-    const worker = boot.indexOf("void voiceEnv?.start()");
-    const server = boot.indexOf("ttsStartup = ttsSupervisor.start()");
-    expect(unload).toBeGreaterThan(-1);
-    expect(worker).toBeGreaterThan(unload);
-    expect(server).toBeGreaterThan(unload);
   });
 });

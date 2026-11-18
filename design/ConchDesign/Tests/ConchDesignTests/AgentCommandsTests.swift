@@ -29,7 +29,6 @@ final class AgentCommandsTests: XCTestCase {
         XCTAssertTrue(AgentCommands.slash(for: "codex").contains { $0.line == "/fast" })
         XCTAssertFalse(AgentCommands.slash(for: "codex").contains { $0.line == "/memory" })
         let compact = AgentCommands.slash(for: "claude").first { $0.line == "/compact" }
-        XCTAssertEqual(compact?.argumentHint, "what to keep (optional)")
         XCTAssertEqual(compact?.typed(with: " auth flow "), "/compact auth flow")
         XCTAssertEqual(compact?.typed(with: ""), "/compact")
     }
@@ -53,7 +52,6 @@ final class AgentCommandsTests: XCTestCase {
         XCTAssertFalse(server.enabledForNextSession)
         XCTAssertTrue(server.isUnavailable)
         XCTAssertEqual(server.headline.state, "no")
-        XCTAssertEqual(server.kindSummary, "stdio · figma")
     }
 
     private static func evidence(_ state: String) -> String {

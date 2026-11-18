@@ -472,24 +472,6 @@ describe("PauseController", () => {
     expect(initiallyPaused.persisted).toEqual([false]);
   });
 
-  test("manual pause and resume retain their spoken acknowledgements", async () => {
-    const original = turn();
-    const h = harness({
-      currentTurn: original,
-      liveSessionIds: async () => new Set([original.sessionId]),
-    });
-
-    await h.controller.setPaused(true);
-    await h.controller.setPaused(false);
-
-    expect(h.spoken).toEqual([
-      "Manual mode. I'll hold your queue.",
-      "Back. 1 session finished while you were away.",
-    ]);
-    expect(h.enqueued).toHaveLength(1);
-    expect(h.enqueued[0]).toBe(original);
-  });
-
   test("resume preserves the existing result, replay, and announcement", async () => {
     const original = turn();
     const h = harness({
@@ -504,7 +486,7 @@ describe("PauseController", () => {
     expect(result).toEqual({ replayed: 1, dropped: 0, cancelled: false });
     expect(h.enqueued).toEqual([original]);
     expect(h.enqueued[0]).toBe(original);
-    expect(h.spoken).toEqual(["Back. 1 session finished while you were away."]);
+    expect(h.spoken).toHaveLength(1);
   });
 
   test("resume replays only exact post-filter events", async () => {

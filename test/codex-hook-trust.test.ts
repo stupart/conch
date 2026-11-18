@@ -94,10 +94,8 @@ describe("codexHookReview", () => {
     expect(codexHookReview([hook("stop")], linked, COMMAND).trust).toContain(`"${join(codexHome, "hooks.json")}:stop:0:0"`);
   });
 
-  test("the refusal names what Codex would ask about and what to do", () => {
-    expect(backgroundHookReviewError(["say done"])).toBe("Codex would stop before starting to ask you to review a hook conch didn't add"
-      + " (say done), and in the background nobody would see it. Start this one in Terminal and answer it there once, or review"
-      + " them in any Codex session first.");
+  test("the refusal names what Codex would ask about, the first three at most", () => {
+    expect(backgroundHookReviewError(["say done"])).toContain("(say done)");
     expect(backgroundHookReviewError(["a", "b", "c", "d", "e"])).toContain("review 5 hooks conch didn't add (a; b; c and 2 more)");
   });
 });

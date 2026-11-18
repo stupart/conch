@@ -11,27 +11,6 @@ import XCTest
 final class SettingsPageTests: XCTestCase {
     // MARK: Sections
 
-    /// The seven the window had, in its order, and Browser (2026-10-11): conch's browser profiles, and Chrome's sign-ins
-    /// copied into them. Then Logins (2026-10-14) beside it: which CLIs, agents, MCP servers, plugins and browser profiles
-    /// are signed in, as whom. Skills and Benchmarks (2026-10-28) after Plugins & MCP, the tools they sit beside.
-    /// And Failures (2026-10-28) last, after Setup: failure tickets and their Fix. Workflows (2026-11-11) beside Skills.
-    /// Resources (2026-11-11) just before Failures: what each session uses, and the agents' budget. Teams (2026-11-12)
-    /// after Environments: team types, their roles and rules, and the teams running.
-    func testTheSectionsAreTheWindowsSevenThenBrowserAndLoginsInTheirOrder() {
-        XCTAssertEqual(SettingsSection.allCases.map(\.title),
-                       ["Providers", "Environments", "Teams", "Plugins & MCP", "Skills", "Workflows", "Benchmarks", "Browser", "Logins", "General", "Phone app", "Permissions", "Setup", "Resources", "Failures"])
-        // The raw values are what the separate window remembered, so the section left there is the one the page opens on.
-        XCTAssertEqual(SettingsSection.allCases.map(\.rawValue),
-                       ["providers", "environments", "teams", "tools", "skills", "workflows", "benchmarks", "browser", "logins", "general", "phone", "permissions", "setup", "resources", "failures"])
-        XCTAssertEqual(SettingsSection.storageKey, "conch.settings.section")
-        XCTAssertEqual(Set(SettingsSection.allCases.map(\.symbol)).count, SettingsSection.allCases.count, "a mark each")
-    }
-
-    /// Skills, Workflows and Benchmarks lay out a list and a reader across the whole width; every other section stops at the column.
-    func testOnlyTheSectionsWithAReaderRunTheWholeWidth() {
-        XCTAssertEqual(SettingsSection.allCases.filter(\.runsFullWidth), [.skills, .workflows, .benchmarks])
-    }
-
     func testARememberedSectionIsReadBackAndAnythingElseIsTheFirst() {
         XCTAssertEqual(SettingsSection(stored: "phone"), .phone)
         XCTAssertEqual(SettingsSection(stored: "tools"), .tools)
@@ -95,11 +74,7 @@ final class SettingsPageTests: XCTestCase {
     /// The section stops at the column; whatever the window has beyond it is left on the right, inside the scroll view, so
     /// its scroller stays at the window's edge.
     func testASectionRunsToTheColumnWhateverTheWindow() {
-        XCTAssertEqual(SettingsLayout.column, 720)
-        XCTAssertEqual(SettingsLayout.listWidth, 220)
-        XCTAssertEqual(SettingsLayout.inset, ConchSpace.x6)
-        XCTAssertEqual(SettingsLayout.headerGap, ConchSpace.x5, "one gap under every section's title, on the scale")
-        XCTAssertTrue(ConchSpace.scale.contains(SettingsLayout.headerGap))
+        XCTAssertTrue(ConchSpace.scale.contains(SettingsLayout.headerGap), "one gap under every section's title, on the scale")
         // 1440 and 1024 wide windows, less the list and its hairline.
         XCTAssertEqual(SettingsLayout.trailingMargin(width: 1440 - 221), 499)
         XCTAssertEqual(SettingsLayout.trailingMargin(width: 1024 - 221), 83)

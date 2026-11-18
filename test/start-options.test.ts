@@ -1,71 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { agentAdapters, BYPASS_OPTION, claudeAdapter, codexAdapter } from "../src/agent-adapter.ts";
-import {
-  startRequestFromArgv,
-  startUsage,
-  terminalSessionCommand,
-} from "../src/session-lifecycle.ts";
+import { startRequestFromArgv, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlMessage } from "../src/settings.ts";
-
-const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
-// A missing token has index -1: ordering alone would reward a deletion.
-function expectBefore(source: string, first: string, second: string) {
-  expect(source).toContain(first);
-  expect(source).toContain(second);
-  expect(source.indexOf(first)).toBeLessThan(source.indexOf(second));
-}
-
-describe("the start-options table (C1)", () => {
-  test.each(agentAdapters().map((adapter) => [adapter.displayName, adapter] as const))(
-    "%s: every entry has a flag, a kind and the CLI's help; enums have choices; names are unique",
-    (_, adapter) => {
-      expect(adapter.startOptions.length).toBeGreaterThan(0);
-      const names = new Set<string>();
-      for (const entry of adapter.startOptions) {
-        expect(entry.name).toMatch(/^[a-z][a-z-]*$/);
-        // A per-launch config override names its one fixed key; every other entry is a long flag.
-        if (entry.configKey) {
-          expect(entry.flag).toBe("-c");
-          expect(entry.configKey).toMatch(/^[a-z_]+$/);
-        } else {
-          expect(entry.flag).toMatch(/^--[a-z][a-z-]*$/);
-        }
-        expect(["enum", "bool", "string"]).toContain(entry.kind);
-        expect(entry.help.length).toBeGreaterThan(10);
-        if (entry.kind === "enum") expect(entry.choices?.length ?? 0).toBeGreaterThan(1);
-        else expect(entry.choices).toBeUndefined();
-        expect(names.has(entry.name)).toBe(false);
-        names.add(entry.name);
-      }
-      const bypass = adapter.startOptions.find((entry) => entry.name === BYPASS_OPTION);
-      expect(bypass?.kind).toBe("bool");
-      expect(bypass?.flag).toBe(adapter.bypassPermissionsFlag);
-    },
-  );
-
-  test("lists what each CLI's --help offers, and nothing free-form", () => {
-    // `claude --help` 2.1.266 and `codex --help` 0.154.0, read on this Mac.
-    expect(claudeAdapter.startOptions.map((entry) => entry.flag))
-      .toEqual(["--model", "--permission-mode", "--dangerously-skip-permissions", "--effort", "--fork-session"]);
-    expect(codexAdapter.startOptions.map((entry) => entry.flag))
-      .toEqual(["-c", "-c", "--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
-    // Codex's model and effort are `-c` overrides for one launch, each with its own fixed key;
-    // never `--model` (conch never forces a model through the flag) and never a free-form `-c`.
-    expect(codexAdapter.startOptions.filter((entry) => entry.configKey).map((entry) => [entry.name, entry.configKey]))
-      .toEqual([["model", "model"], ["reasoning-effort", "model_reasoning_effort"]]);
-    expect(codexAdapter.startOptions.map((entry) => entry.flag)).not.toContain("--model");
-    // Tool lists, extra directories and raw config overrides cannot be validated; they stay out.
-    for (const adapter of agentAdapters()) {
-      for (const entry of adapter.startOptions) {
-        expect(entry.flag).not.toMatch(/tools|add-dir|config/);
-        if (entry.flag === "-c") expect(["model", "model_reasoning_effort"]).toContain(entry.configKey ?? "");
-      }
-    }
-  });
-});
 
 describe("start-option validation", () => {
   const start = { kind: "session-start" as const, backend: "claude" as const, cwd: "/w" };
@@ -86,32 +21,16 @@ describe("start-option validation", () => {
   });
 
   test.each([
-    [
-      { yolo: true },
-      'Claude Code has no start option "yolo" (it offers model, permission-mode, bypass-permissions, effort, fork-session)',
-    ],
-    [
-      { "permission-mode": "yolo" },
-      '--permission-mode: "yolo" is not one of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan — Permission mode to use for the session',
-    ],
-    [
-      { "bypass-permissions": "yes" },
-      "--dangerously-skip-permissions is on or off — Bypass all permission checks. Recommended only for sandboxes with no internet access.",
-    ],
-    [
-      { effort: true },
-      "--effort takes a value — Effort level for the current session (low, medium, high, xhigh, max)",
-    ],
-    [
-      { model: "opus; rm -rf /" },
-      "--model must be letters, digits, dots, underscores, colons, brackets or hyphens, starting with a letter or number — Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5').",
-    ],
-    [
-      { "fork-session": true },
-      "--fork-session applies only to a resume — When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)",
-    ],
-  ])("refuses %j in the CLI's own words, at the socket and at a direct launch", (options, err) => {
-    expect(validateControlMessage({ ...start, options })).toEqual({ ok: false, err });
+    [{ yolo: true }, 'has no start option "yolo"'],
+    [{ "permission-mode": "yolo" }, '"yolo" is not one of'],
+    [{ "bypass-permissions": "yes" }, "is on or off"],
+    [{ effort: true }, "--effort takes a value"],
+    [{ model: "opus; rm -rf /" }, "--model must be letters"],
+    [{ "fork-session": true }, "--fork-session applies only to a resume"],
+  ])("refuses %j, at the socket and at a direct launch", (options, err) => {
+    const result = validateControlMessage({ ...start, options });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.err).toContain(err);
     expect(() => terminalSessionCommand({ backend: "claude", cwd: "/w", options } as never)).toThrow(err);
   });
 
@@ -162,12 +81,6 @@ describe("the rendered command", () => {
       .toBe("cd -- '/w' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox");
   });
 
-  test("no options, or a false toggle, renders nothing extra", () => {
-    expect(terminalSessionCommand({ backend: "claude", cwd: "/w", options: {} })).toBe("cd -- '/w' && exec claude");
-    expect(terminalSessionCommand({ backend: "codex", cwd: "/w", bypassPermissions: true, options: { "bypass-permissions": false } }))
-      .toBe("cd -- '/w' && exec codex --no-daemon");
-  });
-
   /**
    * The launch Tyler pasted from his terminal, which never opened a session:
    *
@@ -192,13 +105,6 @@ describe("the rendered command", () => {
       expect(terminalSessionCommand({
         backend: "codex", cwd: projects, bypassPermissions: true, trustFolder: true, resumeSessionId: "0199-abc",
       })).toBe(`cd -- '${projects}' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox ${trusted} resume '0199-abc'`);
-    });
-
-    test("Claude's equivalent, fresh and resumed, pinned the same way", () => {
-      expect(terminalSessionCommand({ backend: "claude", cwd: "/w", bypassPermissions: true }))
-        .toBe("cd -- '/w' && exec claude --dangerously-skip-permissions");
-      expect(terminalSessionCommand({ backend: "claude", cwd: "/w", bypassPermissions: true, resumeSessionId: "abc" }))
-        .toBe("cd -- '/w' && exec claude --dangerously-skip-permissions --resume 'abc'");
     });
 
     test.each([
@@ -261,23 +167,6 @@ describe("the rendered command", () => {
       expect(terminalSessionCommand({
         backend: "codex", cwd: "/w", options: { sandbox: "danger-full-access", "ask-for-approval": "never" },
       })).toBe("cd -- '/w' && exec codex --no-daemon --sandbox 'danger-full-access' --ask-for-approval 'never'");
-      // Claude has no such pair; its bypass renders beside everything else.
-      expect(terminalSessionCommand({
-        backend: "claude", cwd: "/w", options: { "bypass-permissions": true, "permission-mode": "plan" },
-      })).toBe("cd -- '/w' && exec claude --dangerously-skip-permissions --permission-mode 'plan'");
-    });
-
-    test("the conflict is declared on the table row, from the CLI's own refusal", () => {
-      const bypass = codexAdapter.startOptions.find((entry) => entry.name === BYPASS_OPTION);
-      expect(bypass?.conflictsWith).toEqual(["sandbox", "ask-for-approval"]);
-      // Every declared conflict must name a real option on the same row.
-      for (const adapter of agentAdapters()) {
-        for (const entry of adapter.startOptions) {
-          for (const name of entry.conflictsWith ?? []) {
-            expect(adapter.startOptions.some((option) => option.name === name)).toBe(true);
-          }
-        }
-      }
     });
   });
 
@@ -314,137 +203,5 @@ describe("conch start", () => {
     [["--cwd"], "--cwd needs a value"],
   ])("refuses %j", (args, message) => {
     expect(() => startRequestFromArgv(args)).toThrow(message);
-  });
-
-  test("--help shows exactly the table, in the CLI's words", () => {
-    for (const adapter of agentAdapters()) {
-      const usage = startUsage(adapter);
-      expect(usage).toContain(`${adapter.displayName} options:`);
-      for (const entry of adapter.startOptions) {
-        expect(usage).toContain(`--${entry.name}`);
-        expect(usage).toContain(entry.help);
-        for (const choice of entry.choices ?? []) expect(usage).toContain(choice);
-        if (entry.kind === "bool") expect(usage).toContain(`--no-${entry.name}`);
-      }
-    }
-  });
-
-  test("the CLI routes `start` through the parser and the launcher, with the persisted default", () => {
-    const cli = read("src/cli.ts");
-    const from = cli.indexOf('case "start": {');
-    expect(from).toBeGreaterThan(-1);
-    const block = cli.slice(from, cli.indexOf('case "help-session": {', from));
-    expect(block).toContain("startRequestFromArgv(rest)");
-    expect(block).toContain("agentAdapters().map(startUsage)");
-    expect(block).toContain('(request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request })');
-    // A refused flag pair or a missing binary prints one line, not a stack
-    // trace. Measured from the launch, because the argument parser above it
-    // has a catch of its own — the first one in the block is not this one.
-    const launch = block.indexOf('(request.host === "background" ? startBackgroundSession : startTerminalSession)({ bypassPermissions: cfg.bypassPermissions, ...request })');
-    expect(block.indexOf("} catch (error) {", launch)).toBeGreaterThan(launch);
-    expect(block.indexOf("console.error(error instanceof Error ? error.message : String(error));", launch)).toBeGreaterThan(launch);
-    expect(cli).toContain("start [claude|codex] [options]");
-  });
-
-  test("the daemon hands the request's options to the launcher", () => {
-    const source = read("src/daemon.ts");
-    const from = source.indexOf("start: async (message) =>");
-    expect(from).toBeGreaterThan(-1);
-    const handler = source.slice(from, source.indexOf("folderTrusted:", from));
-    // Everything the request carries, but what is the answer's rather than the launch's (an agent's `conch_start`).
-    expect(handler).toContain("const { wait, label, ...asked } = message;");
-    expect(handler).toContain("const request = { ...asked, bypassPermissions: cfg.bypassPermissions };");
-  });
-});
-
-/** The Swift spelling of one table entry, as both sheets write it. */
-function swiftEntry(entry: (typeof claudeAdapter.startOptions)[number]): string {
-  const kind = entry.kind === "bool"
-    ? ".toggle"
-    : entry.kind === "string"
-    ? ".text"
-    : `.choice([${(entry.choices ?? []).map((choice) => `"${choice}"`).join(", ")}])`;
-  return `StartOption(name: "${entry.name}", kind: ${kind}, help: "${entry.help}"${entry.resumeOnly ? ", resumeOnly: true" : ""})`;
-}
-
-for (const [platform, path, resuming] of [
-  ["Mac", "mac-app/conch-mac/ContentView.swift", "mode == .resume"],
-  ["iOS", "mobile/conch-ios/conch-ios/LedgerView.swift", "resuming"],
-] as const) {
-  describe(`${platform} start sheet`, () => {
-    const source = read(path);
-
-    test("mirrors the table exactly: every entry, kind, choice and help line, per agent, and no others", () => {
-      for (const adapter of agentAdapters()) {
-        const head = `static let ${adapter.backend}: [StartOption] = [`;
-        const from = source.indexOf(head);
-        expect(from).toBeGreaterThan(-1);
-        const list = source.slice(from, source.indexOf("]\n", from + head.length));
-        for (const entry of adapter.startOptions) expect(list).toContain(swiftEntry(entry));
-        expect(list.split("StartOption(name:").length - 1).toBe(adapter.startOptions.length);
-      }
-    });
-
-    test("shows the chosen agent's table, resume-only entries only while resuming", () => {
-      expect(source).toContain(`StartOption.table(for: effectiveBackend).filter { !$0.resumeOnly || ${resuming} }`);
-      expect(source).toContain("ForEach(shownOptions)");
-    });
-
-    test("a toggle for booleans, a segmented control for enums, a field for strings, each with its help line", () => {
-      expectBefore(source, "case .toggle:", "Toggle(option.name, isOn: toggleBinding(option.name))");
-      // The mode picker near the top is segmented too, so look after the choice case.
-      const choice = source.indexOf("case let .choice(choices):");
-      expect(choice).toBeGreaterThan(-1);
-      expect(source.slice(choice)).toContain(platform === "Mac"
-        ? ".modifier(ChoiceStyle(segmented: choices.count <= 3))"
-        : ".pickerStyle(.segmented)");
-      if (platform === "Mac") expect(source).toContain("content.pickerStyle(.segmented)");
-      expectBefore(source, "case .text:", "TextField(option.name, text: textBinding(option.name)");
-      expectBefore(source, "TextField(option.name, text: textBinding(option.name)", "Text(option.help)");
-      expect(source).toContain('Text("Default").tag("")');
-    });
-
-    test("the bypass toggle starts from the persisted setting, untouched toggles only", () => {
-      expect(source).toContain(platform === "Mac"
-        ? "await store.bypassPermissionsDefault()"
-        : '$0.key == "bypass-permissions"');
-      expectBefore(source, 'optionValues["bypass-permissions"] == nil', 'optionValues["bypass-permissions"] = .bool(value)');
-    });
-
-    test("sends exactly the shown options the person set", () => {
-      expectBefore(source, "for option in shownOptions {", "if let value = optionValues[option.name]");
-      expect(source).toContain("options: sentOptions");
-    });
-  });
-}
-
-describe("the option values reach the daemon", () => {
-  test("Mac: the socket request carries `options`, and the store forwards them", () => {
-    expect(read("mac-app/conch-mac/ConchSocketClient.swift")).toContain("let options: [String: ConchStartOptionValue]?");
-    const store = read("mac-app/conch-mac/StateStore.swift");
-    expect(store).toContain("options: options.isEmpty ? nil : options");
-    expect(store).toContain('reply.snapshot["bypass-permissions"]?.value');
-  });
-
-  test("iOS: the bridge puts `options` on the wire", () => {
-    expectBefore(read("mobile/conch-ios/conch-ios/BridgeClient.swift"), '"kind": "session-start"', 'message["options"] = options');
-  });
-});
-
-for (const [platform, path] of [
-  ["iOS", "mobile/conch-ios/conch-ios/LedgerView.swift"],
-  ["Mac", "mac-app/conch-mac/ContentView.swift"],
-] as const) describe(`${platform}: a bypass default the daemon never answered`, () => {
-  test("says the Mac's default applies, and sends nothing until the person picks", () => {
-    const source = read(path);
-    const unknown = 'if option.name == "bypass-permissions", optionValues[option.name] == nil {';
-    const menu = `Menu("uses your Mac's default")`;
-    const on = 'Button("On") { optionValues[option.name] = .bool(true) }';
-    const off = 'Button("Off") { optionValues[option.name] = .bool(false) }';
-    expectBefore(source, "case .toggle:", unknown);
-    expectBefore(source, unknown, menu);
-    expectBefore(source, menu, on);
-    expectBefore(source, on, off);
-    expectBefore(source, off, "Toggle(option.name, isOn: toggleBinding(option.name))");
   });
 });

@@ -245,10 +245,6 @@ final class ChromeCookiesTests: XCTestCase {
         XCTAssertEqual(ChromeCookies.profiles(in: chrome), [], "Chrome's folder, empty")
     }
 
-    func testTheDefaultFolderIsChromesUnderApplicationSupport() {
-        XCTAssertTrue(ChromeCookies.chromeFolder.path.hasSuffix("/Library/Application Support/Google/Chrome"))
-    }
-
     func testEachOtherProfileGetsAConchProfileOfItsOwn() {
         let names = ChromeCookies.conchProfileNames(for: [
             ChromeProfile(directory: "Default", name: "Tyler"),

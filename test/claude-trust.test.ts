@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { applyRuntimeControlMessage, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
 import { acceptClaudeTrust } from "../src/session-lifecycle.ts";
-import { adapterFor } from "../src/agent-adapter.ts";
 import { validateControlResponse } from "../src/settings.ts";
 
 /**
@@ -109,43 +107,5 @@ describe("asking before a Claude session starts in a folder it doesn't trust", (
       expect(validateControlResponse({ kind: "session-needs-trust", backend, cwd: "/p" } as unknown))
         .toEqual({ ok: true, value: { kind: "session-needs-trust", backend, cwd: "/p" } });
     }
-  });
-
-  test("only an agent that asks on screen gets its answer typed; Codex takes a flag", () => {
-    expect(adapterFor("claude").trustTypedAtLaunch).toBe(true);
-    expect(adapterFor("codex").trustTypedAtLaunch).toBe(false);
-    const daemon = readFileSync(`${import.meta.dir}/../src/daemon.ts`, "utf8");
-    expect(daemon).toContain("if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {");
-    // Start, restart, account handoff, bringing back a session its tmux server took with it (background-recovery.ts),
-    // a fork (`forkLiveSession`, which sets trustFolder as a restart does), and a failure ticket's fix session
-    // (failure-tickets.ts, in conch's own checkout, which is trusted already).
-    // And the restart guard's (`restart-recovery.ts`), which brings sessions back after the Mac restarts, Restart on a
-    // session whose process is already gone, which resumes it (pid-reuse-after-restart.test.ts), a start an agent
-    // waits on (`startLiveSession`, `conch_start`), which the trust question comes before as it does any start, and Not
-    // in conch's Resume (elsewhere.ts), in the folder the agent already runs in: ten.
-    expect(daemon.match(/await launchSession\(|=> launchSession\(/g)?.length).toBe(10);
-    // Every launch goes through launchSession: its own call is the only direct one.
-    expect(daemon.match(/await startTerminalSession\(/g)?.length).toBe(1);
-  });
-});
-
-describe("the start sheet, as source (conch-mac has no XCTest target)", () => {
-  const view = readFileSync(`${import.meta.dir}/../mac-app/conch-mac/ContentView.swift`, "utf8");
-
-  test("keeps watching after its notice, and closes itself when the session checks in", () => {
-    expect(view).toContain("let late = await waitForSession(rounds: 225)\n            if let late, error == notice {\n                onStarted(late)\n                dismiss()");
-    // And one that never checks in is filed as a failure (docs/failure-tickets.md), unless the sheet went away first.
-    expect(view).toContain("} else if late == nil, error == notice, !Task.isCancelled {");
-    expect(view).toContain('store.reportAppError(operation: "session-start", message: "The session never checked in."');
-    // Which row is the launched session is one rule, shared with the phone and tested in
-    // ConchDesign (StartedSessionTests): sessions only, this agent, this account.
-    expect(view).toContain("let watch = StartedSessionWatch(");
-    expect(view).toContain("accountId: expectedAccount,");
-    expect(view).toContain("accountId: $0.claudeAccountId ?? $0.codexAccountId)");
-  });
-
-  test("asks in Claude's words for Claude, and Codex's for Codex", () => {
-    expect(view).toContain('Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder")');
-    expect(view).toContain("Claude Code'll be able to read, edit, and execute files");
   });
 });

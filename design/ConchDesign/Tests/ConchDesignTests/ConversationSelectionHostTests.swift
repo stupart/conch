@@ -6,8 +6,6 @@ import XCTest
 /// The selection through real views, in a window off every screen: SwiftUI's own layout of a bubble and a markdown reply
 /// turned into geometry, the pointer's surface taking presses on text and nowhere else, a drag made of mouse events, and
 /// a selection that outlives rows the history region lets go of.
-///
-/// `CONCH_SELECTION_RENDERS=<dir>` writes the lit conversation, light and dark, as PNGs.
 @MainActor
 final class ConversationSelectionHostTests: XCTestCase {
     static let first = "Why does the build fail?"
@@ -90,13 +88,13 @@ final class ConversationSelectionHostTests: XCTestCase {
     }
 
     /// A borderless window far off every screen, never key and never in front of anything: the scroll benchmark's.
-    private func host<Content: View>(_ content: Content, dark: Bool = false, size: CGSize = CGSize(width: 760, height: 640)) -> (NSWindow, NSView) {
+    private func host<Content: View>(_ content: Content, size: CGSize = CGSize(width: 760, height: 640)) -> (NSWindow, NSView) {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: size.width, height: size.height), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        let view = NSHostingView(rootView: content.environment(\.colorScheme, dark ? .dark : .light))
+        window.appearance = NSAppearance(named: .aqua)
+        let view = NSHostingView(rootView: content.environment(\.colorScheme, .light))
         window.contentView = view
         window.orderFrontRegardless()
         windows.append(window)
@@ -151,10 +149,10 @@ final class ConversationSelectionHostTests: XCTestCase {
         settle(view) { ids.allSatisfy { controller.geometry(of: 0, in: $0) != nil } }
     }
 
-    private func exchange(dark: Bool = false, armed: Bool = true) -> (ConversationSelectionController, NSWindow, NSView, ConversationSelectionSurfaceView) {
+    private func exchange(armed: Bool = true) -> (ConversationSelectionController, NSWindow, NSView, ConversationSelectionSurfaceView) {
         let controller = ConversationSelectionController()
         controller.source = .init(rowIDs: { ["u1", "a1", "u2"] }, rowTexts: Self.texts)
-        let (window, view) = host(Exchange(controller: controller), dark: dark)
+        let (window, view) = host(Exchange(controller: controller))
         settle(view) { ["u1", "a1", "u2"].allSatisfy { controller.frame(of: $0) != nil } }
         guard let surface = surface(in: view) else {
             XCTFail("no surface")
@@ -484,26 +482,5 @@ final class ConversationSelectionHostTests: XCTestCase {
         let now = dismissIsPressable(wholeRow: false)
         XCTAssertFalse(now.taken, "Dismiss is the button's")
         XCTAssertTrue(now.dismissed, "and a click on it dismisses")
-    }
-
-    // MARK: - Pictures
-
-    func testRenderTheLitConversation() throws {
-        guard let directory = ProcessInfo.processInfo.environment["CONCH_SELECTION_RENDERS"] else { return }
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        for dark in [false, true] {
-            let (controller, _, view, surface) = exchange(dark: dark)
-            surface.mouseDown(with: mouse(.leftMouseDown, caret(controller, "u1", 0, 4), on: surface))
-            surface.mouseDragged(with: mouse(.leftMouseDragged, caret(controller, "u2", 0, 6), on: surface))
-            surface.mouseUp(with: mouse(.leftMouseUp, caret(controller, "u2", 0, 6), on: surface))
-            for emphasized in [true, false] {
-                controller.setEmphasized(emphasized)
-                settle(view)
-                guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return XCTFail("no bitmap") }
-                view.cacheDisplay(in: view.bounds, to: rep)
-                let name = "conversation-selection-\(dark ? "dark" : "light")\(emphasized ? "" : "-unfocused").png"
-                try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
-            }
-        }
     }
 }

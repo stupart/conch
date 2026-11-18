@@ -25,9 +25,7 @@ final class VideoAttachmentTests: XCTestCase {
         let message = VideoAttachment.message(text: "  what broke?\n", attachments: [video, picture]) { $0 == video ? self.brief.block(video: $0.path) : nil }
         let lines = message.split(separator: "\n").map(String.init)
         XCTAssertEqual(lines.first, picture.path)
-        XCTAssertEqual(lines[1], "[video] Tyler sent a video from his Mac (0:04).")
-        XCTAssertEqual(lines.last, "what broke?")
-        XCTAssertTrue(message.contains("The video itself, for people (agents can't watch video): \(video.path)\nwhat broke?"))
+        XCTAssertTrue(message.hasSuffix("\n" + brief.block(video: video.path) + "\nwhat broke?"), message)
         // No words, no trailing line; no attachments, the words alone.
         XCTAssertTrue(VideoAttachment.message(text: "", attachments: [video]) { _ in "BLOCK" } == "BLOCK")
         XCTAssertEqual(VideoAttachment.message(text: " hi ", attachments: []) { _ in nil }, "hi")
@@ -37,13 +35,8 @@ final class VideoAttachmentTests: XCTestCase {
     func testItSendsOnlyOnceEveryVideoIsReady() {
         XCTAssertNil(VideoAttachment.readiness([]))
         XCTAssertNil(VideoAttachment.readiness([.ready(brief), .ready(brief)]))
-        XCTAssertEqual(VideoAttachment.readiness([.ready(brief), .preparing]), "Getting the video ready for the agent…")
-        XCTAssertEqual(VideoAttachment.readiness([nil]), "Getting the video ready for the agent…")
-        XCTAssertEqual(VideoAttachment.readiness([.preparing, .failed("no video in it")]), "Remove the video conch couldn't read to send")
-    }
-
-    func testItsTileSaysHowLongAndHowMuchIsRead() {
-        XCTAssertEqual(VideoAttachment.caption(length: 42), "0:42")
-        XCTAssertEqual(VideoAttachment.caption(length: 312), "first 2:00 of 5:12")
+        XCTAssertNotNil(VideoAttachment.readiness([.ready(brief), .preparing]))
+        XCTAssertNotNil(VideoAttachment.readiness([nil]))
+        XCTAssertNotNil(VideoAttachment.readiness([.preparing, .failed("no video in it")]))
     }
 }

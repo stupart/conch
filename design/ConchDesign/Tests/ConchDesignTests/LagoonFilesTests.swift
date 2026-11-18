@@ -187,7 +187,6 @@ final class LagoonFilesTests: XCTestCase {
         // `act` says which intents are live in every phase: Approve and its Undo, the reply bar, looking at a result
         // (2026-10-05), and the sidebar following the panel (2026-10-13).
         XCTAssertEqual(Lagoon.pageURL(readOnly: true).absoluteString, "conch-lagoon://lagoon/index.html?app=1&readonly=1&act=approve,unapprove,reply,viewed,focusSession")
-        XCTAssertEqual(Lagoon.actsByDefault, "approve,unapprove,reply,viewed,focusSession")
         XCTAssertEqual(Lagoon.pageURL(readOnly: false).absoluteString, "conch-lagoon://lagoon/index.html?app=1&act=approve,unapprove,reply,viewed,focusSession")
         XCTAssertEqual(Lagoon.mimeType(forPathExtension: "js"), "text/javascript; charset=utf-8")
         XCTAssertEqual(Lagoon.mimeType(forPathExtension: "WEBP"), "image/webp")

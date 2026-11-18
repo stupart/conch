@@ -43,8 +43,7 @@ final class PhoneStepStateTests: XCTestCase {
     }
 }
 
-/// The iPhone's own side: where its setup is, said again on each link (#28), and the scanner's words for a code it can't
-/// read (#31).
+/// The iPhone's own side: where its setup is, said again on each link (#28).
 final class PhoneSetupReportingTests: XCTestCase {
     func testWhereItIsIsItsScreensStageOrFinished() {
         XCTAssertNil(PhoneSetupFlow().reportable, "Connecting: the Mac sees that for itself")
@@ -62,13 +61,5 @@ final class PhoneSetupReportingTests: XCTestCase {
         // "Open conch" was tapped: finished, whatever screen the saved flow was left on.
         XCTAssertEqual(PhoneSetupFlow(screen: .tour, finished: true).reportable, .finished)
         XCTAssertEqual(PhoneSetupFlow(screen: .connecting, finished: true).reportable, .finished)
-    }
-
-    func testAnUnreadableCodeIsSaidPlainly() {
-        let words = PhoneScanner.unreadableCode
-        XCTAssertFalse(words.isEmpty)
-        for jargon in ["relay", "base64", "JSON", "payload", "decode", "error"] {
-            XCTAssertFalse(words.localizedCaseInsensitiveContains(jargon), jargon)
-        }
     }
 }

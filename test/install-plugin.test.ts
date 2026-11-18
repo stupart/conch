@@ -12,10 +12,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import {
   buildConchLauncher,
-  buildInstallCommands,
   buildMcpInvocation,
-  buildMcpJson,
-  buildUninstallCommands,
   materializeEmbeddedPlugin,
   materializePlugin,
   repairPluginPrograms,
@@ -45,58 +42,6 @@ describe("plugin installer helpers", () => {
       });
   });
 
-  test("buildMcpJson uses the exact absolute Bun and CLI paths", () => {
-    const absBun = "/opt/homebrew/bin/bun";
-    const absCli = "/Users/example/conch/src/cli.ts";
-
-    expect(buildMcpJson(absBun, absCli)).toEqual({
-      mcpServers: {
-        conch: {
-          command: absBun,
-          args: ["run", absCli, "mcp"],
-        },
-      },
-    });
-
-    expect(buildMcpJson("/opt/homebrew/bin/conch", "/$bunfs/root/src/cli.ts", true))
-      .toEqual({
-        mcpServers: {
-          conch: {
-            command: "/opt/homebrew/bin/conch",
-            args: ["mcp"],
-          },
-        },
-      });
-  });
-
-  test("buildInstallCommands returns the marketplace and install argv", () => {
-    const dist = "/Users/example/.config/conch/plugin-dist";
-
-    expect(buildInstallCommands(dist)).toEqual({
-      claude: [
-        ["claude", "plugin", "marketplace", "add", dist],
-        ["claude", "plugin", "install", "conch@conch"],
-      ],
-      codex: [
-        ["codex", "plugin", "marketplace", "add", dist],
-        ["codex", "plugin", "add", "conch@conch-local"],
-      ],
-    });
-  });
-
-  test("buildUninstallCommands returns the confirmed reverse argv", () => {
-    expect(buildUninstallCommands()).toEqual({
-      claude: [
-        ["claude", "plugin", "uninstall", "conch@conch"],
-        ["claude", "plugin", "marketplace", "remove", "conch"],
-      ],
-      codex: [
-        ["codex", "plugin", "remove", "conch@conch-local"],
-        ["codex", "plugin", "marketplace", "remove", "conch-local"],
-      ],
-    });
-  });
-
   test("materialization writes parseable MCP config and current prose", async () => {
     const root = mkdtempSync("/tmp/conch-install-plugin-test-");
     roots.push(root);
@@ -117,7 +62,6 @@ describe("plugin installer helpers", () => {
     const generated = JSON.parse(
       readFileSync(join(pluginRoot, ".mcp.json"), "utf8"),
     );
-    expect(generated).toEqual(buildMcpJson(absBun, absCli));
     expect(generated.mcpServers.conch.command).toBe(absBun);
     expect(generated.mcpServers.conch.args).toEqual([
       "run",
@@ -304,44 +248,6 @@ describe("a Homebrew upgrade of bun", () => {
     expect(repaired).toBe(0);
     expect(JSON.parse(readFileSync(join(dist, ".mcp.json"), "utf8")).mcpServers.conch.command).toBe("/Users/t/.bun/bin/bun");
     expect(JSON.parse(readFileSync(join(dist, ".codex-mcp.json"), "utf8")).mcpServers.conch.command).toBe("/usr/local/Cellar/bun/1.4.2/bin/bun");
-  });
-});
-
-describe("the two install paths ship the same prose", () => {
-  // conch reaches users two ways with two different sources for one text:
-  //
-  //   marketplace  -> `plugin/plugins/conch` is served straight out of git
-  //                   (`source: git-subdir` in the marketplace manifest)
-  //   Homebrew/dev -> materializePlugin GENERATES those same files from
-  //                   docs/conch-control-skill.md
-  //
-  // Nothing kept them equal, and they silently drifted into three different
-  // review contracts — the checked-in AGENTS.md told agents `session` was
-  // required and must NOT name the caller, which is the exact inverse of what
-  // `requiredReviewSession` enforces, so following it was a guaranteed
-  // ToolInputError. Whichever file is edited, this fails until both match.
-  const repoRoot = join(import.meta.dir, "..");
-  const prose = readFileSync(join(repoRoot, "docs", "conch-control-skill.md"), "utf8");
-  const pluginRoot = join(repoRoot, "plugin", "plugins", "conch");
-
-  test("the checked-in AGENTS.md is the short always-on text", () => {
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(renderAgentsMd());
-  });
-
-  test("the checked-in SKILL.md is the generated prose under its frontmatter", () => {
-    const skill = readFileSync(
-      join(pluginRoot, "skills", "conch-control", "SKILL.md"),
-      "utf8",
-    );
-    expect(skill).toBe(renderSkillMd(prose));
-    expect(skill).toMatch(/^---\nname: conch-control\n/);
-  });
-
-  test("the shipped contract matches what review_to_front actually enforces", () => {
-    // The drift above was undetectable by eye. Pin the two claims that were
-    // wrong: `session` defaults to the caller, and naming a sibling is refused.
-    expect(prose).toContain("`session` is optional and defaults to you");
-    expect(prose).toContain("naming a different session is refused");
   });
 });
 

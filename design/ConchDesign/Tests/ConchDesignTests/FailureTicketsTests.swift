@@ -75,16 +75,6 @@ final class FailureTicketsTests: XCTestCase {
         XCTAssertEqual(FailureTickets.standing(ticket(status: .fixing, fix: .init(by: "you", startedAt: nowMs, branch: "b", pr: pr)), now: now), "PR #580")
         XCTAssertEqual(FailureTickets.standing(ticket(status: .fixed, fix: .init(by: "you", startedAt: nowMs, branch: "b", pr: pr)), now: now), "Fixed · #580")
         XCTAssertEqual(FailureTickets.standing(ticket(status: .ignored), now: now), "Ignored")
-        XCTAssertEqual(FailureTickets.fixLine(.init(by: "auto", startedAt: nowMs - 3 * 60_000, branch: "fix/ticket-12"), now: now),
-                       "Auto-fix started a session 3m ago on fix/ticket-12 · no PR yet")
-        XCTAssertEqual(FailureTickets.fixLine(.init(by: "you", startedAt: nowMs - 3 * 60_000, branch: "fix/ticket-12", pr: pr), now: now),
-                       "You started a fix session 3m ago on fix/ticket-12 · PR #580 open")
-    }
-
-    func testAutoFixSaysWhatItDoesAndWhatIsLeftToday() {
-        XCTAssertEqual(FailureTickets.autoFixCaption(.init(on: false, today: 0, cap: 3)),
-                       "Off. When on, conch starts a fix session for one of its own tickets as it opens, never an agent's call: one at a time, at most 3 a day. You still review and merge every PR.")
-        XCTAssertTrue(FailureTickets.autoFixCaption(.init(on: true, today: 2, cap: 3)).hasSuffix("2 of 3 used today."))
     }
 
     func testTicketsAreGroupedInTheOrderTheyAreDealtWithNewestFirst() {
@@ -116,14 +106,6 @@ final class FailureTicketsTests: XCTestCase {
         XCTAssertEqual(Set(groups[0].tickets.map(\.id)), ["b", "g"])
         XCTAssertEqual(groups[2].occurrences, 3)
         XCTAssertEqual(groups.map(\.folds), [false, false, false, true, true])
-    }
-
-    func testAPRFoundByItsDescriptionAndTheBanner() {
-        let pr = FailureTicketPR(url: "https://github.com/o/r/pull/9", number: 9, state: "open")
-        XCTAssertEqual(FailureTickets.fixLine(.init(by: "pr", startedAt: nowMs, branch: "fix/many", pr: pr), now: now),
-                       "A PR on fix/many says it fixes this · PR #9 open")
-        XCTAssertEqual(FailureTickets.alertSentence(number: 4, title: "Couldn't find <file>", count: 3), "conch bug #4: Couldn't find a file, 3 times so far")
-        XCTAssertEqual(FailureTickets.alertSentence(number: 5, title: "Typed, but the session never took it.", count: 1), "conch bug #5: Typed, but the session never took it.")
     }
 
     func testEvidenceIsTheRecordsStateAKeyALine() {

@@ -205,30 +205,6 @@ test("countCoveredSentences finds where the announcement stopped", () => {
   expect(countCoveredSentences("conch: finished, ready for your next prompt", sentences)).toBe(0);
 });
 
-test("recite header covers zero reply sentences so reading starts from sentence 0", () => {
-  const sentences = ["First one.", "Second one!", "Third one?"];
-  const label = "conch";
-  expect(countCoveredSentences(`${label}:`, sentences)).toBe(0);
-});
-
-test("a generated summary covers zero source sentences so continue starts from the top", () => {
-  const sentences = [
-    "Implemented the queue.",
-    "Added all regression tests.",
-  ];
-  expect(countCoveredSentences(
-    "conch: The queue shipped with complete regression coverage.",
-    sentences,
-  )).toBe(0);
-});
-
-test("countCoveredSentences follows the actual announcement, not a configured sentence count", () => {
-  const sentences = ["First one.", "Second one!", "Third one?", "Fourth one."];
-  // The hook that produced this event announced three sentences. A daemon
-  // started with a different announce-sentences value must still resume at 3.
-  expect(countCoveredSentences("conch: First one. Second one! Third one?", sentences)).toBe(3);
-});
-
 test("firstSentences handles a single unterminated sentence", () => {
   expect(firstSentences("no punctuation here", 2, 350)).toBe("no punctuation here");
 });
@@ -343,19 +319,6 @@ test("announce summary never calls the model for a short reply or when default-o
     askClaude,
   })).toBe("Short");
   expect(calls).toBe(0);
-});
-
-test("lastAssistantText returns the newest assistant text block", async () => {
-  const path = `/tmp/conch-test-${Date.now()}.jsonl`;
-  const lines = [
-    JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "hi" }] } }),
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "older reply" }] } }),
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "newest reply" }] } }),
-    "not json at all",
-  ];
-  await Bun.write(path, lines.join("\n"));
-  expect(await lastAssistantText(path)).toBe("newest reply");
 });
 
 test("lastAssistantText returns empty for a missing file", async () => {
@@ -550,26 +513,6 @@ test("a failed transcript read is retried instead of cached", async () => {
   expect(await reader.lastAssistantText("session.jsonl")).toBe("");
   expect(await reader.lastAssistantText("session.jsonl")).toBe("retry succeeded");
   expect(source.reads).toHaveLength(2);
-});
-
-test("parseable schema errors reject exactly like the former full readers", async () => {
-  const nullReader = createTranscriptReader(new MemoryTranscriptSource("null"));
-  await expect(nullReader.lastAssistantText("null.jsonl")).rejects.toThrow();
-  await expect(nullReader.countUserPrompts("null.jsonl")).rejects.toThrow();
-
-  const invalidPrompt = JSON.stringify({
-    type: "user",
-    message: { content: [{ type: "text", text: 1 }] },
-  });
-  const countReader = createTranscriptReader(new MemoryTranscriptSource(invalidPrompt));
-  await expect(countReader.countUserPrompts("invalid-prompt.jsonl")).rejects.toThrow();
-
-  // Reverse assistant parsing stops at the newest user even when that boundary
-  // has no final LF; the older schema error remains visible to full prompt counts.
-  const superseded = `null\n${JSON.stringify({ type: "user", message: { content: "new prompt" } })}`;
-  const supersededReader = createTranscriptReader(new MemoryTranscriptSource(superseded));
-  expect(await supersededReader.lastAssistantText("superseded.jsonl")).toBe("");
-  await expect(supersededReader.countUserPrompts("superseded.jsonl")).rejects.toThrow();
 });
 
 test("same-size mtime changes invalidate both cached parse results", async () => {

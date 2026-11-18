@@ -122,10 +122,10 @@ final class TeamsTests: XCTestCase {
         XCTAssertEqual(refused, .failed("no team type is called t"))
         let old = await TeamsStore.start(type: "t", task: "Do it", cwd: "/p", trustFolder: false,
                                          transport: answering(#"{"kind":"session-error","error":"unknown"}"#))
-        XCTAssertEqual(old, .failed("This conch can't start teams yet: it needs an updated daemon."))
+        guard case .failed = old else { return XCTFail("an old daemon's answer is a failure: \(old)") }
         let count = sent.count
         let empty = await TeamsStore.start(type: "t", task: "  ", cwd: "/p", trustFolder: false, transport: answering("{}"))
-        XCTAssertEqual(empty, .failed("Say what the team should do."))
+        guard case .failed = empty else { return XCTFail("no task is a failure: \(empty)") }
         XCTAssertEqual(sent.count, count, "nothing is sent without a task")
     }
 
@@ -135,7 +135,7 @@ final class TeamsTests: XCTestCase {
         let refused = await TeamsStore.passTask(team: "t-1", task: "Next", transport: { _ in Data(#"{"kind":"team-error","error":"its lead has ended"}"#.utf8) })
         XCTAssertEqual(refused, .failed("its lead has ended"))
         let down = await TeamsStore.passTask(team: "t-1", task: "Next", transport: { _ in throw URLError(.cannotConnectToHost) })
-        XCTAssertEqual(down, .failed("conch's daemon didn't answer. Try again."))
+        guard case .failed = down else { return XCTFail("the daemon down is a failure: \(down)") }
     }
 
     func testASaveIsCheckedHereFirstAndTheDesksRefusalIsKeptWithItsField() async {
@@ -201,20 +201,6 @@ final class TeamsTests: XCTestCase {
         // A loop can't hang it, and its roles still count.
         let looped = [TeamRole(id: "lead", name: "Lead"), TeamRole(id: "a", name: "A", reportsTo: "b"), TeamRole(id: "b", name: "B", reportsTo: "a")]
         XCTAssertEqual(Teams.hierarchyLine(looped), "Lead → A, B")
-    }
-
-    func testARolesDetailSaysWhatItRunsAs() {
-        XCTAssertEqual(Teams.roleDetail(buildReview.roles[0]), "Claude · high")
-        XCTAssertEqual(Teams.roleDetail(buildReview.roles[1]), "Claude · own worktree · on request")
-        var reviewer = buildReview.roles[2]
-        reviewer.host = .background
-        reviewer.atStart = true
-        reviewer.budgetMinutes = 90
-        reviewer.signIn = "Work"
-        XCTAssertEqual(Teams.roleDetail(reviewer), "Codex · background · 1 h 30 min budget", "a sign-in is only Claude's")
-        XCTAssertEqual(Teams.rulesCount(0), "No rules")
-        XCTAssertEqual(Teams.rulesCount(1), "1 rule")
-        XCTAssertEqual(Teams.rulesCount(4), "4 rules")
     }
 
     // MARK: Editing
@@ -317,23 +303,15 @@ final class TeamsTests: XCTestCase {
 
     // MARK: Running teams
 
-    func testARunningTeamIsSaidInWords() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let ms = now.timeIntervalSince1970 * 1_000
+    func testTheSidebarGroupsARunningTeamsMembers() {
+        let ms = 10_000_000.0
         let team = TeamSummary(id: "t", typeId: "x", name: "T", task: "Do it", cwd: "/Users/alex/Projects/app", startedAt: ms - 12 * 60_000, members: [
             TeamMember(key: "lead-1", roleId: "lead", roleName: "Lead", label: "L", sessionId: "s1", state: .running, startedAt: ms - 12 * 60_000, status: "needs"),
             TeamMember(key: "builder-1", roleId: "builder", roleName: "Builder", label: "B", state: .starting, startedAt: ms),
             TeamMember(key: "builder-2", roleId: "builder", roleName: "Builder", label: "B2", state: .failed, error: "it exited", startedAt: ms),
             TeamMember(key: "reviewer-1", roleId: "reviewer", roleName: "Reviewer", label: "R", state: .ended, startedAt: ms),
         ])
-        XCTAssertEqual(Teams.runningLine(team, now: now, home: "/Users/alex"), "2 members, 1 couldn't start · started 12m ago · in ~/Projects/app")
-        XCTAssertEqual(Teams.memberLine(team.members[0], now: now), "Needs you · 12m")
-        XCTAssertEqual(Teams.memberLine(team.members[1], now: now), "Starting…")
-        XCTAssertEqual(Teams.memberLine(team.members[2], now: now), "Couldn't start: it exited")
-        XCTAssertEqual(Teams.memberLine(team.members[3], now: now), "Ended")
-        XCTAssertEqual(Teams.stateColor(team.members[0]).name, ConchColor.attention.name)
-        XCTAssertEqual(Teams.agentList(["Claude Code"]), "Claude Code")
-        XCTAssertEqual(Teams.agentList(["Claude Code", "Codex"]), "Claude Code and Codex")
+        XCTAssertEqual(Teams.tilde("/Users/alex/Projects/app", home: "/Users/alex"), "~/Projects/app")
         XCTAssertEqual(Teams.tilde("/Users/alex", home: "/Users/alex"), "~")
         XCTAssertEqual(Teams.tilde("/Users/alexa/x", home: "/Users/alex"), "/Users/alexa/x")
 

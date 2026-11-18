@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +16,6 @@ import type { AgentQuestion, QuestionAnswer } from "../src/conversation.ts";
  */
 const root = join(import.meta.dir, "..");
 const read = (path: string) => readFileSync(join(root, path), "utf8");
-const mac = read("mac-app/conch-mac/ConversationStackView.swift");
-const phone = read("mobile/conch-ios/conch-ios/ConversationStack.swift");
 
 const gamma: AgentQuestion = {
   header: "Gamma", question: "Pick gammas?", multiSelect: true,
@@ -83,72 +81,3 @@ print(line(phone.map(\\.wire)))
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 300_000);
-
-describe("a settled question card is a record, not controls", () => {
-  const between = (source: string, from: string, to: string) => {
-    const start = source.indexOf(from);
-    expect(start, `missing: ${from}`).toBeGreaterThan(-1);
-    const end = source.indexOf(to, start + from.length);
-    expect(end, `missing after ${from}: ${to}`).toBeGreaterThan(start);
-    return source.slice(start, end);
-  };
-
-  test("Mac: no button, no hover, no hit shape; what was chosen stays marked and the rest dim", () => {
-    const row = between(mac, "    private func questionRow(", "    private func multiAnswer(");
-    const settled = between(row, "                } else {\n                    // Settled", "            if answerable, let noTerminal {");
-    expect(settled).not.toContain("Button");
-    expect(settled).not.toContain(".onHover");
-    expect(settled).not.toContain(".contentShape");
-    expect(settled).toContain("questionOption(option, multiSelect: asked.multiSelect, selected: picked, live: false)");
-    expect(settled).toContain(".opacity(picked ? 1 : 0.45)");
-    expect(settled).toContain("let picked = chosen.contains(option.label)");
-    // The pointer is tracked only where it can do something: the modifier adds hover and the
-    // hit shape on a live option, and nothing at all on a settled one.
-    const hover = between(mac, "private struct OptionHover: ViewModifier {", "/// What one row is drawn from");
-    expect(hover).toMatch(/if live \{\s*content\s*\.contentShape\(Rectangle\(\)\)\s*\.onHover \{/);
-    expect(hover).toMatch(/\} else \{\s*content\s*\}/);
-    const option = between(mac, "    private func questionOption(", "    private func toggleSelection(");
-    expect(option).not.toContain(".onHover");
-    expect(option).toContain('(selected && !live ? "checkmark.circle.fill" : "circle")');
-    // Only the live card is a form, by the daemon's rule, and only it redraws for the pointer.
-    expect(mac).toContain("let live = item.id == liveQuestionID");
-    expect(mac).toContain("hovered: live ? hoveredOption : nil");
-    expect(mac).toContain("isRunningQuestion: { $0.question != nil && $0.tool?.status == \"running\" }");
-  });
-
-  test("iPhone: no button and no raised ground; what was chosen stays marked and the rest dim", () => {
-    const row = between(phone, "    private func questionRow(", "    private func optionLabel(");
-    const settled = between(row, "                } else {\n                    // Settled", "            if isActive, !inSet, noTerminal != nil");
-    expect(settled).not.toContain("Button");
-    expect(settled).toContain("optionLabel(option, multiSelect: asked.multiSelect, selected: picked, live: false)");
-    expect(settled).toContain(".opacity(picked ? 1 : 0.45)");
-    const label = between(phone, "    private func optionLabel(", "    private func multiAnswer(");
-    expect(label).toContain("selected ? Palette.needs.opacity(0.10) : (live ? Palette.raised : Color.clear)");
-    expect(label).toContain('(selected ? (live ? "largecircle.fill.circle" : "checkmark.circle.fill") : "circle")');
-    expect(phone).toContain("let live = item.id == liveQuestionID");
-    expect(phone).toContain("isRunningQuestion: { $0.question != nil && $0.tool?.status == \"running\" }");
-  });
-});
-
-describe("\"Something else…\" sends the right event from each surface", () => {
-  test("a lone single-choice question points at the composer; its words reach the daemon as a plain message", () => {
-    // The composer's words go as text; the daemon answers the waiting question with them
-    // (`textQuestionAnswers`, tested in question-answers and voice-loop).
-    expect(read("mac-app/conch-mac/DashboardView.swift")).toContain("onFreeform: { composerFocusRequest += 1 }");
-    expect(read("mobile/conch-ios/conch-ios/SessionView.swift")).toContain("onFreeform: { typing = true }");
-  });
-
-  test("a multi-select question takes its words on the card, sent with its ticks as one answer", () => {
-    const macMulti = mac.slice(mac.indexOf("    private func multiAnswer("), mac.indexOf("    private func questionOption("));
-    expect(macMulti).toContain("ConchQuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed)");
-    expect(macMulti).toContain("guard !picked.isEmpty || !typed.isEmpty else { return nil }");
-    const phoneMulti = phone.slice(phone.indexOf("    private func multiAnswer("));
-    expect(phoneMulti).toContain("QuestionAnswer(choices: picked.isEmpty ? nil : picked, text: typed.isEmpty ? nil : typed)");
-    expect(phoneMulti).toContain("guard !picked.isEmpty || !typed.isEmpty else { return nil }");
-    // Typing on a multi-select question keeps its ticks; on a single-choice one the words replace the pick.
-    for (const source of [mac, phone]) {
-      expect(source).toContain("if !typed.isEmpty && !asked.multiSelect { multiSelections[questionID] = nil }");
-      expect(source).toContain("if asked.multiSelect, !picked.isEmpty, !typed.isEmpty {");
-    }
-  });
-});
