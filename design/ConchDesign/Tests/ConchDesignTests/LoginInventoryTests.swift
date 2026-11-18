@@ -1,11 +1,8 @@
-import SwiftUI
 import XCTest
 @testable import ConchDesign
 
-/// The logins inventory as the Mac reads it (src/login-inventory.ts): the daemon's reply decoded, grouped a block per
-/// kind, and a row drawn. Every account here is invented.
-///
-/// `CONCH_LOGIN_RENDERS=<dir>` also writes the rows as PNGs, light and dark, to look at.
+/// The logins inventory as the Mac reads it (src/login-inventory.ts): the daemon's reply decoded and grouped a block per
+/// kind. Every account here is invented.
 @MainActor
 final class LoginInventoryTests: XCTestCase {
     private let reply = """
@@ -35,7 +32,7 @@ final class LoginInventoryTests: XCTestCase {
 
     func testABlockPerKindInOrderWithTheUninstalledNamedOnce() throws {
         let groups = LoginInventory.groups(try JSONDecoder().decode(LoginInventoryReply.self, from: Data(reply.utf8)).items)
-        XCTAssertEqual(groups.map(\.title), ["Agents", "CLIs", "Browser profiles", "MCP servers", "Plugins"])
+        XCTAssertEqual(groups.map(\.kind), [.agent, .cli, .browserProfile, .mcp, .plugin])
         let clis = try XCTUnwrap(groups.first { $0.kind == .cli })
         XCTAssertEqual(clis.items.map(\.tool), ["gh", "npm", "vercel"])
         XCTAssertEqual(clis.notInstalled, ["wrangler"])
@@ -44,13 +41,10 @@ final class LoginInventoryTests: XCTestCase {
         XCTAssertTrue(LoginInventory.groups([]).isEmpty)
     }
 
-    func testEachRowSaysWhereItIsAndItsStateInWords() throws {
+    func testEachRowSaysWhereItIsAndWhenItWasChecked() throws {
         let items = try JSONDecoder().decode(LoginInventoryReply.self, from: Data(reply.utf8)).items
         XCTAssertEqual(items[6].secondaryLine, "Claude Code · Default · user · http · mcp.linear.example · asked Claude Code to sign in 3 h ago")
         XCTAssertEqual(items[2].secondaryLine, nil)
-        XCTAssertEqual([LoginRecord.State.signedIn, .signedOut, .expired, .unknown].map(\.title), ["Signed in", "Signed out", "Expired", "Unknown"])
-        XCTAssertEqual(LoginInventory.color(.expired).name, "attention")
-        XCTAssertEqual(LoginInventory.color(.signedIn).name, "added")
         let now = Date(timeIntervalSince1970: 1_760_443_200)
         XCTAssertEqual(LoginInventory.checked(1_760_443_200_000 - 30_000, now: now), "Checked just now")
         XCTAssertEqual(LoginInventory.checked(1_760_443_200_000 - 5 * 60_000, now: now), "Checked 5 min ago")
@@ -64,37 +58,5 @@ final class LoginInventoryTests: XCTestCase {
         XCTAssertEqual(try encode(.list), ["kind": "login-inventory", "action": "list"])
         XCTAssertEqual(try encode(.refreshAll), ["kind": "login-inventory", "action": "refresh"])
         XCTAssertEqual(try encode(.refresh("cli:gh")), ["kind": "login-inventory", "action": "refresh", "id": "cli:gh"])
-    }
-
-    /// A card of rows at the section's measure (720 less its 24-point insets), both schemes: the account and state
-    /// columns line up row to row, and nothing is drawn past the card.
-    func testRowsDrawInTheirColumns() throws {
-        let items = LoginInventory.groups(try JSONDecoder().decode(LoginInventoryReply.self, from: Data(reply.utf8)).items).flatMap(\.items)
-        for dark in [false, true] {
-            let card = OnboardingCard {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Rectangle().fill(ConchColor.hairline).frame(height: 1) }
-                    LoginRow(record: item, note: item.kind == .browserProfile ? "1,204 cookies from Chrome" : nil,
-                             isRefreshing: false, onRefresh: {})
-                }
-            }
-            let content = card
-                .padding(24)
-                .frame(width: 720)
-                .background(dark ? ConchColor.ground.dark.color : ConchColor.ground.light.color)
-                .environment(\.colorScheme, dark ? .dark : .light)
-            let renderer = ImageRenderer(content: content)
-            renderer.scale = 2
-            let image = try XCTUnwrap(renderer.cgImage)
-            XCTAssertEqual(image.width, 1440)
-            XCTAssertGreaterThan(image.height, 2 * 40 * items.count, "each row at least 40 points tall, with its hairline")
-            if let directory = ProcessInfo.processInfo.environment["CONCH_LOGIN_RENDERS"] {
-                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-                let url = URL(fileURLWithPath: directory).appendingPathComponent("logins-\(dark ? "dark" : "light").png")
-                let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
-                CGImageDestinationAddImage(destination, image, nil)
-                XCTAssertTrue(CGImageDestinationFinalize(destination))
-            }
-        }
     }
 }

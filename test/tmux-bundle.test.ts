@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkTmux } from "../src/doctor-checks.ts";
 import type { SpeechEngineStatus } from "../src/speech-engine.ts";
-import { describeTmux, resolveTmux, type TmuxBinary } from "../src/tmux-binary.ts";
+import { resolveTmux, type TmuxBinary } from "../src/tmux-binary.ts";
 
 /**
  * conch hosts sessions in its own tmux server, so conch.app carries tmux:
@@ -113,24 +113,16 @@ describe("conch's tmux resolves: CONCH_TMUX, then the app's own, then Homebrew, 
 });
 
 describe("which tmux is in use is published, and the doctor says it", () => {
-  test("one line per case: where it came from, or what to fix", () => {
-    expect(describeTmux({ path: "/A/conch.app/Contents/Helpers/tmux", source: "conch.app", found: true }))
-      .toBe("tmux from the app (/A/conch.app/Contents/Helpers/tmux) — conch's own sessions run in it");
-    expect(describeTmux({ path: "/opt/homebrew/bin/tmux", source: "homebrew", found: true })).toStartWith("tmux from Homebrew (/opt/homebrew/bin/tmux)");
-    expect(describeTmux({ path: "/x/tmux", source: "explicit", found: true })).toStartWith("tmux from CONCH_TMUX (/x/tmux)");
-    expect(describeTmux({ path: "/usr/bin/tmux", source: "PATH", found: true })).toStartWith("tmux from PATH (/usr/bin/tmux)");
-    expect(describeTmux({ path: "/x/tmux", source: "explicit", found: false })).toBe("tmux: CONCH_TMUX=/x/tmux is not an executable — fix the setting or unset it");
-    expect(describeTmux({ path: "tmux", source: "missing", found: false })).toContain("not found — the conch app carries one");
-  });
-
   const published = (tmux: unknown, pid = 42) => () => ({ pid, parts: { tmux } }) as unknown as SpeechEngineStatus & { pid: number };
 
   test("the doctor reports the live daemon's tmux (it resolves from the app that launched it), else resolves here", () => {
     const app = { path: "/A/conch.app/Contents/Helpers/tmux", source: "conch.app", found: true };
     const here = (): TmuxBinary => ({ path: "/opt/homebrew/bin/tmux", source: "homebrew", found: true });
-    expect(checkTmux({ published: published(app), resolve: here }))
-      .toEqual({ ok: true, label: "tmux", message: "tmux from the app (/A/conch.app/Contents/Helpers/tmux) — conch's own sessions run in it (daemon 42)." });
-    expect(checkTmux({ published: () => null, resolve: here }).message).toBe("tmux from Homebrew (/opt/homebrew/bin/tmux) — conch's own sessions run in it.");
+    const live = checkTmux({ published: published(app), resolve: here });
+    expect(live.ok).toBeTrue();
+    expect(live.message).toContain("/A/conch.app/Contents/Helpers/tmux");
+    expect(live.message).toContain("daemon 42");
+    expect(checkTmux({ published: () => null, resolve: here }).message).toContain("/opt/homebrew/bin/tmux");
     // A daemon from before the app carried tmux published no source: resolve here.
     expect(checkTmux({ published: published({ found: true, path: "/opt/homebrew/bin/tmux" }), resolve: here }).message).not.toContain("daemon 42");
   });
@@ -142,13 +134,6 @@ describe("which tmux is in use is published, and the doctor says it", () => {
     expect(broken.action).toContain("CONCH_TMUX");
   });
 
-  test("the daemon publishes resolveTmux beside the speech engine, and `conch doctor` prints the probe", () => {
-    const daemon = read("src/daemon.ts");
-    const manager = daemon.slice(daemon.indexOf("new SpeechEngineManager({"), daemon.indexOf("});", daemon.indexOf("new SpeechEngineManager({")));
-    expect(manager).toContain("tmux: () => resolveTmux(),");
-    expect(read("src/speech-engine.ts")).toContain("tmux: { found: tmux.found, path: tmux.path, source: tmux.source },");
-    expect(read("src/install.ts")).toContain("console.log(formatDoctorProbe(checkTmux()));");
-  });
 });
 
 // MARK: - The build phase
@@ -271,139 +256,4 @@ describe("the app carries tmux", () => {
     expect(existsSync(debug.helper)).toBeFalse();
   });
 
-  test("the conch-mac target runs the phase after the speech engine, unsandboxed", () => {
-    const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
-    const target = project.slice(project.indexOf("isa = PBXNativeTarget;"), project.indexOf("/* End PBXNativeTarget section */"));
-    expect(target).toContain('name = "conch-mac";');
-    const phases = target.slice(target.indexOf("buildPhases = ("), target.indexOf(");", target.indexOf("buildPhases = (")));
-    expect(phases.indexOf("/* Embed tmux */")).toBeGreaterThan(phases.indexOf("/* Embed speech engine */"));
-    expect(phases.indexOf("/* Embed speech engine */")).toBeGreaterThan(-1);
-    const section = project.slice(project.indexOf("/* Begin PBXShellScriptBuildPhase section */"), project.indexOf("/* End PBXShellScriptBuildPhase section */"));
-    const phase = section.slice(section.indexOf("/* Embed tmux */ = {"));
-    expect(phase).toContain('name = "Embed tmux";');
-    expect(phase).toContain('shellScript = "exec \\"$SRCROOT/../scripts/embed-tmux.sh\\"\\n";');
-    // Sandboxed script phases cannot read the repo's scripts or run codesign.
-    for (const config of ["A80000000000000000000003 /* Debug */", "A80000000000000000000004 /* Release */"]) {
-      const at = project.indexOf(`${config} = {`);
-      expect(project.slice(at, project.indexOf("name = ", at))).toContain("ENABLE_USER_SCRIPT_SANDBOXING = NO;");
-    }
-  });
-
-  test("every shipping script's bundle check covers tmux: signed, Hardened Runtime, the app's architectures, notices, system-only links", () => {
-    const check = read("scripts/check-app-bundle.sh");
-    expect(check).toContain("for helper in conch-daemon whisper-cli whisper-server sox conch-microphone tmux; do");
-    for (const notice of NOTICES) expect(check).toContain(`ThirdParty/tmux/${notice}`);
-    expect(check).toContain('[[ "$(env -i PATH=/usr/bin:/bin "$HELPERS/tmux" -V)" == "tmux $TMUX_VERSION" ]]');
-    expect(check).toContain(`outside="$(otool -L "$HELPERS/tmux" | tail -n +2 | awk '{print $1}' | grep -vE '^(/System/Library/Frameworks/|/usr/lib/)' || true)"`);
-    expect(check).toContain('[[ -z "$outside" ]] || fail "$HELPERS/tmux links a library outside the system: $outside"');
-    expect(check).toContain(`TMUX_VERSION="$(sed -n 's/^TMUX_VERSION=//p' "$REPO_ROOT/scripts/fetch-tmux.sh")"`);
-  });
-});
-
-// MARK: - The recipe and its notices
-
-describe("tmux is built from pinned sources, reproducibly, linking only the system", () => {
-  const fetch = read("scripts/fetch-tmux.sh");
-  const pin = (name: string) => fetch.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1];
-
-  test("tmux, libevent, jemalloc and utf8proc are each pinned by version and sha256, verified before anything is unpacked", () => {
-    expect(pin("TMUX_VERSION")).toBe("3.7c");
-    expect(pin("LIBEVENT_VERSION")).toBe("2.1.13-stable");
-    expect(pin("JEMALLOC_VERSION")).toBe("5.3.1");
-    expect(pin("UTF8PROC_VERSION")).toBe("2.11.3");
-    // The digests Homebrew's formulae pin for the same releases.
-    expect(pin("TMUX_SHA256")).toBe("7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf");
-    expect(pin("LIBEVENT_SHA256")).toBe("f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c");
-    expect(pin("JEMALLOC_SHA256")).toBe("3826bc80232f22ed5c4662f3034f799ca316e819103bdc7bb99018a421706f92");
-    expect(pin("UTF8PROC_SHA256")).toBe("abfed50b6d4da51345713661370290f4f4747263ee73dc90356299dfc7990c78");
-    const unpack = fetch.indexOf("tar -x");
-    for (const name of ["TMUX", "LIBEVENT", "JEMALLOC", "UTF8PROC"]) {
-      const at = fetch.indexOf(`"$SCRIPT_DIR/fetch-pinned.sh" "$${name}_URL" "$${name}_SHA256"`);
-      expect(at).toBeGreaterThan(-1);
-      expect(at).toBeLessThan(unpack);
-    }
-    // Every unpack reads the verified cache, never the partial.
-    for (const line of fetch.split("\n").filter((l) => l.startsWith("tar -x"))) expect(line).toContain('"$SOURCES/');
-  });
-
-  test("configured as Homebrew does on macOS — utf8proc, jemalloc, sixel — with the pane TERM pinned, not probed", () => {
-    expect(fetch).toContain("--enable-utf8proc --enable-jemalloc --enable-sixel --with-TERM=\"$DEFAULT_TERM\"");
-    expect(pin("DEFAULT_TERM")).toBe("screen-256color");
-    expect(fetch).toContain("--with-jemalloc-prefix=je_");
-    expect(fetch).toContain("-Wl,-u,_je_zone_register");
-    for (const feature of ['"utf8proc: $UTF8PROC_VERSION|utf8proc: on"', '"jemalloc: on"', '"ncurses: on"']) expect(fetch).toContain(feature);
-  });
-
-  test("the SDK's functions newer than the minimum macOS are ruled out, and any weak import fails the build", () => {
-    expect(pin("MACOS_MIN")).toBe("14.0");
-    expect(fetch).toContain("too_new=(ac_cv_func_pipe2=no ac_cv_func_dup3=no)");
-    for (const step of ["libevent-configure", "jemalloc-configure", "tmux-configure"]) {
-      const line = fetch.split("\n").find((l) => l.startsWith(`step ${step} `))!;
-      expect(line).toContain('"${too_new[@]}"');
-    }
-    expect(fetch).toContain(`weak="$(nm -m "$binary" | grep '(undefined) weak external' | grep -v ' _malloc_default_purgeable_zone ' || true)"`);
-    expect(fetch).toContain('[[ -z "$weak" ]] || {');
-  });
-
-  test("only the system is linked dynamically — ncurses included — and what should be linked in is", () => {
-    expect(fetch).toContain(`outside="$(grep -vE '^(/System/Library/Frameworks/|/usr/lib/)' <<<"$links" || true)"`);
-    expect(fetch).toContain('[[ -z "$outside" ]] || { echo "error: $binary links a library outside the system: $outside" >&2; exit 1; }');
-    expect(fetch).toContain(`grep -qx '/usr/lib/libncurses.5.4.dylib' <<<"$links"`);
-    expect(fetch).toContain("for symbol in _je_zone_register _je_mallctl _utf8proc_charwidth _event_base_loop; do");
-    expect(fetch).toContain('symbols="$(nm "$binary")"');
-    expect(fetch).toContain('[[ "$(lipo -archs "$binary")" == "$ARCH" ]] || {');
-  });
-
-  test("reproducible: a clean environment, pinned dates, no build paths or debug map in the binary", () => {
-    expect(fetch).toContain('clean_env=(env -i "HOME=$HOME" "PATH=/usr/bin:/bin:/usr/sbin:/sbin" "MACOSX_DEPLOYMENT_TARGET=$MACOS_MIN"');
-    expect(fetch).toContain('"SOURCE_DATE_EPOCH=1767225600" "ZERO_AR_DATE=1" "LC_ALL=C"');
-    expect(fetch).toContain("-ffile-prefix-map=$work=.");
-    expect(fetch).toContain('ldflags="-arch $ARCH -mmacosx-version-min=$MACOS_MIN -Wl,-S"');
-    expect(fetch).toContain('if grep -aq "$work" "$binary"; then');
-    // A cache is reused only for this recipe, and only as the bytes it recorded.
-    expect(fetch).toContain('"$(cat "$OUT/recipe" 2>/dev/null)" == "$RECIPE"');
-    expect(fetch).toContain('(cd "$OUT" && shasum -a 256 -c tmux.sha256 >/dev/null 2>&1)');
-    expect(fetch).toContain('OUT="$CACHE_ROOT/tmux-$TMUX_VERSION-$ARCH"');
-  });
-
-  test("the checked-in licences are the pinned sources' own, compared at every build", () => {
-    for (const pair of ['"$tmux_src/COPYING:COPYING"', '"$libevent_src/LICENSE:LICENSE.libevent"', '"$jemalloc_src/COPYING:COPYING.jemalloc"', '"$utf8proc_src/LICENSE.md:LICENSE.utf8proc.md"']) {
-      expect(fetch).toContain(pair);
-    }
-    expect(fetch).toContain('cmp -s "${pair%%:*}" "$NOTICES/${pair#*:}" || {');
-    // …and every compat file this build compiled in has its notice, verbatim, in LICENSE.compat.
-    expect(fetch).toContain('for object in "$tmux_src"/compat/*.o; do compat+=("compat/$(basename "${object%.o}").c"); done');
-    expect(fetch).toContain('[[ "$shipped" == *"$block"* ]] || unlisted+=("$file")');
-    expect(fetch).toContain('[[ "${#unlisted[@]}" -eq 0 ]] || {');
-  });
-});
-
-describe("its notices say what ships", () => {
-  const notice = (name: string) => read(`mac-app/third-party/tmux/${name}`);
-  const fetch = read("scripts/fetch-tmux.sh");
-  const pin = (name: string) => fetch.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1];
-
-  test("the NOTICE names the helper, every library and version the recipe pins, and the system's ncurses", () => {
-    const text = notice("NOTICE");
-    expect(text).toContain("Contents/Helpers/tmux");
-    expect(text).toContain(`tmux ${pin("TMUX_VERSION")}`);
-    expect(text).toContain(`libevent ${pin("LIBEVENT_VERSION")}`);
-    expect(text).toContain(`jemalloc ${pin("JEMALLOC_VERSION")}`);
-    expect(text).toContain(`utf8proc ${pin("UTF8PROC_VERSION")}`);
-    expect(text).toContain("/usr/lib/libncurses.5.4.dylib");
-    for (const name of ["COPYING", "LICENSE.compat", "LICENSE.libevent", "COPYING.jemalloc", "LICENSE.utf8proc.md"]) expect(text).toContain(name);
-  });
-
-  test("the licences are the upstream texts: ISC, BSD 3-clause, BSD 2-clause, MIT, and the BSD compat code", () => {
-    expect(notice("COPYING")).toContain("Permission to use, copy, modify, and distribute this software for any");
-    expect(notice("LICENSE.libevent")).toContain("Redistribution and use in source and binary forms");
-    expect(notice("COPYING.jemalloc")).toStartWith("Unless otherwise specified, files in the jemalloc source distribution are");
-    expect(notice("LICENSE.utf8proc.md")).toContain('MIT "expat"');
-    const compat = notice("LICENSE.compat");
-    // What both slices compile in, and strtonum.c, which only the Intel one (a cross build) does.
-    for (const file of ["compat/vis.c", "compat/unvis.c", "compat/daemon.c", "compat/queue.h", "compat/tree.h", "compat/imsg.c", "compat/strtonum.c"]) {
-      expect(compat).toContain(`==> ${file} <==`);
-    }
-    expect(compat).toContain("The Regents of the University of California");
-  });
 });

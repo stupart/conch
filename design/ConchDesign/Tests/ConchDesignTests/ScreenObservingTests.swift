@@ -1,21 +1,8 @@
 import XCTest
 @testable import ConchDesign
 
-/// The Mac's front-window observer, in its pure parts: what an app is, and what gets said.
+/// The Mac's front-window observer, in its pure parts: what an address field holds, and what gets said.
 final class ScreenObservingTests: XCTestCase {
-    func testAppsAreKnownByTheirBundleIds() {
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.apple.Terminal"), .terminal)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.googlecode.iterm2"), .terminal)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.apple.iphonesimulator"), .simulator)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.figma.Desktop"), .design)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.apple.Safari"), .pageAddressBrowser)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.google.Chrome"), .addressFieldBrowser)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.brave.Browser"), .addressFieldBrowser)
-        // Preview, QuickTime, an editor: their document is read, not their name.
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.apple.Preview"), .app)
-        XCTAssertEqual(ScreenAppKind(bundleId: "com.apple.QuickTimePlayerX"), .app)
-    }
-
     func testAnAddressFieldGetsItsSchemeBack() {
         // Chrome shows a local server without its scheme; they speak http.
         XCTAssertEqual(ScreenAppKind.addressFieldURL("localhost:5173/review")?.absoluteString, "http://localhost:5173/review")

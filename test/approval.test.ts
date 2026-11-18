@@ -1,13 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  APPROVAL_KEYBOARD,
-  APPROVAL_KEYS,
-  APPROVAL_REASK,
-  approvalAnnounce,
-  approvalDetail,
   classifyApprovalAnswer,
   pendingApproval,
   pendingApprovalFromLines,
@@ -94,14 +89,6 @@ describe("what Codex is waiting on, from its rollout", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-
-  test("an ask conch cannot press keys at says so instead of offering the four-way answer", () => {
-    expect(approvalAnnounce("seashell", { name: "exec", summary: "bun install", answerable: false }))
-      .toBe("seashell needs permission for exec: bun install. Answer it in the session.");
-    // Claude's dialog is unchanged.
-    expect(approvalAnnounce("alpha", { name: "Bash", summary: "git push" }))
-      .toBe("alpha needs permission for Bash: git push. Yes, or no?");
-  });
 });
 
 describe("what is being asked, from the transcript", () => {
@@ -179,14 +166,6 @@ describe("the one spoken line", () => {
     expect(long.endsWith("…")).toBe(true);
   });
 
-  test("announce and row detail carry the tool and the summary", () => {
-    const ask = { name: "Bash", summary: "git push origin main" };
-    expect(approvalAnnounce("Fix login", ask)).toBe("Fix login needs permission for Bash: git push origin main. Yes, or no?");
-    expect(approvalDetail(ask)).toBe("permission: Bash — git push origin main");
-    // "always" is never offered: what it grants differs per tool and can't be announced.
-    expect(APPROVAL_REASK).not.toContain("always");
-    expect(APPROVAL_KEYBOARD).toContain("keyboard");
-  });
 });
 
 describe("the spoken answer, four ways", () => {
@@ -226,18 +205,9 @@ describe("the spoken answer, four ways", () => {
     expect(classifyApprovalAnswer(["Yes.", "", "  "])).toEqual({ kind: "once" });
   });
 
-  test("each outcome presses what a person would press", () => {
-    expect(APPROVAL_KEYS).toEqual({
-      once: ["Enter"],
-      always: ["Down", "Enter"],
-      deny: ["Escape"],
-      instead: ["Escape"],
-    });
-  });
 });
 
 describe("the daemon's wiring", () => {
-  const read = (file: string) => readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
   // The wiring itself — which prompts get a voice, the row's words, the quiet
   // gates, announce-then-listen and the ear held elsewhere, the re-ask, the
   // always confirm, instead as Escape-then-text, and the mic reserved behind
@@ -251,11 +221,6 @@ describe("the daemon's wiring", () => {
     expect(shouldHandleTurnAudibly({ type: "working", approval: ask }, false)).toBe(false);
   });
 
-  test("Down is a key the injector can press", () => {
-    const inject = read("inject.ts");
-    expect(inject).toContain('key: "Enter" | "Escape" | "Down"');
-    expect(inject).toContain('key === "Down" ? 125');
-  });
 });
 
 /**

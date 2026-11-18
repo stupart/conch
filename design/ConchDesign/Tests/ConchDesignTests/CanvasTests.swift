@@ -1,5 +1,4 @@
 import CoreGraphics
-import ImageIO
 import XCTest
 @testable import ConchDesign
 
@@ -109,23 +108,6 @@ final class CanvasTests: XCTestCase {
             XCTAssertEqual(picture.width, screen.width * 2, accuracy: 0.5, "\(each.kind)")
             XCTAssertEqual(picture.height, screen.height * 2, accuracy: 0.5, "\(each.kind)")
         }
-    }
-
-    // MARK: The picture
-
-    /// A screen of one flat colour, `width` × `height` pixels.
-    private func screen(_ width: Int, _ height: Int, grey: CGFloat = 1) -> CGImage {
-        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        context.setFillColor(CGColor(srgbRed: grey, green: grey, blue: grey, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()!
-    }
-
-    func testAPictureRoundTripsAsAPNG() throws {
-        let data = try XCTUnwrap(CanvasInk.png(screen(40, 20)))
-        XCTAssertEqual(Array(data.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
-        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
-        XCTAssertEqual(CGImageSourceCreateImageAtIndex(source, 0, nil)?.width, 40)
     }
 
     // MARK: Words

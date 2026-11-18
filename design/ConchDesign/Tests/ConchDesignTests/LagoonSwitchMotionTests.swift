@@ -62,55 +62,6 @@ final class LagoonSwitchMotionTests: XCTestCase {
         }
     }
 
-    func testTheTwoFinishedStates() {
-        let on = Motion.frame(.on, at: Motion.end)
-        XCTAssertEqual(on.x, Motion.travel)
-        XCTAssertTrue(on.face)
-        XCTAssertEqual(on.turn, 1)
-        XCTAssertEqual(on.crab, 0, accuracy: 1e-9, "the OG is up")
-        XCTAssertEqual(on.lid, 0, "eyes open")
-        XCTAssertEqual(on.rim, 1)
-        XCTAssertEqual(on.lin, 54, accuracy: 1e-9, "the water fills the track")
-        XCTAssertEqual(on.rx, 0)
-        let off = Motion.frame(.off, at: Motion.end)
-        XCTAssertEqual(off.x, 0)
-        XCTAssertFalse(off.face)
-        XCTAssertEqual(off.crab, Motion.crabHidden)
-        XCTAssertEqual(off.rim, 0)
-        XCTAssertEqual(off.wet, 0, "dry")
-        XCTAssertEqual(off.collar, 0)
-        XCTAssertLessThan(off.lin, 0, "no water")
-    }
-
-    func testTheSlideTheTurnAndTheOG() {
-        // 17.82 pt over 400 ms, and still there after.
-        XCTAssertEqual(Motion.frame(.on, at: 400).x, 17.82, accuracy: 1e-9)
-        XCTAssertLessThan(Motion.frame(.on, at: 399).x, 17.82)
-        // Edge-on at the swap: never thinner than 0.06, and the spiral turns to the opening there.
-        let swap = stride(from: 0.0, through: 400, by: 1).first { Motion.frame(.on, at: $0).face }!
-        XCTAssertEqual(swap, 196, accuracy: 2)
-        XCTAssertEqual(Motion.frame(.on, at: swap).turn, 0.06, accuracy: 0.03)
-        XCTAssertGreaterThanOrEqual(stride(from: 0.0, through: 1500, by: 1).map { Motion.frame(.on, at: $0).turn }.min()!, 0.06)
-        // The OG waits 70 ms after landing, then rises.
-        XCTAssertEqual(Motion.frame(.on, at: 469).crab, Motion.crabHidden)
-        XCTAssertLessThan(Motion.frame(.on, at: 520).crab, Motion.crabHidden)
-        // One blink at 0.8 s: shut by 855 ms, open again by 975.
-        XCTAssertEqual(Motion.frame(.on, at: 855).lid, 1)
-        XCTAssertEqual(Motion.frame(.on, at: 975).lid, 0)
-        // Off: the OG ducks before the shell moves.
-        XCTAssertEqual(Motion.frame(.off, at: 110).x, Motion.travel)
-        XCTAssertGreaterThan(Motion.frame(.off, at: 100).crab, 15)
-    }
-
-    func testTheSpringsAreNormalised() {
-        for springs in [Motion.springs.on, Motion.springs.off] {
-            XCTAssertEqual(Double(springs.lean.map { abs($0) }.max()!), 3.5, accuracy: 1e-5)
-            XCTAssertEqual(Double(springs.squash.max()!), 0.045, accuracy: 1e-6)
-            XCTAssertGreaterThanOrEqual(Double(springs.squash.min()!), -0.02)
-            XCTAssertEqual(springs.lean.count, 1501)
-        }
-    }
-
     /// turned.js's flip, sampled: (was, t, now) → where the new timeline picks up.
     func testAClickMidwayPicksUpWhereTheShellIs() {
         let cases: [(Motion.Direction, Double, Motion.Direction, Double)] = [

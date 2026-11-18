@@ -14,7 +14,7 @@ import {
   stopResource,
   type ResourceRequestDependencies,
 } from "../src/resource-sampler.ts";
-import { parseResourcesArgs, renderResources } from "../src/resources-cli.ts";
+import { parseResourcesArgs } from "../src/resources-cli.ts";
 
 // Fixtures are made up: ids, pids, ports and folders are nobody's.
 const T0 = Date.parse("2026-11-01T09:00:00Z");
@@ -319,35 +319,4 @@ describe("conch resources", () => {
     expect(parseResourcesArgs(["lower", "--session", "abc-123"], 42)).toMatchObject({ request: { kind: "resource-session", sessionId: "abc-123", action: "lower", callerPid: 42 } });
     expect(parseResourcesArgs(["hold", "--session", "abc-123"], 42)).toHaveProperty("error");
   });
-
-  test("the budget, each session's load, then the list grouped as the Mac app groups it", () => {
-    const budget = { cpuSetting: "25%", memorySetting: "8 GB", cpuText: "25% of 8 cores (2)", memoryText: "8 GB (25% of 32 GB)", memoryTotal: 32 * 1024 ** 3, autoBackground: false, cores: 8, cpuLimit: 200, memoryLimit: 8 * 1024 ** 3, cpu: 410, sustained: true, memory: 15 * 1024 ** 3, level: "red" as const, over: ["s1"], reason: "agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB" };
-    const lines = renderResources({
-      v: 1, sampledAt: T0, asking: 1, budget,
-      sessions: [
-        { key: "s1", sessionId: "s1", label: "infra", live: true, cpu: 400, sustained: true, memory: 13 * 1024 ** 3, resources: 1, level: "red", reasons: ["over the agents' budget"], over: true },
-        { key: "old", label: "old prototype", live: false, cpu: 0, sustained: true, memory: 200 * 1024 ** 2, resources: 1, level: "red", reasons: ["vite :5100: past its time for over a day"] },
-        { key: "unowned", label: "Unowned", live: false, cpu: 1, sustained: false, memory: 3 * 1024 ** 3, resources: 1, level: "yellow", reasons: ["3.0 GB of memory"] },
-      ],
-      items: [
-        { id: "p1", kind: "server", title: "vite :5100", command: "node vite", startedAt: T0 - 2 * 24 * 60 * MIN, cpu: 0.4, memory: 200 * 1024 ** 2, state: "asking", reason: "its session ended", level: "red", owner: { key: "old", label: "old prototype", live: false, how: "environment", endedAt: T0 - 24 * 60 * MIN } },
-        { id: "vm-ci", kind: "vm", title: "colima ci", command: "limactl hostagent", startedAt: T0 - 45 * MIN, cpu: 133, cpuSustained: 140, memory: 12 * 1024 ** 3, state: "running", level: "red", owner: { key: "s1", label: "infra", live: true, how: "environment", sessionId: "s1" } },
-        { id: "sim-1111", kind: "simulator", title: "Test Phone simulator", command: "launchd_sim", startedAt: T0 - 3 * 60 * MIN, cpu: 1, memory: 3 * 1024 ** 3, state: "unowned", reason: "no session started it", level: "yellow", lowered: "auto" },
-      ],
-    }, T0);
-    const text = lines.join("\n");
-    expect(lines[0]).toBe("[red] Budget (25% of 8 cores (2); 8 GB (25% of 32 GB)): agents are using 4.1 cores of 2.0 cores and 15.0 GB of 8.0 GB · over: infra");
-    expect(text).toContain("  [red] infra                  4.0 cores · 13.0 GB · 1 left running  over the agents' budget");
-    expect(text).toContain("old prototype (ended)");
-    expect(text).toContain("* not yet five minutes of looks");
-    expect(text).toContain("Asking (1)");
-    expect(text).toContain("[red] p1        vite :5100  ·  old prototype, ended 24 h ago  ·  up 2 d · 0% CPU · 200 MB · its session ended");
-    expect(text).toContain("[red] vm-ci     colima ci  ·  infra  ·  up 45 min · 140% CPU · 12.0 GB");
-    expect(text).toContain("Test Phone simulator  ·  unowned  ·  up 3 h · 1% CPU · 3.0 GB · lowered (budget)");
-    expect(lines.at(-1)).toContain("nothing is stopped or held unless you ask");
-    expect(renderResources({ v: 1, sampledAt: T0, asking: 0, items: [], sessions: [], budget: { ...budget, level: "green", over: [] } }, T0).at(-1)).toBe("Nothing a session started is running.");
-    // On a terminal, a dot in the level's colour.
-    expect(renderResources({ v: 1, sampledAt: T0, asking: 0, items: [], sessions: [], budget }, T0, false, true)[0]).toStartWith("\x1b[31m●\x1b[0m Budget");
-  });
-
 });

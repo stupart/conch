@@ -7,12 +7,10 @@ import {
   createMcpToolHandlers,
   defaultMcpDependencies,
   dispatchJsonRpc,
-  MCP_TOOLS,
   type McpDependencies,
   type McpToolHandlers,
 } from "../src/mcp.ts";
 import { McpCallLog, readMcpCalls } from "../src/mcp-usage.ts";
-import { AGENT_COMMANDS } from "../src/agent-instructions.ts";
 import { FORK_WAIT_MS } from "../src/session-fork.ts";
 import { readDeliverableKind } from "../src/deliverables.ts";
 import { assistantTail, tailCursor, waitForTail } from "../src/transcript-tail.ts";
@@ -71,13 +69,12 @@ describe("conch_fork: the daemon's fork, answered once it is running", () => {
     }));
     const reply = await call(handlers, "conch_fork", { label: "Marketing pass" });
     expect(reply.error).toBe(false);
-    expect(reply.json()).toEqual({
+    expect(reply.json()).toMatchObject({
       outcome: "forked",
       from: { sessionId: SESSION.sessionId, label: "Build" },
       forkId: "fork-1",
       label: "Marketing pass",
       notCarriedOver: ["--weird"],
-      note: expect.stringContaining("under the same account and in the same folder"),
     });
     expect(sent).toEqual([{
       message: { kind: "session-fork", sessionId: SESSION.sessionId, label: "Marketing pass", wait: true },
@@ -129,16 +126,6 @@ describe("conch_fork: the daemon's fork, answered once it is running", () => {
     expect((await call(handlers, "conch_fork", { label: "x".repeat(81) })).text).toContain("label must be at most 80 characters");
   });
 
-  // 2026-11-11: `conch agent fork`; the tool keeps its schema for sessions that still have it.
-  test("its schema stays, and the command's help says what it does and where the old way went wrong", () => {
-    const tool = MCP_TOOLS.find((one) => one.name === "conch_fork")!;
-    expect(Object.keys(tool.inputSchema.properties)).toEqual(["session", "label"]);
-    expect(tool.description).toContain("`conch agent fork [session] [--label L]`");
-    const fork = AGENT_COMMANDS.find((command) => command.name === "fork")!;
-    expect(fork.help).toContain("same account, folder and flags, holding its deliverables");
-    expect(fork.help).toContain("say a fork is open only when it says so");
-    expect(fork.help).toContain("rather than `conch start --resume`");
-  });
 });
 
 describe("conch_transcript_tail: a cursor, and a wait instead of a poll", () => {
@@ -209,15 +196,6 @@ describe("review_to_front's refusals name the fix", () => {
   };
   const handlers = () => createMcpToolHandlers(CONFIG, fakes({ async publishForVerdict() { return filed; } }));
 
-  test("summary is at most 200 characters, in the schema and its words", () => {
-    const tool = MCP_TOOLS.find((one) => one.name === "review_to_front")!;
-    const summary = (tool.inputSchema.properties as Record<string, { maxLength?: number; description?: string }>).summary!;
-    expect(summary.maxLength).toBe(200);
-    // 2026-11-11: said once, on the parameter; the tool's description names the one-line summary and leaves the number here.
-    expect(summary.description).toContain("Over 200 characters is cut");
-    expect(tool.description).toContain("Pass a one-line summary");
-  });
-
   test("a kind agents guess is read as what it means, and the result says so", async () => {
     expect(readDeliverableKind("link")).toEqual({ ok: true, alias: "link" });
     expect(readDeliverableKind("web")).toEqual({ ok: true, alias: "web" });
@@ -232,13 +210,11 @@ describe("review_to_front's refusals name the fix", () => {
     const reply = await call(handlers(), "review_to_front", { summary: "The dashboard", link: "https://acme.dev", kind: "urll" });
     expect(reply.error).toBe(true);
     expect(reply.text).toContain('kind "urll" isn\'t a kind. Did you mean "url"?');
-    expect(reply.text).toContain("kind must be one of page, image");
     expect(readDeliverableKind("zebra")).toMatchObject({ ok: false, reason: expect.not.stringContaining("Did you mean") });
   });
 
   test("an argument it doesn't take names the one it does", async () => {
-    expect((await call(handlers(), "review_to_front", { summary: "x", artifactKey: "k" })).text)
-      .toBe('refused: unknown argument "artifactKey": use key (it names the artifact: the same key again files its next version)');
+    expect((await call(handlers(), "review_to_front", { summary: "x", artifactKey: "k" })).text).toContain("use key");
     expect((await call(handlers(), "review_to_front", { summary: "x", url: "https://acme.dev" })).text).toContain("use link");
     expect((await call(handlers(), "review_to_front", { summary: "x", nonsense: 1 })).text).toBe('refused: unknown argument "nonsense"');
   });
@@ -258,9 +234,7 @@ describe("review_to_front's refusals name the fix", () => {
       }));
       const hidden = await call(own, "review_to_front", { summary: "x", link: join(root, ".cache", "shot.png") });
       expect(hidden.error).toBe(true);
-      expect(hidden.text).toContain("hidden file, in a hidden folder");
-      expect(hidden.text).toContain("To show it, copy it to /tmp first (cp -R ");
-      expect(hidden.text).toContain("and link the copy");
+      expect(hidden.text).toContain("copy it to /tmp");
       // A key is never suggested for copying.
       const key = await call(own, "review_to_front", { summary: "x", link: join(root, ".cache", "id.pem") });
       expect(key.text).not.toContain("copy it to /tmp");

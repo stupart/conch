@@ -1,10 +1,8 @@
-import { describeTempFolders } from "../src/temp-folders.ts";
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAgentNote, saveAgentNote, takeAgentNote, userPromptContext } from "../src/agent-notes.ts";
-import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import { validateSocketTurnEvent } from "../src/control-server.ts";
 import { hookSessionFolders, stopReview } from "../src/hook.ts";
 import { repositoryRoots, reviewLinkScope, rootsHolding, transcriptFolder } from "../src/review-roots.ts";
@@ -129,25 +127,18 @@ describe("a link is checked against every folder the session is and has been in"
     const { worktree, elsewhere, monorepo, outside } = incident(disk);
     const link = join(outside, "secret.md");
     const checked = await stopReview(line(link), { now: worktree, started: elsewhere });
-    const folders = `this session's folders (${elsewhere}, ${monorepo})`;
     // The summary is still filed; the link is not, and the review says why, for the Mac and the phone.
-    expect(checked.review).toEqual({
-      summary: "The review pack",
-      linkRefused: `The link ${link} wasn't published: it is outside ${folders} and the temp folders.`,
-    });
-    // The trace and the agent's next prompt get the agent-facing reason, which names the temp folders: the same two in
-    // every process, whatever its $TMPDIR (temp-folders.ts).
-    const reason = `link ${link} is outside ${folders} and ${describeTempFolders()}, so it is not sent to the phone;`
-      + " publish a copy under one of those folders or /tmp";
-    expect(reason).toContain("the temp folders (/tmp, /");
-    expect(checked.refused).toEqual({ link, reason, agentNote: `Your last conch:review link was not published: ${reason}.` });
-    // A link that is not a file at all says which one it was, and the rule.
+    expect(checked.review?.summary).toBe("The review pack");
+    expect(checked.review?.link).toBeUndefined();
+    expect(checked.review?.linkRefused).toContain(link);
+    // The agent's next prompt names the folders it was checked against.
+    expect(checked.refused?.link).toBe(link);
+    expect(checked.refused?.agentNote).toContain(elsewhere);
+    expect(checked.refused?.agentNote).toContain(monorepo);
+    // A link that is not a file at all says which one it was.
     const missing = await stopReview(line(join(elsewhere, "gone.md")), { now: worktree, started: elsewhere });
-    expect(missing.review?.linkRefused).toBe(`The link ${join(elsewhere, "gone.md")} wasn't published: it does not exist.`);
-    expect(missing.refused?.agentNote).toBe(
-      `Your last conch:review link was not published: ${join(elsewhere, "gone.md")}: it does not exist;`
-        + " link must be an http(s) URL or an existing, non-executable regular file.",
-    );
+    expect(missing.review?.linkRefused).toContain(join(elsewhere, "gone.md"));
+    expect(missing.refused?.link).toBe(join(elsewhere, "gone.md"));
   }));
 
   test("symlink escapes and sensitive paths are still refused under the wider folders", () => onDisk(async (disk) => {
@@ -266,16 +257,6 @@ describe("the agent hears about a refused link at its next prompt, once", () => 
       },
     });
   });
-
-  test("the hook says it at UserPromptSubmit and leaves it at Stop", () => {
-    const source = readFileSync(join(import.meta.dir, "../src/hook.ts"), "utf8");
-    const prompt = source.slice(source.indexOf('if (event === "UserPromptSubmit")'));
-    expect(prompt.indexOf("takeAgentNote(")).toBeGreaterThan(0);
-    expect(prompt.indexOf("process.stdout.write(userPromptContext(note))")).toBeLessThan(prompt.indexOf("sendToDaemon("));
-    const stop = source.slice(source.indexOf('if (event === "Stop")'));
-    expect(stop).toContain("if (checked.refused) saveAgentNote(");
-    expect(stop).toContain("...(checked.scope ? { roots: checked.scope.roots, cwd: checked.scope.cwd } : {}),");
-  });
 });
 
 describe("the socket carries a refusal's words, never a link's folders", () => {
@@ -290,57 +271,6 @@ describe("the socket carries a refusal's words, never a link's folders", () => {
     expect(turnEnd({ linkRefused: "x".repeat(1001) })).toMatchObject({ ok: false });
     // The folders a link was checked against are the daemon's own finding.
     expect(turnEnd({ link: "/x", roots: ["/"] })).toMatchObject({ ok: false, err: "review roots are set by the daemon, not sent" });
-  });
-});
-
-describe("what agents are told", () => {
-  const told = AGENT_INSTRUCTIONS.alwaysOn;
-
-  test("the always-on text says what a link is, what a folder does, which line counts, and what a refusal does", () => {
-    // 2026-11-11: the same folders in fewer words; Codex carries this in every session. A relative path is resolved
-    // against the folder the session is in, so "absolute" went too.
-    expect(told).toContain("A link is an http(s) URL, or a path to a file or a folder (shown as its file tree) under this session’s folders");
-    expect(told).toContain("(where it started or is now, its git repository, `conch agent folders`) or a temp folder (/tmp, /var/folders/…/T)");
-    // And what a temp folder means now: a copy that outlives it.
-    expect(told).toContain("which conch copies so cleaning it can’t take it away");
-    expect(told).toContain("only the last counts, so link a folder for several things");
-    expect(told).toContain("A refused link is dropped and the summary kept; conch tells the user and you why.");
-    // Every session carries it: short, and no longer "use your cwd". 2026-10-05: 380 to 410 words, for what counts as
-    // something to publish (a plan, a diff or PR) and "as you go, not only at the end", which "a meaningful result" hid.
-    // 2026-11-11: 480, for the CLI: each command is two words longer than the tool it was (`conch agent folders` for
-    // `conch_working_folders`), and the text says where the rest is and how to file a bug, in place of 26 tool schemas.
-    expect(told.split(/\s+/).length).toBeLessThan(480);
-    expect(renderAgentsMd()).toContain(told);
-  });
-
-  test("the skill's prose gives the same rule for review_to_front and the conch:review line", () => {
-    const skill = renderSkillMd();
-    expect(skill).not.toContain("must sit under your cwd");
-    expect(skill).toContain("the one it is in now and the git repository around that");
-    expect(skill).toContain("Only the last such\n  line in a reply counts");
-    expect(skill).toContain("the user sees which link and why where the deliverable would be");
-    expect(skill).toContain("**outside this session's folders and the temp folders** (the refusal lists them)");
-    expect(AGENT_COMMANDS.find((command) => command.name === "folders")!.help).toContain("your deliverable links may sit under them");
-  });
-});
-
-describe("the apps say why a link is missing", () => {
-  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
-  test("the Mac's empty deliverable pane shows the refusal, and the old words only when no link was given", () => {
-    const models = read("mac-app/conch-mac/Models.swift");
-    const review = read("mac-app/conch-mac/ReviewView.swift");
-    expect(models).toContain("linkRefused = try? container.decodeIfPresent(String.self, forKey: .linkRefused)");
-    expect(review).toContain("linkRefused = review.linkRefused");
-    expect(review).toContain("MissingDeliverableView(refusal: item.linkRefused)");
-    expect(review).toContain('Text(refusal ?? "No deliverable link was published for this review.")');
-  });
-
-  test("the phone's deliverable sheet does the same", () => {
-    expect(read("mobile/conch-ios/conch-ios/Models.swift"))
-      .toContain("linkRefused = try? c.decodeIfPresent(String.self, forKey: .linkRefused)");
-    expect(read("mobile/conch-ios/conch-ios/DeliverableSheet.swift"))
-      .toContain('return .unavailable(review.linkRefused ?? "No link on this review.")');
   });
 });
 

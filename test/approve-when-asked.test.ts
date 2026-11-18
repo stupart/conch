@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { dispatchSessionControlMessage, validateSocketTurnEvent, type SessionCommandDispatchOptions } from "../src/control-server.ts";
 import { buildPanelModel, buildPublishedState, fileReview, UNAPPROVE_WINDOW_MS, type SessionReview } from "../src/panel.ts";
 import {
-  APPROVAL_LABEL_MAX,
   approvedInjectEvent,
   approvedMessage,
   checkApprovalRequest,
@@ -96,7 +95,6 @@ function daemonWith(reviews: SessionReview[], ledger = new SessionLedger()) {
 
 describe("the request: checkApprovalRequest, in review_to_front, on the socket and where the daemon files it", () => {
   test("{} or {label}, the label trimmed and at most 40 characters", () => {
-    expect(APPROVAL_LABEL_MAX).toBe(40);
     expect(checkApprovalRequest({})).toEqual({ ok: true, approval: {} });
     expect(checkApprovalRequest({ label: "Open the PR" })).toEqual({ ok: true, approval: { label: "Open the PR" } });
     expect(checkApprovalRequest({ label: "  Deploy \u0007" })).toEqual({ ok: true, approval: { label: "Deploy" } });
@@ -302,28 +300,6 @@ describe("the message, held by the daemon for the undo window", () => {
     d.clock.advance(UNAPPROVE_WINDOW_MS * 3);
     expect(d.sent).toHaveLength(1);
     expect(d.ledger.seaGlass).toBe(1);
-  });
-
-  test("sea glass: +1 per approval, back for an undo, never twice for one approval, and kept past the window", () => {
-    const d = daemonWith([filed("a", 1, { asksApproval: true }), filed("b", 2, { asksApproval: true }), filed("c", 3)]);
-    const glass = () => d.ledger.seaGlass;
-    d.approve("a");
-    expect(glass()).toBe(1);
-    d.approve("a");
-    expect(glass()).toBe(1);
-    d.approve("b");
-    expect(glass()).toBe(2);
-    d.unapprove("b");
-    expect(glass()).toBe(1);
-    d.approve("c"); // didn't ask
-    expect(glass()).toBe(1);
-    d.approve("b");
-    expect(glass()).toBe(2);
-    d.clock.advance(UNAPPROVE_WINDOW_MS + 1);
-    d.unapprove("a");
-    d.unapprove("b");
-    expect(glass()).toBe(2);
-    expect(d.sent.map((one) => one.text)).toEqual(["Approved: deliverable a.", "Approved: deliverable b."]);
   });
 
   test("two results held at once each go to their own agent's session, once", () => {

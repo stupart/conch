@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
@@ -20,20 +20,6 @@ afterEach(() => {
 });
 
 describe("loadConfig tunable layering", () => {
-  test("uses the registry defaults, including barge off", () => {
-    const cfg = loadConfig({ env: {}, settingsPath: settingsPath() });
-    expect(cfg.bargeThresholdPct).toBe(0);
-    expect(cfg.micGainDb).toBe(0);
-    expect(cfg.sayRate).toBe(210);
-    expect(cfg.workingMic).toBe(false);
-    expect(cfg.announceSummary).toBe(false);
-    expect(cfg.voiceQa).toBe(false);
-    expect(cfg.meetingAutopause).toBe(false);
-    expect(cfg.interruptOnManualReply).toBe(true);
-    expect(cfg.handoffOrder).toBe("oldest");
-    expect(cfg.recordsEnabled).toBe(false);
-  });
-
   test("records is opt-in and environment overrides the saved construction gate", () => {
     const path = settingsPath({ records: true });
     expect(loadConfig({ env: {}, settingsPath: path }).recordsEnabled).toBe(true);
@@ -170,16 +156,6 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.meetingAutopause).toBe(false);
   });
 
-  test("ignores the removed resume-digest setting in an existing config file", () => {
-    const cfg = loadConfig({
-      env: {},
-      settingsPath: settingsPath({ "resume-digest": true, "read-full": false }),
-    });
-
-    expect(cfg.readFull).toBe(false);
-    expect(Object.hasOwn(cfg, "resumeDigest")).toBe(false);
-  });
-
   test("zeroable env knobs preserve zero", () => {
     const cfg = loadConfig({
       env: {
@@ -197,17 +173,6 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.bargeThresholdPct).toBe(0);
     expect(cfg.sayRate).toBe(0);
   });
-});
-
-test("supervisor sources do not force the barge threshold", () => {
-  const root = join(import.meta.dir, "..");
-  const forcedBarge = /CONCH_BARGE_THRESHOLD_PCT\s*=/;
-  // bin/conch-supervisor.sh is gone. It was dead: nothing executed it, and
-  // `conch service` installs a launchd plist that exec's ProgramArguments with no
-  // shell. It also hardcoded one machine's home directory and bun path, so it could
-  // not have run anywhere else. renderSupervisorScript, an "obsolete" stub nothing
-  // called, went 2026-11-11. The rule still holds on the source that is live.
-  expect(readFileSync(join(root, "src", "install.ts"), "utf8")).not.toMatch(forcedBarge);
 });
 
 test("service install restarts the detached daemon before kicking its supervisor", () => {

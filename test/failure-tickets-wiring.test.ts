@@ -9,70 +9,11 @@ import { deliverToDaemon, handOff, type TurnEvent } from "../src/hook.ts";
 import { terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateRuntimeControlMessage } from "../src/settings.ts";
 
-// Where the failure loop meets the rest of conch (docs/failure-tickets.md): the daemon's catches that file what used to
-// be one log line, the socket's routes, the hook's own record, and the fix session's first message.
+// Where the failure loop meets the rest of conch (docs/failure-tickets.md): the socket's routes, the hook's own record,
+// and the fix session's first message.
 
-const root = join(import.meta.dir, "..");
-const source = (path: string) => readFileSync(join(root, path), "utf8");
 const cleanups: Array<() => Promise<void> | void> = [];
 afterAll(async () => { for (const cleanup of cleanups) await cleanup(); });
-
-describe("the daemon files what used to be only a log line", () => {
-  const daemon = source("src/daemon.ts");
-
-  /**
-   * 2026-10-28: an Allow Tyler tapped threw `Account profiles must have separate directories` inside the inject's
-   * handling, and the only trace was `error handling inject "…": Error: …` in /tmp/conch-daemon.log. Both of the
-   * daemon's catches for a handled event now file it, under the event's own type.
-   */
-  test("an event that throws, queued or immediate, is filed as well as logged", () => {
-    const queued = daemon.slice(daemon.indexOf("onError: (event, error) => {"), daemon.indexOf("onIdle:"));
-    expect(queued).toContain("log(`error handling ${event.type} \"${event.label}\": ${error}`);");
-    expect(queued).toContain("fileThrownEvent(event, error);");
-    const immediate = daemon.slice(daemon.indexOf("return handle(event).catch((error) => {"));
-    expect(immediate.slice(0, 300)).toContain("fileThrownEvent(event, error);");
-    const filing = daemon.slice(daemon.indexOf("log(`error filing a publication from"));
-    expect(filing.slice(0, 200)).toContain("fileThrownEvent(event, error, \"review-filing\");");
-    // And it reaches the daemon's own recorder, once there is one.
-    expect(daemon).toContain("fileDaemonFailure = recordDaemonError;");
-  });
-
-  /**
-   * 2026-11-11: a quarter of conch's own tickets were refusals it was right to make, said on the row and filed besides.
-   * A model change refused because the session was busy, or waiting on its user, or its prompt held unsent words, is
-   * told and not filed; one refused for anything else (a model the session's picker doesn't list) still is.
-   */
-  test("a model change the session's state refused is told on its row, not filed", () => {
-    const settings = daemon.slice(daemon.indexOf("setSettings: async (target, requested) => {"), daemon.indexOf("sessionActionsOverlay = new SessionActionsOverlay"));
-    expect(settings).toContain("if (file) recordDaemonError(\"session-settings\"");
-    expect(settings).toContain("refuse(\"the session is working; change it when its turn is over\", false)");
-    expect(settings).toContain("refuse(\"the session is waiting on you; answer it first\", false)");
-    expect(settings).toContain("refuse(outcome.reason, !(\"declined\" in outcome && outcome.declined))");
-    expect(settings).toContain("refuse(\"the session has no terminal conch can type into\")");
-  });
-
-  test("the Terminal button's refusal is filed once a session and reason, however often it is pressed", () => {
-    const focus = daemon.slice(daemon.indexOf("terminalFocus: async (message) => {"), daemon.indexOf("openSessionApp: async (message) => {"));
-    expect(focus).toContain("if (focusFailure && !filedTerminalFocus.has(focusFailure)) {");
-    expect(focus.indexOf("filedTerminalFocus.add(focusFailure);")).toBeLessThan(focus.indexOf("recordDaemonError(\"terminal-focus\""));
-  });
-
-  test("the desk is built on the daemon's own session start: background, Claude, the Default account, the brief first", () => {
-    const desk = daemon.slice(daemon.indexOf("const failureDesk = new FailureDesk({"), daemon.indexOf("failureDesk.start("));
-    expect(desk).toContain("await launchSession({");
-    expect(desk).toContain(`backend: "claude", host: "background", cwd, claudeAccountId: "default", initialPrompt: prompt,`);
-    expect(desk).toContain("autoFix: () => cfg.failureAutofix,");
-    expect(desk).toContain("errorsPath: APP_ERRORS_PATH,");
-    expect(desk).toContain("mcpUsagePath: mcpUsagePath(),");
-    // Every record the daemon writes, its own and the apps', is filed at once rather than at the next poll.
-    expect(daemon.match(/fileRecordedFailures\(\);/g)?.length).toBe(2);
-    const wiring = daemon.slice(daemon.indexOf("const controlServer = createControlServer({"));
-    expect(wiring.slice(0, 4_000)).toContain("failureTickets: failureDesk,");
-    expect(wiring.slice(0, 4_000)).toContain("onFailure: recordDaemonError,");
-    expect(daemon).toContain("lastPublishedPanelState.failures = failureDesk.digest();");
-    expect(daemon).toContain("failureDesk.stop();");
-  });
-});
 
 describe("a fix session's first message", () => {
   test("is the last argument of a new Claude conversation, quoted whole", () => {

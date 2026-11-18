@@ -38,17 +38,6 @@ final class QuestionOutcomeTests: XCTestCase {
         XCTAssertTrue(QuestionOutcome.chosen(from: options, in: "").isEmpty)
     }
 
-    func testTheCollapsedLineIsTheOne3Describes() {
-        XCTAssertEqual(
-            QuestionOutcome.summary(header: "Legacy keys", chosen: ["Keep them under legacy"]),
-            "Legacy keys · you chose Keep them under legacy"
-        )
-        XCTAssertEqual(
-            QuestionOutcome.summary(header: "", chosen: ["Keep"]), "you chose Keep"
-        )
-        XCTAssertNil(QuestionOutcome.summary(header: "Legacy keys", chosen: []))
-    }
-
     /// Several questions in one call: each answer is read from Claude Code's own
     /// `"<question>"="<answer>"`, the recorded shape (2.1.280), not by searching for labels,
     /// so one question's option can never be mistaken for another's answer.

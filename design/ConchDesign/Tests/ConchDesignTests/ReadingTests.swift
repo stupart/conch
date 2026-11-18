@@ -85,7 +85,6 @@ final class ReadingMeasureTests: XCTestCase {
         let code = styled.runs.first { $0.inlinePresentationIntent?.contains(.code) == true }
         XCTAssertEqual(code?.font, .system(size: 15 * ConchReading.codeScale, design: .monospaced))
         XCTAssertEqual(styled.runs.first?.font, .system(size: 15), "the words around it keep the body")
-        XCTAssertEqual(ConchReading.codeScale * 15, 13, accuracy: 0.1, "13 pt at 15, as Xcode sets code")
     }
 }
 
@@ -100,7 +99,8 @@ final class ReadingRhythmTests: XCTestCase {
     func testAListIsOneBlockAndAHeadingBelongsToWhatFollows() {
         let placed = gaps("Intro.\n\n- one\n- two\n\nAfter.\n\n```\ncode\n```\n\n### Next\n\n- item")
         // intro, one, two, [after], code, [### Next], item
-        let ems: [CGFloat] = [0, 1.2, 0.4, 1.2, 1.2, 1.45, 0.6]
+        let ems: [CGFloat] = [0, ConchReading.paragraphGap, ConchReading.itemGap, ConchReading.paragraphGap, ConchReading.paragraphGap,
+                              ConchReading.headingGapAbove(level: 3), ConchReading.headingGapBelow]
         XCTAssertEqual(placed, ems.map { $0 * 15 })
         XCTAssertLessThan(ConchReading.itemGap, ConchReading.paragraphGap / 2)
         XCTAssertLessThan(ConchReading.headingGapBelow, ConchReading.paragraphGap)
@@ -148,7 +148,6 @@ final class ReadingContrastTests: XCTestCase {
                 }
             }
         }
-        XCTAssertLessThan(ConchRGBA(0x58C9D4).contrast(on: ConchColor.surface.light), 2, "the cyan it replaces")
     }
 
     /// Code sits on the quiet fill, a table's header and your own turn too: what is set on it (the body's ink, and the

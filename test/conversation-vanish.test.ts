@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionsToPublish } from "../src/daemon.ts";
@@ -16,11 +16,8 @@ import type { SessionInfo } from "../src/sessions.ts";
  * and the daemon published eight — the first eight in registry order, Claude's pid files and then
  * every Codex thread. A seventh Claude window took a Codex session's window away; the Mac fell back
  * to its single-reply pane, which says "Nothing from … yet. Send a message below to start." when
- * the newest turn has no reply. These pin the daemon's half; the app's half is at the bottom.
+ * the newest turn has no reply. These pin the daemon's half.
  */
-
-const root = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 type Row = Pick<SessionInfo, "sessionId" | "status" | "statusUpdatedAt">;
 const row = (sessionId: string, statusUpdatedAt: number, status = "idle"): Row => ({ sessionId, status, statusUpdatedAt });
@@ -92,70 +89,4 @@ test("an agent row's history read reaches the agent's own record, not session-no
   } finally {
     store.close();
   }
-});
-
-test("the daemon resolves history reads against the agents it lists, refreshed with every panel", () => {
-  const daemon = read("src/daemon.ts");
-  expect(daemon.match(/historySessionFor\(ownerDeviceId, message\.session, \{ sessions: panelSessions, agents: panelAgents \}\)/g))
-    .toHaveLength(2);
-  expect(daemon).toContain("panelAgents = new Map(nested.map((agent) => [agent.sessionId, agent]));");
-  expect(daemon).not.toContain("historySessionAlias(ownerDeviceId, message.session");
-});
-
-/**
- * The app's half. conch-mac has no XCTest target: the rules are ConchDesign's (`ConversationSource`,
- * `HistoryPaging.retryDelay`, `ConversationPlaceholder`, XCTested in ConversationVanishTests), and
- * what is pinned here is that the Mac is wired to them.
- */
-test("the Mac draws a session's conversation from its record when the daemon published no live window", () => {
-  const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-  const body = dashboard.slice(dashboard.indexOf("private func conversationBody(for row: SessionRow?)"),
-    dashboard.indexOf("/// The live window the daemon published for THIS session"));
-  expect(body).toContain("SessionConversationGate(history: store.history, sessionId: row.id, published: publishedConversation(for: row)) { conversation in");
-  // The old gate: no published items, no conversation — however much the record held.
-  expect(body).not.toContain("!conversation.items.isEmpty,");
-  const gate = dashboard.slice(dashboard.indexOf("private struct SessionConversationGate"));
-  expect(gate).toContain("@ObservedObject var history: HistoryStore");
-  expect(gate).toContain("ConversationSource.of(publishedItems: published?.items.count ?? 0, session: sessionId, reader: history.paging) == .neither");
-  expect(gate).toContain("stack(published ?? Conversation(sessionId: sessionId))");
-  const published = dashboard.slice(dashboard.indexOf("private func publishedConversation(for row: SessionRow) -> Conversation?"));
-  expect(published).toContain("conversation.sessionId == row.id else { return nil }");
-  // Drawn from the record alone, it opens at the record's newest row, as a live one opens at its tail.
-  const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-  const follow = stack.slice(stack.indexOf(".onChange(of: conversation.items.isEmpty ? history.paging.rows.last?.id : nil) { _, _ in"));
-  expect(follow.slice(0, 200)).toContain("guard pinnedToBottom else { return }\n                requestBottomScroll(using: proxy)");
-});
-
-test("both readers keep asking while they hold nothing, and the Mac's empty sentence is for empty sessions", () => {
-  for (const store of ["mac-app/conch-mac/HistoryStore.swift", "mobile/conch-ios/conch-ios/HistoryStore.swift"]) {
-    expect(read(store), store).toContain("guard let delay = paging.retryDelay else {");
-  }
-  const content = read("mac-app/conch-mac/TranscriptContent.swift");
-  expect(content).toContain("case .awaitingReply:\n                    SessionStaticContent.fallback(for: row, transcript: .awaitingReply)");
-  // Each reader — Claude's and Codex's — tells an unanswered prompt from an empty transcript on its own.
-  const claude = content.slice(content.indexOf("private static func lastClaudeReply"), content.indexOf("private static func isToolResultEntry"));
-  const codex = content.slice(content.indexOf("private static func lastCodexReply"), content.indexOf("private static func scanLinesBackward"));
-  for (const [name, reader] of [["Claude", claude], ["Codex", codex]] as const) {
-    expect(reader, name).toContain("-> TranscriptLastReply {");
-    expect(reader, name).toContain("let reachedPrompt = try scanLinesBackward(at: path, fileSize: fileSize) { line in");
-    expect(reader, name).toContain("return reachedPrompt || saidAnything ? .awaitingReply : .empty");
-    expect(reader, name).toContain("saidAnything = true");
-  }
-  // A transcript it cannot read is said to be unreadable, not empty.
-  expect(content).toContain("guard !rawPath.isEmpty else {\n            content = SessionStaticContent.fallback(for: row, transcript: .unreadable)");
-  expect(content).toContain("if content == SessionStaticContent.fallback(for: row) {\n                    content = SessionStaticContent.fallback(for: row, transcript: .unreadable)");
-  expect(content).not.toContain('"Nothing from');
-});
-
-/**
- * The phone goes by the same rule as the Mac's window (`SessionView.liveWindow`); pinned so the two cannot drift apart.
- * The conversation panel that floated over other apps followed it too; it was removed on 2026-11-11 with the rest of the
- * overlays, so its guard went with it.
- */
-test("the phone draws a session's conversation from its record when the daemon published no live window", () => {
-  const phone = read("mobile/conch-ios/conch-ios/SessionView.swift");
-  const liveWindow = phone.slice(phone.indexOf("private var liveWindow: Conversation? {"), phone.indexOf("private var branchTip: String? {"));
-  expect(liveWindow).toContain("if let published, !published.items.isEmpty { return published }");
-  expect(liveWindow).toContain("guard history.paging.hasAnythingToShow else { return nil }");
-  expect(liveWindow).toContain("return published ?? Conversation(sessionId: sessionId)");
 });

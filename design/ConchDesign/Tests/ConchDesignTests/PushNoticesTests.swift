@@ -2,7 +2,7 @@ import XCTest
 @testable import ConchDesign
 
 /// Notices (daemon notify-user.ts, 2026-11-10): what both apps read of one, where a tap goes, which the Mac posts, and
-/// what Settings › Phone app says of push. The key and tokens here are made up.
+/// what the push setup takes. The key and tokens here are made up.
 final class PushNoticesTests: XCTestCase {
     private func notice(_ id: String, at: Double, session: String? = nil, link: String? = nil, target: String? = nil) -> ConchNotice {
         ConchNotice(id: id, title: "Deploy", body: "It's live.", sessionId: session, link: link, target: target, at: at)
@@ -53,16 +53,10 @@ final class PushNoticesTests: XCTestCase {
         XCTAssertEqual(NoticeRoute.from(userInfo: NoticeRoute.userInfo(for: notice("n2", at: 1, target: "providers"))), .providers)
     }
 
-    func testPushStatusSaysWhereItStandsInOneLine() throws {
-        XCTAssertEqual(PushSetupStatus().statusLine, "Push: not set up")
+    func testPushStatusDecodesAndAnErrorIsTrouble() throws {
         let key = PushSetupStatus.Key(keyId: "ABCDE12345", teamId: "FGHIJ67890", addedAt: 1)
-        XCTAssertEqual(PushSetupStatus(key: key).statusLine, "Push: ready · waiting for the iPhone to turn notifications on")
         let phone = PushSetupStatus.Device(device: "iPhone", environment: "production", alerts: true, registeredAt: 1, token: "…c0ffee", lastSentAt: nil, lastError: nil)
-        XCTAssertEqual(PushSetupStatus(key: key, devices: [phone]).statusLine, "Push: ready · iPhone")
-        let off = PushSetupStatus.Device(device: "iPhone", environment: "production", alerts: false, registeredAt: 1, token: "…c0ffee", lastSentAt: nil, lastError: nil)
-        XCTAssertEqual(PushSetupStatus(key: key, devices: [off]).statusLine, "Push: ready · notifications are off on the iPhone")
         let refused = PushSetupStatus(key: key, devices: [phone], lastError: "Apple refused the key (InvalidProviderToken)")
-        XCTAssertEqual(refused.statusLine, "Push: last error · Apple refused the key (InvalidProviderToken)")
         XCTAssertTrue(refused.troubled)
         XCTAssertFalse(PushSetupStatus(key: key, devices: [phone]).troubled)
 

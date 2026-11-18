@@ -165,17 +165,10 @@ final class CanvasShowTests: XCTestCase {
         XCTAssertEqual(CanvasStoryboard.clock(83.7), "1:23")
         XCTAssertEqual(CanvasStoryboard.stamp(4.9), "[00:04]")
         XCTAssertEqual(CanvasStoryboard.stamp(75), "[01:15]")
-        XCTAssertEqual(CanvasStoryboard.longest, 120)
     }
 
-    /// What happened at a frame, as a video's prompt says it (`VideoStoryboard.prompt`): the start, a change, the end, or
-    /// the marks finished there, each where it is and a note with its words on one line.
-    func testACaptionSaysWhatHappenedAtAFrame() {
-        XCTAssertEqual(CanvasStoryboard.caption(Moment(at: 0.1, kind: .look), first: true), "the start")
-        XCTAssertEqual(CanvasStoryboard.caption(Moment(at: 15.1, kind: .look), first: false), "the screen changed")
-        XCTAssertEqual(CanvasStoryboard.caption(Moment(at: 6, kind: .said), first: false), "the screen changed")
-        XCTAssertEqual(CanvasStoryboard.caption(Moment(at: 23.55, kind: .end), first: false), "the end")
-        XCTAssertEqual(CanvasStoryboard.caption(Moment(at: 0.55, kind: .end), first: true), "the screen")
+    /// The marks finished at a frame, each where it is, and a note with its words on one line.
+    func testACaptionNamesTheMarksFinishedAtAFrame() {
         let marks = Moment(at: 4.3, kind: .marks([mark(.box, 0.5, 0.1), mark(.note, 0.6, 0.12, text: "make this\nbigger")]))
         XCTAssertEqual(CanvasStoryboard.caption(marks, first: false), "box (55%,15%), note (60%,12%): \"make this bigger\"")
     }

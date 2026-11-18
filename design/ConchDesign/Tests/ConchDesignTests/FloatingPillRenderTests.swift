@@ -3,11 +3,11 @@ import SwiftUI
 import XCTest
 @testable import ConchDesign
 
-/// The floating pill drawn (2026-11-11), light and dark: nothing happening, it is a round nub the height of the pill;
-/// expanded, its buttons are drawn exactly where a press finds them (`FloatingPill.actionFrames`), since the Mac's window
-/// decides from those frames whether a press is a button's or the pill's own.
+/// The floating pill drawn (2026-11-11): every state keeps the pill's height, and expanded, its buttons are drawn exactly
+/// where a press finds them (`FloatingPill.actionFrames`), since the Mac's window decides from those frames whether a
+/// press is a button's or the pill's own.
 ///
-/// `CONCH_PILL_RENDERS=<dir>` writes each picture too, at 1x and 2x.
+/// `CONCH_PILL_RENDERS=<dir>` writes each picture too.
 @MainActor
 final class FloatingPillRenderTests: XCTestCase {
     private typealias S = FloatingPill.Session
@@ -85,26 +85,16 @@ final class FloatingPillRenderTests: XCTestCase {
         ("ready", .init(sessions: [S(id: "c", label: "landing-page", need: .ready, detail: "Hero, version 3")])),
     ]
 
-    func testNothingHappeningIsARoundNub() throws {
-        for dark in [false, true] {
-            let (size, _) = try picture(FloatingPill.face(.init()), expanded: false, dark: dark, name: "nub")
-            XCTAssertEqual(size.width, FloatingPill.Metrics.height, accuracy: 0.5)
-            XCTAssertEqual(size.height, FloatingPill.Metrics.height, accuracy: 0.5)
-        }
-    }
-
     func testEveryStateKeepsItsHeightAndALongNameStopsAtTheMeasure() throws {
         for (name, input) in states {
-            for dark in [false, true] {
-                let face = FloatingPill.face(input)
-                let collapsed = try picture(face, expanded: false, dark: dark, name: name).size
-                XCTAssertEqual(collapsed.height, FloatingPill.Metrics.height, accuracy: 0.5, name)
-                let expanded = try picture(face, expanded: true, dark: dark, name: "\(name)-expanded").size
-                XCTAssertEqual(expanded.height, FloatingPill.Metrics.expandedHeight, accuracy: 0.5, name)
-                // A long name is cut short rather than stretching the pill across the screen.
-                XCTAssertLessThan(collapsed.width, 280, name)
-                XCTAssertLessThan(expanded.width, 420, name)
-            }
+            let face = FloatingPill.face(input)
+            let collapsed = try picture(face, expanded: false, dark: false, name: name).size
+            XCTAssertEqual(collapsed.height, FloatingPill.Metrics.height, accuracy: 0.5, name)
+            let expanded = try picture(face, expanded: true, dark: false, name: "\(name)-expanded").size
+            XCTAssertEqual(expanded.height, FloatingPill.Metrics.expandedHeight, accuracy: 0.5, name)
+            // A long name is cut short rather than stretching the pill across the screen.
+            XCTAssertLessThan(collapsed.width, 280, name)
+            XCTAssertLessThan(expanded.width, 420, name)
         }
     }
 
@@ -118,19 +108,6 @@ final class FloatingPillRenderTests: XCTestCase {
                 let inside = colour(rep, frame.minX + 3, frame.midY)
                 let outside = colour(rep, frame.minX - 2, frame.midY)
                 XCTAssertGreaterThan(distance(inside, outside), 0.03, "\(entry.action) starts where its frame does (\(dark ? "dark" : "light"))")
-            }
-        }
-    }
-
-    /// Every state at 1x and 2x, light and dark, for the eye.
-    func testPictures() throws {
-        guard ProcessInfo.processInfo.environment["CONCH_PILL_RENDERS"] != nil else { throw XCTSkip("CONCH_PILL_RENDERS unset") }
-        for (name, input) in states {
-            for dark in [false, true] {
-                for scale in [CGFloat(1), 2] {
-                    _ = try picture(FloatingPill.face(input), expanded: false, dark: dark, scale: scale, name: name)
-                    _ = try picture(FloatingPill.face(input), expanded: true, dark: dark, scale: scale, name: "\(name)-expanded")
-                }
             }
         }
     }

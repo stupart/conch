@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Seeing and reviewing work on the iPhone (mobile-parity.md, first iOS PR):
- * the last state drawn on a cold launch, Next through the ready reviews, a
- * Mac-local page said for what it is, and a reply from the review itself.
- * The iOS app has no test target, so the Foundation-only pieces run under
- * `swift` and the SwiftUI wiring is read the way the other ios-*.test.ts do.
+ * Seeing and reviewing work on the iPhone: the last state drawn on a cold
+ * launch, Next through the ready reviews, a review's scene decoded, and a
+ * Mac-local page said for what it is. The iOS app has no test target, so the
+ * Foundation-only pieces are lifted out of its source and run under `swift`.
  */
 const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -20,15 +19,6 @@ function declaration(source: string, start: string): string {
   const at = source.indexOf(start);
   expect(at, `missing: ${start}`).toBeGreaterThan(-1);
   return source.slice(at, source.indexOf("\n}\n", at) + 3);
-}
-
-/** From `start` to the first `end` after it, both required. */
-function between(source: string, start: string, end: string): string {
-  const at = source.indexOf(start);
-  expect(at, `missing: ${start}`).toBeGreaterThan(-1);
-  const stop = source.indexOf(end, at + start.length);
-  expect(stop, `missing after ${start}: ${end}`).toBeGreaterThan(at);
-  return source.slice(at, stop);
 }
 
 function runSwift(lines: string[], args: string[] = []): string[] {
@@ -49,8 +39,6 @@ function runSwift(lines: string[], args: string[] = []): string[] {
 
 const app = ios("ConchApp.swift");
 const sheet = ios("DeliverableSheet.swift");
-const session = ios("SessionView.swift");
-const ledger = ios("LedgerView.swift");
 
 describe("Next walks the ready reviews by the Mac pill's rule", () => {
   test.skipIf(!swift)(
@@ -107,33 +95,6 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
     },
     60_000,
   );
-
-  test("the review screen asks the queue, counts the rest, and keys versions as the Mac does", () => {
-    // One rule, in ConchDesign. Both surfaces call it, and it is what keeps the fallback
-    // byte-identical to the key each of them used to compute for itself.
-    expect(read("mac-app/conch-mac/ReviewView.swift")).toContain(
-      "id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)",
-    );
-    expect(read("design/ConchDesign/Sources/ConchDesign/ReviewIdentity.swift"))
-      .toContain('[sessionId, stamp].joined(separator: "\\u{1F}")');
-    expect(sheet).toContain("ReviewIdentity.key(published: published, sessionId: sessionId, filedAt: filedAt)");
-    expect(sheet).toContain("import ConchDesign");
-    expect(sheet).toContain("ReviewScene.next(after: current, in: ready.map { (key: $0.key, at: $0.at) }, opened: seen)");
-    const body = between(sheet, "struct ReviewSheet: View {", "enum ReviewQueue {");
-    expect(body).toContain("let next = ReviewQueue.next(after: currentKey, in: ready, opened: opened.union(viewedKeys))");
-    // The phone reads the same record the Mac writes, and falls back to its own set alone
-    // when the daemon is too old to have one.
-    expect(sheet).toContain("guard bridge.state?.features?.viewedState != nil else { return [] }");
-    expect(body).toContain("let more = ready.filter { $0.key != currentKey }.count");
-    expect(body).toContain('Text("\\(more) more")');
-    // Marked opened, then moved on — the order is the claim, not whether it is one line.
-    expect(body).toMatch(/if let currentKey \{[\s\S]*?opened\.insert\(currentKey\)[\s\S]*?\}\s*sessionId = next/);
-    expect(body).toContain("bridge.send(sessionCommand: .reviewViewed, sessionId: sessionId, review: currentKey)");
-    // A different review is a fresh viewer, not the last one's download, an earlier one picked
-    // from the menu included.
-    expect(body).toContain(".id(key(review))");
-    expect(session).toContain("ReviewSheet(bridge: bridge, talk: talk, sessionId: sessionId)");
-  });
 });
 
 describe("a review's scene on the iPhone", () => {
@@ -169,11 +130,6 @@ describe("a review's scene on the iPhone", () => {
     },
     60_000,
   );
-
-  test("the review screen and the ledger row show it on one line", () => {
-    expect(between(sheet, "if let inspect = shown?.inspect {", "if let next {")).toContain(".lineLimit(1)");
-    expect(between(ledger, "if let inspect = row.review?.inspect {", "Spacer(minLength: 8)")).toContain(".lineLimit(1)");
-  });
 });
 
 describe("a cold launch draws the last state the Mac sent", () => {
@@ -239,24 +195,6 @@ describe("a cold launch draws the last state the Mac sent", () => {
     },
     60_000,
   );
-
-  test("every pairing's transport is wrapped, and the saved state goes with the pairing", () => {
-    expect(app).toContain("let created = BridgeClient(pairing: pairing, transport: LastStateTransport(Self.transport(for: pairing)))");
-    expect(app).toContain("LastStateTransport(fixture ?? Self.transport(for: pairing))");
-    const transport = between(app, "private static func transport(for pairing: BridgeClient.Pairing)", "\n    }\n");
-    expect(transport).toContain("case let .lan(host, token): DirectHTTPTransport(host: host, token: token)");
-    expect(transport).toContain("case let .relay(payload): RelayTransport(pairing: payload)");
-    expect(between(app, "private func unpair() {", "\n    }\n")).toContain("LastStateTransport.forget()");
-    expect(between(app, "private func adopt(_ newPairing: BridgeClient.Pairing) {", "PairingStore.save(newPairing)")).toContain("LastStateTransport.forget()");
-    // Transcripts: never backed up, unreadable while locked.
-    expect(app).toContain("[.atomic, .completeFileProtection]");
-    // The ledger draws a saved state as stale, with its age.
-    const stale = between(ledger, "private func staleLine(_ state: PublishedState) -> String {", "\n    }\n");
-    expect(stale).toContain("relativeAge(epochMilliseconds: state.ts)");
-    expect(stale).toContain('"Looking for your Mac — showing what it last sent\\(age)."');
-    expect(ledger).toContain("Text(staleLine(state))");
-    expect(read("scripts/ui-snapshot.sh")).toContain("shoot ledger-stale.png -conchFixtureOffline YES");
-  });
 });
 
 describe("a page on the Mac's localhost is said, not loaded", () => {
@@ -286,80 +224,4 @@ describe("a page on the Mac's localhost is said, not loaded", () => {
     },
     60_000,
   );
-
-  test("the router sends loopback to the explanation, which offers the LAN page", () => {
-    expect(sheet).toContain("return MacLocalPage.isLoopback(url) ? .macLocal(url) : .web(url)");
-    const view = between(sheet, "private func macLocalView(_ url: URL) -> some View {", "/// Said in the sheet");
-    expect(view).toContain("MacLocalPage.onLAN(url, pairedHost: bridge.pairedHost, isRelay: bridge.isRelayPaired)");
-    expect(view).toContain("Button { lanPage = lan }");
-    expect(view).toContain("through the relay");
-    expect(between(sheet, "case let .macLocal(url):", "case let .local(localKind):")).toContain(
-      "BridgedWebView(url: lanPage, page: page, onFailure: fail, ink: ink)",
-    );
-  });
-});
-
-describe("the review screen replies through the composer's own path", () => {
-  const bar = between(session, "struct ReviewReplyBar: View {", "\n}\n");
-
-  test("the session's draft, talk.send, and inject to that session", () => {
-    expect(bar).toContain("get: { talk.draft(for: sessionId) },");
-    expect(bar).toContain("set: { talk.setDraft($0, for: sessionId) }");
-    expect(bar).toMatch(
-      /talk\.send\(session: sessionId\) \{ text, opId in\s*await bridge\.inject\(sessionId: sessionId, label: label, text: text, opId: opId\)\s*\}/,
-    );
-    // Sent, Delivered and Not delivered with Retry: the conversation's own bubble.
-    expect(bar).toContain("talk.outgoing.last(where: { $0.session == sessionId })");
-    expect(bar).toMatch(/YourTurnBubble\(\s*message: latest,\s*onRetry: send,\s*onDiscard: \{ talk\.discardOutgoing\(latest\.id\) \}/);
-    expect(bar).toContain(".disabled(isSending || row?.messageUnavailableReason != nil)");
-    expect(sheet).toContain("ReviewReplyBar(bridge: bridge, talk: talk, sessionId: sessionId)");
-  });
-});
-
-describe("the viewers", () => {
-  test("a link asking for a new window opens in the page; the page has Back, Reload and Safari", () => {
-    const delegate = between(sheet, "private final class PageLoadFailure", "struct LinkFailureLine");
-    expect(delegate).toContain("WKUIDelegate");
-    expect(delegate).toMatch(/createWebViewWith[\s\S]*if navigationAction\.targetFrame == nil \{ webView\.load\(navigationAction\.request\) \}[\s\S]*return nil/);
-    const controls = between(sheet, "private func webControls(_ url: URL) -> some View {", "/// What a Mac-local page is");
-    expect(controls).toContain("page.view?.goBack()");
-    expect(controls).toContain(".disabled(!page.canGoBack)");
-    expect(controls).toContain("page.reload(url)");
-    expect(controls).toContain("bridge.openLink(figma ? url : page.view?.url ?? url, sessionId: sessionId) { linkFailure = $0 }");
-    // A Figma file's embed goes out to Figma, by the file's own link (2026-11-11).
-    expect(controls).toContain('Label(figma ? "Open in Figma" : "Open in Safari", systemImage: figma ? "arrow.up.forward.app" : "safari")');
-  });
-
-  test("transcript and document text can be selected and copied", () => {
-    expect(between(ios("ConversationStack.swift"), "LinkFailureLine(message: $linkFailure)", ".environment(\\.openURL")).toContain(
-      ".textSelection(.enabled)",
-    );
-    expect(between(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView")).toContain(".textSelection(.enabled)");
-    expect(between(session, "} else if let replyText {", "} else if loadingReply {")).toContain(".textSelection(.enabled)");
-  });
-
-  test("the session header: name over state, nothing clipped in the trailing capsule, context in the menu", () => {
-    const principal = between(session, "ToolbarItem(placement: .principal) {", "// Read it to me.");
-    expect(principal).toContain(".truncationMode(.tail)");
-    expect(principal).toContain("statusLine(mark)");
-    expect(between(session, "private func statusLine(_ mark: StatusMark) -> some View {", "// MARK: - Talk")).toContain(".lineLimit(1)");
-    expect(session).not.toMatch(/ToolbarItem\(placement: \.topBarTrailing\) \{\s*HStack\(spacing: 6\)/);
-    const scroll = between(session, "ScrollViewReader { scroller in", "ConversationStack(");
-    expect(scroll).not.toContain("context");
-    // A blocked session says what it is asking, above the conversation.
-    const pinned = between(session, "var body: some View {\n        VStack(spacing: 0) {", "ScrollViewReader { scroller in");
-    expect(pinned).toContain('if row?.status == "needs", let detail = row?.detail, !detail.isEmpty {');
-  });
-});
-
-describe("the showcase fixture has a review of every kind the phone opens", () => {
-  test("web, localhost, image, PDF, video, markdown, code, diff, an unpreviewable file, and a permission ask", () => {
-    const state = JSON.parse(read("mobile/conch-ios/fixtures/showcase.json"));
-    const links: string[] = state.rows.flatMap((row: any) => (row.review?.link ? [row.review.link] : []));
-    for (const pattern of [/^https:\/\//, /^http:\/\/localhost:/, /\.png$/, /\.pdf$/, /\.mp4$/, /\.md$/, /\.swift$/, /\.diff$/, /\.zip$/]) {
-      expect(links.some((link) => pattern.test(link)), String(pattern)).toBe(true);
-    }
-    for (const link of links.filter((link) => !/^https?:/.test(link))) expect(existsSync(join(root, link)), link).toBe(true);
-    expect(state.rows.some((row: any) => row.status === "needs" && row.detail?.startsWith("permission: "))).toBe(true);
-  });
 });

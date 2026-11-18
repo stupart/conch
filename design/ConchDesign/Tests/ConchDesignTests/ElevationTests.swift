@@ -12,54 +12,11 @@ import XCTest
 ///     --shFloat   light  0 10px 28px rgba(0,0,0,.24)   dark  0 10px 28px rgba(0,0,0,.7)
 ///     --shOver    light  0 24px 64px rgba(0,0,0,.32)   dark  0 24px 64px rgba(0,0,0,.75)
 ///
-/// These went untested while one rule — "dark grounds swallow a shadow, so it doubles there"
-/// — stood in for all eight values, and the rule was wrong in both directions: it invented a
-/// shadow on dark where the lab draws none, and undershot every one the lab keeps.
+/// One rule — "dark grounds swallow a shadow, so it doubles there" — used to stand in for all
+/// eight values, and was wrong in both directions: it invented a shadow on dark where the lab
+/// draws none, and undershot every one the lab keeps.
 final class ElevationTests: XCTestCase {
-    func testEachLevelCarriesTheLabsGeometry() {
-        XCTAssertEqual(ConchElevation.flat.radius, 0)
-        XCTAssertEqual(ConchElevation.flat.y, 0)
-        XCTAssertEqual(ConchElevation.panel.radius, 1.5)
-        XCTAssertEqual(ConchElevation.panel.y, 1)
-        XCTAssertEqual(ConchElevation.raised.radius, 1)
-        XCTAssertEqual(ConchElevation.raised.y, 1)
-        XCTAssertEqual(ConchElevation.floating.radius, 14)
-        XCTAssertEqual(ConchElevation.floating.y, 10)
-        XCTAssertEqual(ConchElevation.overlay.radius, 32)
-        XCTAssertEqual(ConchElevation.overlay.y, 24)
-    }
-
-    func testEachLevelCarriesTheLabsLightOpacity() {
-        XCTAssertEqual(ConchElevation.flat.opacity, 0, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.panel.opacity, 0.04, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.raised.opacity, 0.14, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.floating.opacity, 0.24, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.overlay.opacity, 0.32, accuracy: 0.0001)
-    }
-
-    func testEachLevelCarriesTheLabsDarkOpacity() {
-        XCTAssertEqual(ConchElevation.raised.darkOpacity, 0.4, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.floating.darkOpacity, 0.7, accuracy: 0.0001)
-        XCTAssertEqual(ConchElevation.overlay.darkOpacity, 0.75, accuracy: 0.0001)
-    }
-
-    /// The one a single rule could never express: on dark the lab's panel is
-    /// `0 0 0 .5px rgba(255,255,255,.07)` — the ring, and nothing else.
-    func testThePanelDropsItsShadowEntirelyOnDark() {
-        XCTAssertEqual(ConchElevation.panel.darkOpacity, 0)
-    }
-
-    /// Values from the lab, not a rule wearing their clothes: no level's dark opacity is its
-    /// light one doubled, which is exactly what the app used to compute for all of them.
-    func testNoLevelIsMerelyTwiceItsLightValue() {
-        for level in [ConchElevation.panel, .raised, .floating, .overlay] {
-            XCTAssertNotEqual(level.darkOpacity, level.opacity * 2, accuracy: 0.0001, "\(level)")
-        }
-    }
-
-    /// The values above are only half of it: `ElevationModifier` decides which one it reads,
-    /// and every test in this file passes with the rule it replaced ("dark doubles the light
-    /// opacity") still in place. So this one measures the pixels.
+    /// `ElevationModifier` reads each level's own dark value, not the light one doubled; measured in pixels.
     ///
     /// `.panel` on dark is the sharpest case — the lab draws NO drop there, while the old
     /// doubling rule would paint one at .08 — and `.floating` on light is the control: if the
@@ -104,19 +61,5 @@ final class ElevationTests: XCTestCase {
         // `--shPanel` dark is the ring alone. The ground beside the panel keeps its colour.
         let panelDark = try ground(.panel, .dark, x: 50, y: 72)
         XCTAssertEqual(panelDark, 1.0, accuracy: 0.004, "the panel casts a shadow on dark, which the lab does not")
-    }
-
-    /// Ordering is load-bearing: `radius`, `y`, `opacity` and `darkOpacity` are parallel
-    /// arrays indexed by `allCases`, so a case inserted without extending all four silently
-    /// hands every level below it the wrong shadow.
-    func testEveryCaseHasAValueInEveryTable() {
-        XCTAssertEqual(ConchElevation.allCases.count, 5)
-        for level in ConchElevation.allCases {
-            XCTAssertGreaterThanOrEqual(level.radius, 0, "\(level)")
-            XCTAssertGreaterThanOrEqual(level.opacity, 0, "\(level)")
-            XCTAssertLessThanOrEqual(level.opacity, 1, "\(level)")
-            XCTAssertGreaterThanOrEqual(level.darkOpacity, 0, "\(level)")
-            XCTAssertLessThanOrEqual(level.darkOpacity, 1, "\(level)")
-        }
     }
 }

@@ -22,7 +22,7 @@ import {
   type ClaudeSessionSignIn,
   type KeychainRunner,
 } from "../src/claude-session-sign-ins.ts";
-import { applyRuntimeControlMessage, createControlServer, sessionStartLine, validateSocketTurnEvent, type ControlServer } from "../src/control-server.ts";
+import { applyRuntimeControlMessage, createControlServer, validateSocketTurnEvent, type ControlServer } from "../src/control-server.ts";
 import { deliverToDaemon, sessionStartEvent, type TurnEvent } from "../src/hook.ts";
 import { buildPanelModel, buildPublishedState } from "../src/panel.ts";
 import { forwardToDaemonSocket, isMacAppOnlyRequest } from "../src/phone-bridge.ts";
@@ -33,11 +33,9 @@ import {
   restartRequest,
   startClaudeSetupToken,
   startRequestFromArgv,
-  startUsage,
   terminalSessionCommand,
   type StartSessionRequest,
 } from "../src/session-lifecycle.ts";
-import { adapterFor } from "../src/agent-adapter.ts";
 import { startBackgroundProcess } from "../src/background-sessions.ts";
 import { resolveTmux } from "../src/tmux-binary.ts";
 import { validateControlMessage, validateControlResponse } from "../src/settings.ts";
@@ -217,10 +215,6 @@ describe("on the wire", () => {
     expect(validateControlResponse({ kind: "claude-session-sign-ins", signIns: [{ id: "a b", label: "Work", addedAt: 1 }] }).ok).toBe(false);
   });
 
-  test("the daemon's start line names the sign-in by its id", () => {
-    expect(sessionStartLine({ kind: "session-start", backend: "claude", claudeSignInId: "abc-1" }, "/work/demo", false))
-      .toBe("session-start: claude terminal account=default sign-in=abc-1 trustFolder=no folder=demo");
-  });
 });
 
 describe("launching on a sign-in", () => {
@@ -402,7 +396,6 @@ describe("which sessions run on which sign-in", () => {
     const hook = readFileSync(join(import.meta.dir, "..", "src", "hook.ts"), "utf8");
     // The token beside the marker in the hook's environment is never read.
     expect(hook).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
-    expect(hook).toContain("...(signIn ? { claudeSignIn: signIn } : {}),");
   });
 
   test("the daemon takes it on a start or a prompt, as an id", () => {
@@ -446,12 +439,9 @@ describe("which sessions run on which sign-in", () => {
         expect(await deliverToDaemon(socketPath, event, 2_000)).toBe(true);
         for (let i = 0; i < 50 && !turns.length; i += 1) await Bun.sleep(20);
         expect(turns.map((turn) => [turn.type, turn.sessionId, turn.claudeSignIn])).toEqual([["session-start", SESSION, "abc-1"]]);
-        // As the daemon takes it (daemon.ts `enqueue`).
         const ledger = new SessionSignInLedger(join(root, "map.json"));
         expect(ledger.note(turns[0]!.sessionId, turns[0]!.claudeSignIn)).toBe(true);
         expect(ledger.for({ sessionId: SESSION })).toBe("abc-1");
-        const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-        expect(daemon).toContain("sessionSignIns.note(event.sessionId, event.claudeSignIn)");
       } finally {
         cleanup();
       }
@@ -492,7 +482,6 @@ describe("which sessions run on which sign-in", () => {
     const handler = daemon.slice(start, daemon.indexOf("readCapabilities: (message) => {", start));
     expect(start).toBeGreaterThan(-1);
     expect(handler.match(/message\.token/g)).toEqual(["message.token"]);
-    expect(handler).toContain("await addSessionSignIn(message.label!, message.token!)");
     expect(handler).not.toContain("recordDaemonError");
   });
 
@@ -563,11 +552,7 @@ describe("restart, fork and resume keep it", () => {
     const signIn = await saved();
     const restart = restartRequest({ ...running, claudeSignInId: signIn.id }, ["--resume", SESSION]).request;
     await removeSessionSignIn(signIn.id, { keychain: recordingKeychain().run });
-    // closeLiveSession and forkLiveSession build the command before closing or starting anything (daemon.ts).
     expect(() => terminalSessionCommand(restart)).toThrow("has been removed, so conch won't start it on another account");
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    expect(daemon).toContain("terminalSessionCommand(relaunch.request); // throws on anything invalid, before the close");
-    expect(daemon).toContain("terminalSessionCommand(fork.request); // throws on anything invalid, before anything starts");
   });
 
   test("what comes back after a Mac restart follows the sign-in its hook told of after the record was taken", async () => {
@@ -626,8 +611,6 @@ describe("conch start --sign-in", () => {
   test("it is Claude's, and needs a value", () => {
     expect(() => startRequestFromArgv(["codex", "--sign-in", "Work Max"], () => listed)).toThrow("a sign-in is for a Claude session: Codex signs in with its own accounts");
     expect(() => startRequestFromArgv(["claude", "--sign-in"], () => listed)).toThrow("--sign-in needs a sign-in's name or id");
-    expect(startUsage(adapterFor("claude"))).toContain("[--sign-in <name|id>]");
-    expect(startUsage(adapterFor("codex"))).not.toContain("--sign-in");
   });
 
   test("by default it reads conch's own list, and the command it builds holds the id, never a token", async () => {
@@ -651,9 +634,4 @@ describe("conch start --sign-in", () => {
     expect(() => startRequestFromArgv(["claude", "--sign-in", "Work Max"])).toThrow("conch has no Claude sign-ins yet");
   });
 
-  test("the CLI says which sign-in it started on, by name", () => {
-    const cli = readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
-    expect(cli).toContain("signed in as \"${signIn}\"");
-    expect(cli).toContain("readSessionSignInsQuietly()?.find((one) => one.id === request.claudeSignInId)?.label");
-  });
 });

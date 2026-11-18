@@ -5,8 +5,7 @@ import XCTest
 
 /// The contact sheet pulled off a real video, as the phone and the Mac's composer both pull it (`VideoFrames.swift`): a
 /// movie written here, a second a shade. Pictures only: a video's sound is never read (2026-11-12), and a movie with
-/// sound in it sent this test through macOS's audio stack, which checked the microphone and beeped on every gate run
-/// (test/conch-design-silent.test.ts keeps it out).
+/// sound in it sent this test through macOS's audio stack, which checked the microphone and beeped on every gate run.
 final class VideoFramesTests: XCTestCase {
     private var folder: URL!
 

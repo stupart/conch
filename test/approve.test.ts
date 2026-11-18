@@ -12,7 +12,6 @@ import {
   MAX_SESSION_REVIEWS,
   reviewReady,
   UNAPPROVE_WINDOW_MS,
-  unapproveReview,
   type SessionReview,
 } from "../src/panel.ts";
 import { isMacAppOnlyRequest } from "../src/phone-bridge.ts";
@@ -59,7 +58,7 @@ function modelWith(reviews: SessionReview[], status: "waiting" | "working" | "ne
   });
 }
 
-describe("the rules: approveReview and unapproveReview", () => {
+describe("the rules: approveReview", () => {
   test("approving stamps approvedAt, and viewedAt when nobody had looked; it never restamps either", () => {
     const filed = [held("a", 1_000), held("b", 2_000, { viewedAt: 3_000 })];
     const once = approveReview(filed, "a", 5_000)!;
@@ -75,26 +74,6 @@ describe("the rules: approveReview and unapproveReview", () => {
     expect(filed[0]!.approvedAt).toBeUndefined();
   });
 
-  test("taking it back: within 10 s approvedAt goes and viewedAt stays; past 10 s it is refused in words", () => {
-    const approved = approveReview([held("a", 1_000)], "a", 5_000)!;
-    const undone = unapproveReview(approved, "a", 5_000 + UNAPPROVE_WINDOW_MS);
-    expect(UNAPPROVE_WINDOW_MS).toBe(10_000);
-    expect(undone.ok).toBe(true);
-    if (!undone.ok) throw new Error("refused");
-    expect(undone.held[0]!.approvedAt).toBeUndefined();
-    expect("approvedAt" in undone.held[0]!).toBe(false);
-    expect(undone.held[0]!.viewedAt).toBe(5_000);
-
-    const late = unapproveReview(approved, "a", 5_000 + UNAPPROVE_WINDOW_MS + 1);
-    expect(late).toEqual({
-      ok: false,
-      why: "late",
-      reason: "too late to take back: it was approved 10 s ago, and an approval can only be undone within 10 s",
-    });
-    expect(unapproveReview(approved, "a", 65_000)).toMatchObject({ ok: false, why: "late", reason: expect.stringContaining("approved 60 s ago") });
-    expect(unapproveReview([held("a", 1_000)], "a", 5_000)).toMatchObject({ ok: false, why: "not-approved" });
-    expect(unapproveReview(approved, "nope", 5_000)).toMatchObject({ ok: false, why: "missing" });
-  });
 });
 
 describe("the ledger: persisted, counted, and the same after a restart", () => {

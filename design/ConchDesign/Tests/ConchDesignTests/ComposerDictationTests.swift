@@ -210,16 +210,6 @@ final class ComposerDictationTests: XCTestCase {
         XCTAssertNil(follower.follow(frame("idle", prefix: prefix, landed: landed), session: mine, applied: applied))
     }
 
-    /// A correction in the final transcript: the draft takes the final words, not the preview's.
-    func testTheFinalTranscriptWinsOverThePreview() throws {
-        var follower = ComposerDictation.Follower()
-        let shown = try XCTUnwrap(follower.follow(frame("transcribing", prefix: "Their going home"), session: mine, applied: 1))
-        XCTAssertEqual(ComposerDictation.preview(draft: "Note:", transcript: shown)?.text, "Note: Their going home")
-        let landed = Live.Landed(id: 2, session: mine)
-        XCTAssertNil(follower.follow(frame("transcribing", prefix: "Their going home", landed: landed), session: mine, applied: 2))
-        XCTAssertEqual(ComposerDictation.appending("They're going home.", to: "Note:"), "Note: They're going home.")
-    }
-
     /// `live.dictated` is sticky: the last dictation is still published when the next one starts. It is not this one's.
     func testTheLastDictationStillPublishedDoesNotEndTheNextOne() {
         var follower = ComposerDictation.Follower()
@@ -232,12 +222,9 @@ final class ComposerDictationTests: XCTestCase {
     /// preview the same way, and lands once.
     func testRecoveredWordsLandOnceThroughTheSameDoor() {
         var follower = ComposerDictation.Follower()
-        var draft = "Draft"
         _ = follower.follow(frame("recording", partial: "words that failed to send"), session: mine, applied: 3)
         let recovered = Live.Landed(id: 4, session: mine)
-        draft = ComposerDictation.appending("Words that failed to send.", to: draft)
         XCTAssertNil(follower.follow(frame("recording", partial: "words that failed to send", landed: recovered), session: mine, applied: 4))
-        XCTAssertEqual(draft, "Draft Words that failed to send.")
     }
 
     /// Another session's landing is not this one's, even mid-dictation.

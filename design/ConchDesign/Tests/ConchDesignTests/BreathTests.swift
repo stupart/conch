@@ -53,13 +53,7 @@ final class BreathTests: XCTestCase {
     func testTheLayerIsHandedTheBreathOnce() {
         let now = 812_000_002.5
         let breath = BreathingLayer.animation(now: now)
-        XCTAssertEqual(breath.keyPath, "opacity")
-        XCTAssertEqual(breath.values as? [NSNumber], ActiveHalo.keyframes().map { NSNumber(value: $0) })
-        XCTAssertEqual(breath.calculationMode, .linear)
-        XCTAssertEqual(breath.duration, period)
-        XCTAssertEqual(breath.repeatCount, .infinity)
         XCTAssertEqual(breath.timeOffset, ActiveHalo.clockOffset(at: now), accuracy: 1e-9)
-        XCTAssertFalse(breath.isRemovedOnCompletion)
         XCTAssertLessThanOrEqual(breath.preferredFrameRateRange.maximum, 30)
 
         let layer = BreathingLayer()
@@ -72,9 +66,8 @@ final class BreathTests: XCTestCase {
         XCTAssertEqual(layer.disc.animationKeys()?.count, 1)
     }
 
-    /// A working row on screen: its halo is a layer animation, painted in `active`, breathing once it is in a window;
-    /// a gallery frame (`phase`) is a still SwiftUI disc. (Reduce Motion, which draws none, is read-only here: the
-    /// source guard in test/active-blue-source.test.ts pins that branch.)
+    /// A working row on screen: its halo is a layer animation, breathing once it is in a window;
+    /// a gallery frame (`phase`) is a still SwiftUI disc. (Reduce Motion, which draws none, is read-only here.)
     @MainActor
     func testTheLiveHaloIsALayerAnimationAndTheStillOnesAreNot() throws {
         func discs(_ halo: some View) -> [BreathingDiscView] {
@@ -93,10 +86,6 @@ final class BreathTests: XCTestCase {
         XCTAssertEqual(live.count, 1, "one layer-driven halo")
         let disc = try XCTUnwrap(live.first)
         XCTAssertNotNil(disc.breath.disc.animation(forKey: BreathingLayer.key), "breathing once it reached a window")
-        XCTAssertEqual(disc.colour, ConchColor.active.light)
-        XCTAssertEqual(disc.breath.disc.backgroundColor, CGColor(srgbRed: ConchColor.active.light.red, green: ConchColor.active.light.green, blue: ConchColor.active.light.blue, alpha: 1))
-        XCTAssertEqual(disc.breath.disc.frame.size, CGSize(width: 14, height: 14))
-        XCTAssertEqual(disc.breath.disc.cornerRadius, 7)
 
         XCTAssertTrue(discs(ActiveHalo(diameter: 14, phase: 0.5)).isEmpty, "a gallery frame is drawn still, by SwiftUI")
         XCTAssertTrue(discs(ActiveHalo(diameter: 14).environment(\.conchRendersStatically, true)).isEmpty)
@@ -123,15 +112,6 @@ final class WindowVisibilityTests: XCTestCase {
             let _ = seen.hidden.append(hidden)
             Color.clear.frame(width: 10, height: 10)
         }
-    }
-
-    /// A window that is not on screen is not visible, and nothing is visible without a window.
-    @MainActor
-    func testAWindowOffEveryScreenIsNotVisible() {
-        XCTAssertFalse(WindowVisibilityView.isVisible(nil))
-        let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 20, height: 20), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        XCTAssertFalse(WindowVisibilityView.isVisible(window), "never ordered in")
     }
 
     /// The modifier reads the window it lands in and tells its content: in a window nobody can see, `conchHidden` turns

@@ -2,10 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
 import { HANDOFF_FROM_ENV, HANDOFF_PARENT_ENV, handoffParentPid, type HandoffChild } from "../src/mcp-handoff.ts";
-import { MCP_TOOLSET, toolsetFingerprint } from "../src/mcp-toolset.ts";
-import { initializeResult, MCP_LISTED_TOOLS, MCP_TOOLS, runMcpServer, type McpToolHandlers } from "../src/mcp.ts";
+import { MCP_TOOLSET } from "../src/mcp-toolset.ts";
+import { MCP_LISTED_TOOLS, MCP_TOOLS, runMcpServer, type McpToolHandlers } from "../src/mcp.ts";
 
 /**
  * New tools for a session already running (mcp-handoff.ts): the server hands its stdio over to a fresh server of the
@@ -95,16 +94,6 @@ function client(options: { published: () => string | undefined; spawn: () => Han
 const newer = [...MCP_TOOLS.map(({ name, description }) => ({ name, description })), { name: "conch_next", description: "A tool from a newer conch." }];
 
 describe("handing over to a newer conch's server", () => {
-  test("this build's toolset is its tools' own, and the server says its list can change", () => {
-    // The listed tools' (2026-11-11): what a session started now is given, and what the daemon publishes.
-    expect(MCP_TOOLSET).toBe(toolsetFingerprint(MCP_LISTED_TOOLS));
-    expect(MCP_TOOLSET).toMatch(/^[0-9a-f]{16}$/);
-    expect(toolsetFingerprint(newer)).not.toBe(MCP_TOOLSET);
-    // A tool that moved to the CLI is still one this server answers, for a session that has it.
-    expect(MCP_TOOLS.map((tool) => tool.name)).toContain("atlas_show");
-    expect(initializeResult({ protocolVersion: "2025-06-18" }).capabilities).toEqual({ tools: { listChanged: true } });
-  });
-
   test("a newer toolset published: a fresh server is started with the client's initialize, and every line goes through it", async () => {
     const fresh = freshServer(newer, (message) => ({ answeredBy: "the fresh server", method: message.method }));
     const c = client({ published: () => "newer-toolset", spawn: () => fresh.child });

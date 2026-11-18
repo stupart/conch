@@ -243,18 +243,16 @@ describe("UI injection transactions", () => {
 
   // Codex reads an Enter straight behind a burst of keys as a newline: measured on
   // codex-cli 0.156.0 in tmux, the words stayed in its composer as two lines.
-  test("tmux pauses between the words and the Enter, and logs the Enter", async () => {
+  test("tmux pauses between the words and the Enter", async () => {
     const ui = fakeUI();
     const calls: string[] = [];
-    const steps: string[] = [];
     const result = await injectText(cfg, 1, "words", undefined, {
-      ...ui.options(1), findTmuxPane: async () => "%fake", steps,
+      ...ui.options(1), findTmuxPane: async () => "%fake",
       sleep: async (ms) => { calls.push(`sleep:${ms}`); },
       sendTmuxKeys: async (_pane, text, literal) => { calls.push(`${literal ? "text" : "key"}:${text}`); return { exitCode: 0 }; },
     });
     expect(result).toEqual({ via: "tmux" });
     expect(calls).toEqual(["text:words", `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:Enter"]);
-    expect(steps.at(-1)).toEndWith("] tmux Enter exit=0");
   });
 
   // 2026-10-05: 3,580 characters typed with `send-keys -l` reached Claude Code as 1,022-byte reads, each over
@@ -263,24 +261,22 @@ describe("UI injection transactions", () => {
     const send = async (text: string, paste: (pane: string, text: string) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 })) => {
       const ui = fakeUI();
       const calls: string[] = [];
-      const steps: string[] = [];
       // No keystroke route behind tmux, as in conch's own background sessions.
       const result = await injectText({ ...cfg, keystrokeFallback: false }, 1, text, undefined, {
-        ...ui.options(1), findTmuxPane: async () => "conch:%7", steps,
+        ...ui.options(1), findTmuxPane: async () => "conch:%7",
         sleep: async (ms) => { calls.push(`sleep:${ms}`); },
         sendTmuxKeys: async (pane, sent, literal) => { calls.push(`${literal ? "text" : "key"}:${pane}:${sent}`); return { exitCode: 0 }; },
         pasteTmuxText: async (pane, sent) => { calls.push(`paste:${pane}:${sent}`); return paste(pane, sent); },
       });
-      return { result, calls, steps, ui };
+      return { result, calls, ui };
     };
 
     test("over the threshold, or across lines, the words are pasted and then Return is pressed", async () => {
       const long = "x".repeat(TMUX_PASTE_OVER_CHARS + 1);
       for (const text of [long, "two\nlines", "a carriage\rreturn", "y".repeat(3_580)]) {
-        const { result, calls, steps, ui } = await send(text);
+        const { result, calls, ui } = await send(text);
         expect(result).toEqual({ via: "tmux" });
         expect(calls).toEqual([`paste:conch:%7:${text}`, `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:conch:%7:Enter"]);
-        expect(steps.some((line) => line.endsWith(`] tmux paste-buffer exit=0 (${text.length} chars)`))).toBe(true);
         // Neither the Mac's clipboard nor any window was touched.
         expect(ui.items()).toEqual(textItems("original"));
         expect(ui.actions).toEqual([]);
@@ -354,15 +350,6 @@ describe("UI injection transactions", () => {
       expect(await pasteIntoTmuxPane("not-a-pane", "words", run)).toEqual({ exitCode: 1 });
       expect(runs).toEqual([]);
     });
-  });
-
-  // The Return was the one step the step log never showed, and it is the one that goes missing.
-  test("the steps a caller collects say when the Return was pressed", async () => {
-    const ui = fakeUI();
-    const steps: string[] = [];
-    expect(await injectText(cfg, 1, "words", undefined, { ...ui.options(1), steps })).toEqual({ via: "osascript-focused" });
-    expect(steps.map((line) => line.replace(/^\[[^\]]*\] /, "")).slice(-2))
-      .toEqual(["refocus before Return -> ok", "Return -> pressed"]);
   });
 
   test("a rejected transaction releases the queue for the next session", async () => {

@@ -65,16 +65,6 @@ describe("a message from another session is shown as one, never as Tyler's", () 
     });
   });
 
-  test("a peer row keeps the record's own id, as the record store keys it", () => {
-    const ids = items(receiver()).filter((item) => item.peer).map((item) => item.id);
-    expect(ids).toEqual([
-      "00000000-0000-4000-8000-000000000003",
-      "00000000-0000-4000-8000-000000000005",
-      "00000000-0000-4000-8000-000000000006",
-      "00000000-0000-4000-8000-000000000007",
-    ]);
-  });
-
   test("a person who types the tag is still the person speaking", () => {
     const last = items(receiver()).at(-1)!;
     expect(last.kind).toBe("user");

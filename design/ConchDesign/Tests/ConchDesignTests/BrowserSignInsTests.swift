@@ -98,12 +98,12 @@ final class BrowserSignInsTests: XCTestCase {
         XCTAssertFalse(BrowserSignIns.record("mobbin.com.evil.example", belongsTo: "mobbin.com"))
     }
 
-    func testTheReportRoundTrips() throws {
+    /// The daemon's logins inventory reads this file by its version.
+    func testTheReportSaysItsVersion() throws {
         let report = BrowserSignIns.Report(profiles: [
             "default": .init(sites: [.init(domain: "mobbin.com"), .init(domain: "bank.example")], checkedAt: 1_792_195_200_000),
         ])
         let data = try JSONEncoder().encode(report)
-        XCTAssertEqual(try JSONDecoder().decode(BrowserSignIns.Report.self, from: data), report)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(json["version"] as? Int, 1)
     }

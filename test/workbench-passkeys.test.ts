@@ -126,11 +126,4 @@ describe("the passkey watcher", () => {
     p.click(new El("button", "Continue"));
     expect(p.posted).toEqual(["pressed"]);
   });
-
-  test("it touches nothing of the page's", () => {
-    for (const wrapped of ["navigator", "credentials", "Function.prototype", "toString", "defineProperty", "Proxy"]) {
-      expect(source, wrapped).not.toContain(wrapped);
-    }
-    expect(swift).toContain('public static let entitlement = "com.apple.developer.web-browser.public-key-credential"');
-  });
 });

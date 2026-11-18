@@ -9,7 +9,6 @@ final class FloatingPillTests: XCTestCase {
     // MARK: The switch
 
     func testTheSwitchIsOnUntilTurnedOff() {
-        XCTAssertTrue(FloatingPill.byDefault)
         XCTAssertTrue(FloatingPill.enabled(stored: nil))
         XCTAssertTrue(FloatingPill.enabled(stored: true))
         XCTAssertFalse(FloatingPill.enabled(stored: false))
@@ -43,7 +42,6 @@ final class FloatingPillTests: XCTestCase {
         XCTAssertEqual(face.working, 0)
         XCTAssertNil(face.needBehind)
         XCTAssertFalse(face.manual)
-        XCTAssertEqual(face.title, "Nothing needs you")
         XCTAssertNil(face.subtitle)
         XCTAssertNil(face.opens)
         // The daemon not answering is said, never shown as nothing to do.
@@ -54,10 +52,7 @@ final class FloatingPillTests: XCTestCase {
         let manual = FloatingPill.face(.init(manual: true))
         XCTAssertEqual(manual.mark, .conch(manual: true))
         XCTAssertTrue(manual.manual)
-        XCTAssertTrue(manual.accessibility.hasSuffix("manual"))
-        let auto = FloatingPill.face(.init())
-        XCTAssertFalse(auto.manual)
-        XCTAssertFalse(auto.accessibility.lowercased().contains("auto"))
+        XCTAssertFalse(FloatingPill.face(.init()).manual)
     }
 
     func testWorkingIsCountedAndNamed() {
@@ -68,8 +63,6 @@ final class FloatingPillTests: XCTestCase {
         XCTAssertEqual(face.mark, .conch(manual: false))
         XCTAssertNil(face.label)
         XCTAssertEqual(face.working, 3)
-        XCTAssertEqual(face.title, "3 working")
-        XCTAssertEqual(face.subtitle, "site, api and 1 more")
         // The title is the count, so it isn't said twice.
         XCTAssertFalse(face.countsWorking)
     }
@@ -88,7 +81,6 @@ final class FloatingPillTests: XCTestCase {
         XCTAssertEqual(face.title, "site")
         // What needs him before the words going by: a session talking never hides it, and its line carries its mark and the
         // chevron, since that is where a click goes.
-        XCTAssertEqual(face.subtitle, "api wants to run Bash")
         XCTAssertEqual(face.subtitleNeed, .permission)
         XCTAssertEqual(face.opens, .permission)
         XCTAssertEqual(face.talk, .stop(listening: false))
@@ -117,17 +109,11 @@ final class FloatingPillTests: XCTestCase {
         XCTAssertEqual(face.label, "early question")
         XCTAssertEqual(face.more, 2)
         XCTAssertNil(face.needBehind)
-        // The disc behind the mark says there are more; the line says only what this one asks.
-        XCTAssertEqual(face.subtitle, "Has a question")
-        XCTAssertTrue(face.accessibility.contains("2 more need you"))
         XCTAssertEqual(face.opens, .question)
         let permission = FloatingPill.face(.init(sessions: [S(id: "q", label: "q", need: .question, at: 1), S(id: "p", label: "p", need: .permission, detail: "Bash", at: 2)]))
         XCTAssertEqual(permission.label, "p")
-        XCTAssertEqual(permission.subtitle, "Wants to run Bash")
-        XCTAssertEqual(FloatingPill.face(.init(sessions: [S(id: "p", label: "p", need: .permission)])).subtitle, "Asks permission")
         // A ready deliverable is its own summary: the check already says it is ready.
         XCTAssertEqual(FloatingPill.face(.init(sessions: [S(id: "r", label: "landing", need: .ready, detail: "Hero")])).subtitle, "Hero")
-        XCTAssertEqual(FloatingPill.face(.init(sessions: [S(id: "r", label: "landing", need: .ready)])).subtitle, "Ready for you")
     }
 
     func testTalkGoesToTheVoicesSessionOrTheLastOneItWasWith() {
@@ -147,8 +133,6 @@ final class FloatingPillTests: XCTestCase {
         // The audio on another device: Talk can't open a mic here.
         let elsewhere = FloatingPill.face(.init(sessions: sessions, voiceLabel: "site", audioElsewhere: true))
         guard case .unavailable = elsewhere.talk else { return XCTFail("Talk while the audio is elsewhere") }
-        XCTAssertEqual(elsewhere.subtitle, "The voice is on another device")
-        // Off, it isn't there; the line says why.
         XCTAssertEqual(elsewhere.actions, [.mode])
     }
 
@@ -179,18 +163,9 @@ final class FloatingPillTests: XCTestCase {
         let size = CGSize(width: 300, height: FloatingPill.Metrics.expandedHeight)
         let frames = FloatingPill.actionFrames(in: size)
         XCTAssertEqual(frames.map(\.action), [.talk, .mode])
-        let inset = FloatingPill.Metrics.buttonInset
-        XCTAssertEqual(frames.last!.frame.maxX, 300 - inset, accuracy: 0.001)
-        XCTAssertEqual(frames.last!.frame.midY, size.height / 2, accuracy: 0.001)
-        XCTAssertEqual(frames[1].frame.width, FloatingPill.Metrics.modeButton)
-        XCTAssertEqual(frames[1].frame.height, FloatingPill.Metrics.modeHeight)
-        XCTAssertEqual(frames[1].frame.midY, size.height / 2, accuracy: 0.001)
         // Without Talk, the switch keeps its place at the end.
         XCTAssertEqual(FloatingPill.actionFrames([.mode], in: size).map(\.frame), [frames[1].frame])
         XCTAssertNil(FloatingPill.action(at: CGPoint(x: frames[0].frame.midX, y: frames[0].frame.midY), in: size, actions: [.mode]))
-        for (a, b) in zip(frames, frames.dropFirst()) {
-            XCTAssertEqual(b.frame.minX - a.frame.maxX, FloatingPill.Metrics.buttonGap, accuracy: 0.001)
-        }
         for entry in frames {
             XCTAssertEqual(FloatingPill.action(at: CGPoint(x: entry.frame.midX, y: entry.frame.midY), in: size), entry.action)
         }

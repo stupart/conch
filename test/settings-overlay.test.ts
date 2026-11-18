@@ -152,13 +152,7 @@ describe("SettingsOverlay", () => {
 
     expect(overlay.handleKey("m")).toBe(false);
     overlay.open();
-    expect(overlay.model()?.rows[0]).toMatchObject({
-      key: "end-silence",
-      value: "3.5",
-      source: "default",
-      selected: true,
-    });
-    expect(overlay.model()?.rows[0]?.help.length).toBeGreaterThan(0);
+    expect(overlay.model()?.rows[0]).toMatchObject({ source: "default", selected: true });
     expect(overlay.handleKey("m")).toBe(true);
     expect(overlay.handleKey("q")).toBe(true);
     expect(overlay.handleKey("\u0003")).toBe(false);

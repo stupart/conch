@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { sessionUsageLimitFromLines as limit } from "../src/session-usage-limit.ts";
 import { buildPanelModel, buildPublishedState } from "../src/panel.ts";
 
@@ -78,20 +77,4 @@ test("publication preserves the failure without changing session status, muting,
     usageLimit: text, status: "waiting", paused: false, review: { summary: "Existing work" },
   });
   expect(published.rows.find(row => row.id === "available")).not.toHaveProperty("usageLimit");
-});
-
-test("both apps show a distinct limit glyph and subdued name, keeping the row selectable", () => {
-  const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-  const mac = read("mac-app/conch-mac/DashboardView.swift");
-  const phone = read("mobile/conch-ios/conch-ios/LedgerView.swift");
-  const phoneModels = read("mobile/conch-ios/conch-ios/Models.swift");
-  expect(mac).toContain('return "hourglass.circle"');
-  expect(phoneModels).toContain('case .usageLimit: "hourglass.circle"');
-  expect(mac).toContain("row.usageLimit == nil ? ConchPalette.textPrimary : ConchPalette.textDim");
-  expect(phone).toContain("row.usageLimit == nil ? Palette.textPrimary : Palette.textDim");
-  for (const source of [mac, phoneModels]) {
-    expect(source).toContain('row.usageLimit != nil, row.live != "listening", row.live != "recording"');
-    expect(source).toContain('"Usage limit reached"');
-    expect(source).not.toContain(".disabled(row.usageLimit");
-  }
 });

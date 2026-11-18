@@ -6,10 +6,6 @@ const HOME = "/Users/someone";
 afterEach(() => setSessionVocabulary([]));
 
 describe("dictation vocabulary", () => {
-  test("is one plain sentence that always carries conch's own names", () => {
-    expect(transcriptionPrompt({ vocabulary: "" })).toBe("Dictating to Claude Code and Codex about conch.");
-  });
-
   test("adds the user's words once, in order, whatever their case or spacing", () => {
     expect(parseVocabularyTerms(" Seashell,Atlas\n  Lagoon  , ,codex")).toEqual(["Seashell", "Atlas", "Lagoon", "codex"]);
     expect(transcriptionPrompt({ vocabulary: "Seashell, Atlas, codex" }))

@@ -361,7 +361,7 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   (`sessionCloseTimeout`) and a 15 s exit wait (`CLOSE_EXIT_WAIT_MS`), for two closes on
   2026-10-05 that failed only because their sessions were slow to leave. That was a different
   failure from this one, where the keystroke seems never to have landed.
-- **open** — Nine guards still slice by a FIXED character count from a marker, which breaks the
+- **done** (2026-11-18, the test prune) — Nine guards still slice by a FIXED character count from a marker, which breaks the
   moment the code they read grows. Found 2026-09-21 when `composer.slice(loadAt, loadAt + 400)`
   failed while the rule it pins was still true — `load` had gained a doc comment and a branch,
   and the call it asserts moved past the window. The two in `mac-phase1-source` are fixed;
@@ -373,7 +373,8 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   adopted-daemon-respawn guard now uses that idiom (its `body()` helper), but the same file has
   gained a backward count (`- 700`, :105), and the rest still count, at `daemon-owner:106`,
   `daemon-side-effects:471,586` (plus a new `:412`), `design-system-source:80`,
-  `phone-speaking-latch:24`, `reveal-command:57`, `phone-telemetry:59`, `setup:449`.
+  `phone-speaking-latch:24`, `reveal-command:57`, `phone-telemetry:59`, `setup:449`. The prune deleted
+  every test that read source as text this way; none of these slices is left.
 - **open** — Running real agent sessions inside conch's own terminal. Tyler: "could test having
   the real reaw sessios runnign in the terminal in th app that could be quite cool... is that
   possible for me to move one in here?"

@@ -33,25 +33,16 @@ final class NaturalVoicesNoticeTests: XCTestCase {
     func testQuietLineWhileHealing() throws {
         let firstRun = try XCTUnwrap(walk([Report(state: "setting-up", healing: "first-run", percent: 60)]).notices[0])
         XCTAssertEqual(firstRun.tone, .healing)
-        XCTAssertEqual(firstRun.text, "Setting up natural voices… 60%")
-        XCTAssertEqual(firstRun.short, "Setting up voices… 60%")
+        XCTAssertTrue(firstRun.text.contains("60%"), firstRun.text)
         XCTAssertNil(firstRun.action, "healing needs nothing from you")
         XCTAssertFalse(firstRun.dismissible)
 
-        let noPercentYet = try XCTUnwrap(walk([Report(state: "setting-up", healing: "first-run")]).notices[0])
-        XCTAssertEqual(noPercentYet.text, "Setting up natural voices…")
-
         let offline = try XCTUnwrap(walk([Report(state: "setting-up", healing: "first-run", waiting: "network")]).notices[0])
-        XCTAssertEqual(offline.text, "Natural voices will finish setting up when you're back online")
         XCTAssertEqual(offline.tone, .healing)
 
         let repair = try XCTUnwrap(walk([Report(state: "ready"), Report(state: "setting-up", healing: "repair")]).notices[1])
-        XCTAssertEqual(repair.text, "Natural voices are coming back…")
-        XCTAssertEqual(repair.short, "Voices coming back…")
+        XCTAssertEqual(repair.tone, .healing)
         XCTAssertNil(repair.action)
-
-        let repairOffline = try XCTUnwrap(walk([Report(state: "setting-up", healing: "repair", waiting: "network")]).notices[0])
-        XCTAssertEqual(repairOffline.text, "Natural voices will come back when you're online")
 
         // A quick retry's wait is still healing: quiet.
         XCTAssertEqual(walk([Report(state: "setting-up", healing: "repair", waiting: "retry")]).notices[0]?.tone, .healing)
@@ -60,25 +51,19 @@ final class NaturalVoicesNoticeTests: XCTestCase {
     func testOneClearLineOnlyWhenHealingReallyFailed() throws {
         let failed = try XCTUnwrap(walk([Report(state: "off", reason: "setup failed", off: "failed", problem: "gpu")]).notices[0])
         XCTAssertEqual(failed.tone, .needsYou)
-        XCTAssertEqual(failed.text, "Natural voices stopped: the graphics chip kept failing. conch is using the Mac's own voice for now.")
         XCTAssertEqual(failed.action, .tryAgain)
-        XCTAssertEqual(failed.action?.title, "Try again")
         XCTAssertTrue(failed.dismissible)
 
         // An older daemon's failure, with no `off`: still said.
         XCTAssertEqual(walk([Report(state: "off", reason: "setup failed")]).notices[0]?.action, .tryAgain)
 
-        // A limit of this Mac: said plainly, with Why? (Try again can't change the hardware).
+        // A limit of this Mac: Why? (Try again can't change the hardware).
         let intel = try XCTUnwrap(walk([Report(state: "off", reason: "needs Apple silicon", off: "unsupported")]).notices[0])
-        XCTAssertEqual(intel.text, "Natural voices can't run here: they need Apple silicon. conch uses the Mac's own voice.")
         XCTAssertEqual(intel.action, .why)
-        let noMetal = try XCTUnwrap(walk([Report(state: "off", reason: "no Metal GPU", off: "unsupported")]).notices[0])
-        XCTAssertEqual(noMetal.text, "Natural voices can't run here: this Mac's graphics can't run them. conch uses the Mac's own voice.")
 
         // A missing installer: Try again can't help, so Why?.
         let noUv = try XCTUnwrap(walk([Report(state: "off", reason: "no uv", off: "failed")]).notices[0])
         XCTAssertEqual(noUv.action, .why)
-        XCTAssertTrue(noUv.text.contains("conch is missing its installer"))
     }
 
     func testOutOfRoomSaysSoOnceAndCarriesOn() throws {
@@ -86,7 +71,6 @@ final class NaturalVoicesNoticeTests: XCTestCase {
             Report(state: "setting-up", space: .init(needs: 1.7e9, free: 9e8), healing: "first-run", waiting: "space"),
         ]).notices[0])
         XCTAssertEqual(space.tone, .needsYou)
-        XCTAssertEqual(space.text, "Natural voices need 1.7 GB free to finish setting up. This Mac has 900 MB; they'll carry on once there's room.")
         XCTAssertEqual(space.action, .why)
         XCTAssertEqual(space.key, "space")
     }
@@ -96,7 +80,6 @@ final class NaturalVoicesNoticeTests: XCTestCase {
         var (memory, notices) = walk([failed, Report(state: "ready")], at: 1_000)
         let back = try XCTUnwrap(notices[1])
         XCTAssertEqual(back.tone, .back)
-        XCTAssertEqual(back.text, "Natural voices are back")
         XCTAssertNil(back.action)
         XCTAssertFalse(back.dismissible, "it goes by itself")
         XCTAssertEqual(NaturalVoicesNotices.nextChange(memory, now: 1_001), 1_001 + NaturalVoicesNotices.backSeconds)
@@ -111,9 +94,10 @@ final class NaturalVoicesNoticeTests: XCTestCase {
 
         // A first setup finishing says ready, not back; a repair says back.
         (memory, notices) = walk([Report(state: "setting-up", healing: "first-run", percent: 10), Report(state: "ready")])
-        XCTAssertEqual(notices[1]?.text, "Natural voices are ready")
+        let ready = try XCTUnwrap(notices[1]?.text)
+        XCTAssertNotEqual(ready, back.text)
         (memory, notices) = walk([Report(state: "ready"), Report(state: "setting-up", healing: "repair"), Report(state: "ready")])
-        XCTAssertEqual(notices[2]?.text, "Natural voices are back")
+        XCTAssertEqual(notices[2]?.text, back.text)
         // The daemon restarting on voices that work (checking, then ready) is not a recovery.
         XCTAssertEqual(walk([Report(state: "ready"), Report(state: "checking"), Report(state: "ready")]).notices, [nil, nil, nil])
     }
@@ -146,13 +130,11 @@ final class NaturalVoicesNoticeTests: XCTestCase {
         XCTAssertNil(NaturalVoicesNotices.step(memory, report: space, now: 0).notice)
     }
 
-    func testOnboardingSaysARuntimeLimitPlainly() {
+    func testOnboardingSaysARuntimeLimitAndDoesntRetryIt() {
         let download = OnboardingReports.naturalVoices(Report(state: "off", reason: "no Metal GPU", off: "unsupported"))
         XCTAssertEqual(download?.canRetry, false)
-        if case let .failed(words)? = download?.state {
-            XCTAssertEqual(words, "Natural voices can't run here: this Mac's graphics can't run them. conch uses the Mac's own voice.")
-        } else {
-            XCTFail("a limit of this Mac is a failure setup names, not one it retries")
+        guard case .failed? = download?.state else {
+            return XCTFail("a limit of this Mac is a failure setup names, not one it retries")
         }
     }
 }

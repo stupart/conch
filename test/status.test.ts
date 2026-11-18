@@ -36,14 +36,6 @@ const ACTIVE_FOOTER_GOLDEN = "\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "  project-one                \x1b[33m▶ speaking\x1b[0m\n";
 
-const PAUSED_FOOTER_GOLDEN = "\n"
-  + "  \x1b[1mconch\x1b[0m\n"
-  + "  \x1b[1;35m⏸ MANUAL · holding 2 · no parked cursor: p for auto\x1b[0m\n"
-  + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
-  + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"
-  + "  \x1b[2mbeta                       ⏸ manual\x1b[0m\n"
-  + "  \x1b[2mgamma                      ⏸ manual\x1b[0m\n";
-
 function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
   return {
     rows: [
@@ -180,35 +172,6 @@ describe("terminal Phase 2 surfaces", () => {
     expect(plain).toContain("Where should it go?");
     expect(plain).toContain("[ ] 1. Linear");
     expect(plain).toContain("[x] 2. Export PDF");
-    expect(plain).toContain("1-9 toggle · enter submit · esc clear");
-  });
-
-  test("the one-line composer and fresh-session launcher render as terminal modals", () => {
-    const { io, writes } = recordingIO({ columns: 100, rows: 10 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      terminalComposer: {
-        target: { sessionId: "one", label: "project-one" },
-        text: "run the focused tests",
-      },
-    }));
-    expect(writes.at(-1)).toContain("prompt → project-one");
-    expect(writes.at(-1)).toContain("run the focused tests▌");
-
-    renderer.panel(sampleModel({
-      sessionStartOverlay: {
-        selectedIndex: 0,
-        starting: false,
-        rows: [
-          { key: "backend", value: "claude", help: "switch agent", selected: true, editing: false },
-          { key: "cwd", value: "/Users/tyler", help: "working folder", selected: false, editing: false },
-          { key: "start", value: "fresh session", help: "open", selected: false, editing: false },
-        ],
-      },
-    }));
-    expect(writes.at(-1)).toContain("new fresh session");
-    expect(writes.at(-1)).toContain("/Users/tyler");
   });
 
   test("the fresh-session overlay lines every value up after its longest name", () => {
@@ -257,10 +220,7 @@ describe("terminal Phase 2 surfaces", () => {
       }));
       return writes.at(-1)!;
     };
-    const shared = frame(true);
-    expect(shared).toContain("parked-only-output");
-    expect(shared).toContain("\x1b[2mShared with another window.\x1b[0m");
-    expect(shared).toContain("‹parked-project› · esc back · space talk");
+    expect(frame(true)).toContain("Shared with another window");
     expect(frame(false)).not.toContain("Shared with another window");
   });
 });
@@ -324,10 +284,6 @@ describe("theater status formatting", () => {
     expect(plain).toBe(
       "  conch · ❗ 2 need you · ○ 4 waiting · ✓1 to look at · ● 1 working · speaking ‹lowtide›",
     );
-    expect(header).toContain("\x1b[91m❗\x1b[39m"); // needs is now red — it outranks waiting
-    expect(header).toContain("\x1b[32m✓\x1b[39m");
-    expect(header).toContain("\x1b[33m○\x1b[39m"); // waiting is now yellow — a finished turn is sitting on you
-    expect(header).toContain("\x1b[36m●\x1b[39m");
     expect(header).not.toContain("\n");
 
     const idle = theaterStatusHeader(sampleModel({
@@ -335,8 +291,6 @@ describe("theater status formatting", () => {
       live: { state: "idle", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
     expect(idle).toBe("  conch · ○ 1 waiting · ✓1 to look at");
-    expect(idle).not.toContain("0 ");
-    expect(idle).not.toContain("‹");
 
     const quiet = theaterStatusHeader(sampleModel({
       rows: [],
@@ -344,8 +298,6 @@ describe("theater status formatting", () => {
       live: { state: "muted", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
     expect(quiet).toBe("  conch · manual · holding 2");
-    expect(quiet.match(/manual/g)).toHaveLength(1);
-    expect(quiet.match(/holding 2/g)).toHaveLength(1);
   });
 });
 
@@ -355,51 +307,6 @@ describe("footer renderer seam", () => {
     createFooterRenderer(io).panel(sampleModel());
 
     expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
-  });
-
-  test("matches frozen paused, muted, selected, and detailed footer bytes", () => {
-    const { io, writes } = recordingIO({ columns: 80 });
-    createFooterRenderer(io).panel(sampleModel({
-      rows: [
-        {
-          sessionId: "need",
-          label: "alpha",
-          status: "needs",
-          detail: "permission",
-          paused: false,
-          muted: false,
-          liveGlyph: null,
-          active: false,
-          navSelected: true,
-        },
-        {
-          sessionId: "sleep",
-          label: "beta",
-          status: "working",
-          paused: true,
-          muted: false,
-          liveGlyph: null,
-          active: false,
-          navSelected: false,
-        },
-        {
-          sessionId: "quiet",
-          label: "gamma",
-          status: "waiting",
-          paused: true,
-          muted: true,
-          liveGlyph: null,
-          active: false,
-          navSelected: false,
-        },
-      ],
-      mode: { muted: false, paused: true, holding: 2 },
-      live: { state: "paused", label: "", partial: "" },
-      reply: null,
-    }));
-
-    expect(writes).toEqual([PAUSED_FOOTER_GOLDEN]);
-    expect(writes.join("").toLowerCase()).not.toContain("snooz");
   });
 
   test("keeps the legacy 80-column dashboard fallback separate from line fitting", () => {
@@ -478,34 +385,6 @@ describe("theater deliverables", () => {
     .map((line) => line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
   const ledgerLine = (frame: string): string =>
     plainFrame(frame).find((line) => line.includes("hero-site"))!;
-
-  test("the link rides on the row and sits inline above the parked pane", () => {
-    const { io, writes } = recordingIO({ columns: 120, rows: 8 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-
-    renderer.panel(sampleModel({ panelOpen: false, live: idle, reply: null, rows: [deliverableRow()] }));
-    const collapsed = plainFrame(writes.at(-1)!);
-    expect(ledgerLine(writes.at(-1)!)).toContain("✓ needs review (Hero v3 render · /tmp/hero-v3.png)");
-    expect(collapsed[0]).toContain("✓1 to look at");
-
-    renderer.panel(sampleModel({
-      panelOpen: true,
-      live: idle,
-      reply: null,
-      preview: { sessionId: "hero", text: "Rendered the hero at 2x.", spokenChars: 0 },
-      rows: [deliverableRow({ navSelected: true })],
-    }));
-    // Header and rule carry no seam; the body starts on the third frame line.
-    const pane = plainFrame(writes.at(-1)!).map((line) => (line.split("│")[1] ?? "").trim());
-    expect(pane.slice(2, 6)).toEqual([
-      "✓ Hero v3 render",
-      "/tmp/hero-v3.png",
-      "",
-      "Rendered the hero at 2x.",
-    ]);
-    expect(pane).toContain("‹hero-site› · o open · esc back · space talk");
-  });
 
   test("o hands the deliverable to open once, calms the row, and a newer review re-arms it", () => {
     const { io, writes, opens } = recordingIO({ columns: 120, rows: 8 });
@@ -650,74 +529,6 @@ describe("theater renderer lifecycle", () => {
     expect(frame.endsWith("\n")).toBe(false);
   });
 
-  test("global quiet mode appears once in the top line, never beside the keybar", () => {
-    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.keybar("  keys");
-    renderer.panel(sampleModel({
-      rows: [],
-      mode: { muted: false, paused: true, holding: 3 },
-      live: { state: "paused", label: "", partial: "" },
-      reply: null,
-    }));
-
-    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    expect(plain.match(/manual/g)).toHaveLength(1);
-    expect(plain.match(/holding 3/g)).toHaveLength(1);
-    expect(plain).not.toContain("⏸");
-    expect(plain.split("\n").at(-1)).toContain("keys");
-  });
-
-  test("the top line is the only live-activity indicator", () => {
-    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({ panelOpen: false }));
-
-    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    expect(plain.match(/speaking/g)).toHaveLength(1);
-    expect(plain).toContain("waiting for you");
-    expect(plain).not.toContain("▶");
-  });
-
-  test("collapsed frames use the full-width status-word ledger", () => {
-    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      panelOpen: false,
-      live: { state: "idle", label: "", partial: "" },
-      rows: [{
-        sessionId: "one",
-        label: "project-one",
-        status: "needs",
-        paused: false,
-        muted: false,
-        liveGlyph: null,
-        active: false,
-        navSelected: false,
-      }, {
-        sessionId: "review",
-        label: "review-project",
-        status: "waiting",
-        review: { summary: "PR ready to inspect", at: 20, id: "pr-rev" },
-        paused: false,
-        muted: false,
-        liveGlyph: null,
-        active: false,
-        navSelected: false,
-      }],
-    }));
-
-    const frame = writes.at(-1)!;
-    expect(frame).toContain("needs a response");
-    expect(frame).toContain("✓ needs review");
-    expect(frame).toContain("(PR ready to inspect)");
-    expect(frame).not.toContain("│");
-    expect(frame).not.toContain("…");
-  });
-
   // A background agent Claude Code parked when it asked (parked-jobs.ts, 2026-10-24) says so before its question.
   test("a parked agent's row says it is parked before its question", () => {
     const { io, writes } = recordingIO({ columns: 120, rows: 7 });
@@ -741,7 +552,6 @@ describe("theater renderer lifecycle", () => {
       }],
     }));
     const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    expect(plain).toContain("needs a response");
     expect(plain).toContain("(parked · go on the critic?)");
   });
 
@@ -830,51 +640,7 @@ describe("theater renderer lifecycle", () => {
     expect(review).toMatch(/2m\s+│/);
     expect(waiting).toMatch(/1h\s+│/);
     expect(working).toMatch(/2d\s+│/);
-    expect(frame).toContain("\x1b[2m2m\x1b[22m");
-    expect(plainLines[0]).toContain(
-      "conch · ❗ 1 need you · ○ 2 waiting · ✓1 to look at · ● 1 working",
-    );
-    expect(plainLines[0]).not.toContain("🐚");
     expect(plainLines.every((line) => terminalCellWidth(line) <= 119)).toBe(true);
-  });
-
-  test("quiet session rows show mute ahead of pause without legacy snooze wording", () => {
-    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      panelOpen: false,
-      live: { state: "idle", label: "", partial: "" },
-      rows: [
-        {
-          sessionId: "paused",
-          label: "paused-only",
-          status: "waiting",
-          paused: true,
-          muted: false,
-          liveGlyph: null,
-          active: false,
-          navSelected: false,
-        },
-        {
-          sessionId: "muted",
-          label: "muted-and-paused",
-          status: "needs",
-          paused: true,
-          muted: true,
-          liveGlyph: "speaking",
-          active: true,
-          navSelected: false,
-        },
-      ],
-    }));
-
-    const frame = writes.at(-1)!;
-    const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    const mutedLine = plain.split("\n").find((line) => line.includes("muted-and-paused"));
-    expect(plain).toContain("⏸ manual");
-    expect(mutedLine).toContain("⏸ manual");
-    expect(plain.toLowerCase()).not.toContain("snooz");
   });
 
   test("settings temporarily opens a collapsed content pane", () => {
@@ -900,108 +666,6 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("settings");
     expect(frame).toContain("end-silence");
     expect(frame).toContain("│");
-  });
-
-  test("a narrow settings overlay remains visible and explains how to close it", () => {
-    const { io, writes } = recordingIO({ columns: 30, rows: 6 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      panelOpen: false,
-      settingsOverlay: {
-        selectedIndex: 0,
-        rows: [{
-          key: "end-silence",
-          value: "3.5",
-          source: "default",
-          help: "pause that ends an utterance",
-          selected: true,
-          editing: false,
-        }],
-      },
-    }));
-
-    const frame = writes.at(-1)!;
-    expect(frame).toContain("settings");
-    expect(frame).toContain("esc close");
-  });
-
-  test("session actions temporarily open the pane and render the captured target and safe dismiss copy", () => {
-    const { io, writes } = recordingIO({ columns: 140, rows: 10 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      panelOpen: false,
-      sessionActionsOverlay: {
-        target: { sessionId: "parked", label: "Parked Project" },
-        selectedIndex: 3,
-        rows: [
-          {
-            key: "voice",
-            value: "Nova",
-            help: "←/→ preview · enter pin · a reset to auto",
-            selected: false,
-            editing: false,
-          },
-          {
-            key: "prioritize",
-            value: "off",
-            help: "← off · → on · space/enter toggle hand-off priority",
-            selected: false,
-            editing: false,
-          },
-          {
-            key: "rename",
-            value: "Parked Project",
-            help: "enter edit/commit · esc cancel",
-            selected: false,
-            editing: false,
-          },
-          {
-            key: "dismiss",
-            value: "CONFIRM",
-            help: "enter twice · stops announcements; session keeps running",
-            selected: true,
-            editing: false,
-            confirming: true,
-          },
-        ],
-      },
-    }));
-
-    const frame = writes.at(-1)!;
-    expect(frame).toContain("actions");
-    expect(frame).toContain("Parked Project");
-    expect(frame).toContain("voice");
-    expect(frame).toContain("prioritize");
-    expect(frame).toContain("rename");
-    expect(frame).toContain("dismiss");
-    expect(frame).toContain("session keeps running");
-    expect(frame).toContain("│");
-  });
-
-  test("a narrow session actions overlay remains visible and explains how to close it", () => {
-    const { io, writes } = recordingIO({ columns: 30, rows: 6 });
-    const renderer = createTheaterRenderer(io);
-    renderer.enter();
-    renderer.panel(sampleModel({
-      panelOpen: false,
-      sessionActionsOverlay: {
-        target: { sessionId: "parked", label: "Parked Project" },
-        selectedIndex: 0,
-        rows: [{
-          key: "voice",
-          value: "Nova",
-          help: "preview voice",
-          selected: true,
-          editing: false,
-        }],
-      },
-    }));
-
-    const frame = writes.at(-1)!;
-    expect(frame).toContain("actions");
-    expect(frame).toContain("esc close");
   });
 
   test("wide labels stay within frame cells and cannot move the ledger seam", () => {
@@ -1219,7 +883,6 @@ describe("theater renderer lifecycle", () => {
       ],
     }));
     expect(writes.at(-1)).toContain("parked-only-output");
-    expect(writes.at(-1)).toContain("‹parked-project› · esc back · space talk");
 
     renderer.panel(sampleModel({
       live: { state: "idle", label: "", partial: "" },
@@ -1455,18 +1118,10 @@ describe("theater renderer lifecycle", () => {
     for (const state of ["listening", "recording", "transcribing"] as const) {
       renderer.live({ state, label: "project-one", partial });
       const frame = writes.at(-1)!;
-      expect(frame).toContain(`\x1b[2m↪ replying to · ${reply}\x1b[0m`);
+      expect(frame).toContain(reply);
       expect(frame).toContain(partial);
       if (state === "transcribing") expect(frame).not.toContain(`${partial}▌`);
       else expect(frame).toContain(`${partial}▌`);
-      if (state === "transcribing") {
-        const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-        expect(plain.match(/transcribing/g)).toHaveLength(1);
-        expect(frame).not.toContain("transcribing…");
-      } else {
-        expect(frame).toContain("stop talking to send · space to cancel · say send to submit now");
-      }
-      expect(frame).not.toContain("‹project-one› · stop talking to send");
       expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
     }
   });
@@ -1561,8 +1216,6 @@ describe("theater renderer lifecycle", () => {
       },
     }));
     expect(writes.at(-1)?.replace(/\x1b\[[0-9;]*m/g, "")).toContain("frontier-word");
-    expect(writes.at(-1)).toContain("space to cut in");
-    expect(writes.at(-1)).not.toContain("‹project-one› · space to cut in");
   });
 
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {

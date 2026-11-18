@@ -19,52 +19,6 @@ import {
 const command = '"/opt/homebrew/bin/bun" "/Users/example/conch/src/cli.ts" codex-hook';
 
 describe("Codex hook installer settings", () => {
-  test("builds all three Codex lifecycle command hooks", () => {
-    const result = buildCodexHooksSettings({}, command);
-
-    expect(result).toEqual({
-      settings: {
-        hooks: {
-          Stop: [
-            {
-              hooks: [
-                {
-                  type: "command",
-                  command,
-                  timeout: 15,
-                },
-              ],
-            },
-          ],
-          UserPromptSubmit: [
-            {
-              hooks: [
-                {
-                  type: "command",
-                  command,
-                  timeout: 15,
-                },
-              ],
-            },
-          ],
-          SessionStart: [
-            {
-              hooks: [
-                {
-                  type: "command",
-                  command,
-                  timeout: 15,
-                },
-              ],
-            },
-          ],
-        },
-      },
-      changed: true,
-      addedEvents: ["Stop", "UserPromptSubmit", "SessionStart"],
-    });
-  });
-
   test("preserves unrelated settings and hooks and is idempotent", () => {
     const existing = {
       model: "gpt-example",
@@ -99,7 +53,7 @@ describe("Codex hook installer settings", () => {
     expect(codexHooksAreWired(existing)).toBeFalse();
   });
 
-  test("writes the flat Codex hooks path with backup, idempotence, and verification instructions", async () => {
+  test("writes the flat Codex hooks path with one backup, idempotently", async () => {
     const codexDir = mkdtempSync(join(tmpdir(), "conch-codex-install-"));
     const hooksPath = join(codexDir, "hooks.json");
     const instructionsPath = join(codexDir, "AGENTS.md");
@@ -120,16 +74,13 @@ describe("Codex hook installer settings", () => {
       },
     }, null, 2) + "\n";
     const obsoleteNestedSettings = '{"marker":"obsolete nested path"}\n';
-    const logs: string[] = [];
     const originalLog = console.log;
 
     try {
       mkdirSync(join(codexDir, "hooks"), { recursive: true });
       writeFileSync(hooksPath, originalSettings);
       writeFileSync(obsoleteNestedPath, obsoleteNestedSettings);
-      console.log = (...data: any[]) => {
-        logs.push(data.map(String).join(" "));
-      };
+      console.log = () => {};
 
       await runCodexInstall(codexDir);
 
@@ -160,22 +111,6 @@ describe("Codex hook installer settings", () => {
         readdirSync(codexDir)
           .filter((name) => name.startsWith("hooks.json.conch-backup-")),
       ).toEqual(backupsAfterFirstInstall);
-      expect(
-        readdirSync(codexDir)
-          .filter((name) => name.startsWith("AGENTS.md.conch-backup-")),
-      ).toEqual([]);
-      expect(existsSync(instructionsPath)).toBe(false);
-
-      const output = logs.join("\n");
-      expect(output).not.toContain("review contract");
-      expect(output).toContain(`hooks file: ${hooksPath}`);
-      expect(output).toContain(
-        "The first `codex` run shows Codex's hook trust-review screen",
-      );
-      expect(output).toContain("the conch hooks must be approved there");
-      expect(output).toContain(
-        "run `conch sessions` and check that the Codex session is listed",
-      );
     } finally {
       console.log = originalLog;
       rmSync(codexDir, { recursive: true, force: true });

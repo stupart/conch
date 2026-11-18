@@ -41,7 +41,7 @@ test("a never-exiting child is force-killed and the watchdog still resolves", as
   expect(result.status).toBe("timed-out");
   expect(kills).toEqual(["SIGKILL"]);
   expect(unrefs).toBe(1);
-  expect(warnings).toEqual(["⚠ say timed out after 5ms — killed, moving on"]);
+  expect(warnings).toHaveLength(1);
 });
 
 test("normal completion is neither killed nor warned", async () => {

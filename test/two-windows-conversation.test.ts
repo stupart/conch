@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -142,20 +142,7 @@ describe("which branch of a shared transcript is this window's", () => {
     expect(pick(transcript, {}).shared).toBe(true);
   });
 
-  test("the selector never reads cwd, and the loader only selects for a window key", async () => {
-    const source = readFileSync(join(import.meta.dir, "..", "src", "conversation.ts"), "utf8");
-    const selector = source.slice(
-      source.indexOf("export function selectWindowBranch("),
-      source.indexOf("export function lastAssistantReply("),
-    );
-    expect(selector.length).toBeGreaterThan(0);
-    expect(selector).not.toMatch(/cwd/);
-    // The branch is chosen only when the key names a window; a lone session
-    // reads exactly as it always has, even with a dead branch from a rewind.
-    const loader = source.slice(source.indexOf("export async function readConversationTail("));
-    expect(loader).toContain("options.window && isWindowKey(sessionId)");
-    expect(loader.indexOf("isWindowKey(sessionId)")).toBeLessThan(loader.indexOf("selectWindowBranch(lines, options.window)"));
-
+  test("the loader only selects a branch for a window key; a lone session reads the whole file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "conch-a8-"));
     const path = join(dir, `${SESSION}.jsonl`);
     writeFileSync(path, twoWindows(true).join("\n") + "\n");
@@ -231,59 +218,10 @@ describe("conch_transcript_tail reads through the same loader", () => {
     ), "claude");
     expect(lastAssistantReply(ended)).toBe("");
   });
-
-  test("the MCP server and the daemon hand the row's registry entry to the loader", () => {
-    const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-    const mcp = read("src/mcp.ts");
-    expect(mcp).not.toContain("  lastAssistantText,\n");
-    const reader = mcp.slice(mcp.indexOf("async lastAssistantText(transcriptPath, session)"));
-    expect(reader).toContain("readConversationTail(");
-    expect(reader).toContain("{ window: session }");
-    expect(reader).toContain("return lastAssistantReply(conversation);");
-    expect(reader.indexOf("readConversationTail(")).toBeLessThan(reader.indexOf("return lastAssistantReply(conversation);"));
-    expect(mcp).toContain("dependencies.lastAssistantText(transcriptPath, session)");
-
-    const daemon = read("src/daemon.ts");
-    const voice = read("src/voice-loop.ts");
-    expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
-    expect(daemon).toContain("readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })");
-    expect(voice).toContain("{ window: deps.window(event.sessionId) },");
-    // Five call sites across the daemon and the voice loop (the fifth reads the
-    // question a session is waiting on), every one handing over the window: no
-    // reader of the conversation is left that could show the other window's branch.
-    const tails = (source: string) => source.match(/readConversationTail\(/g)?.length ?? 0;
-    expect(tails(daemon) + tails(voice)).toBe(5);
-    // The reply in the TUI's preview and footer, the phone's reply, and what
-    // recite and read-full say: one helper, which sends a window key to the
-    // loader with the registry entry its caller holds. The flat-file reader is
-    // left to that helper's lone-session branch and to Codex, which never has
-    // two windows on one id.
-    const helperAt = voice.indexOf("export async function lastReplyFor(");
-    expect(helperAt).toBeGreaterThan(-1);
-    const helper = voice.slice(helperAt);
-    expect(helper).toContain("window: SessionInfo | undefined,");
-    expect(helper).toContain("if (!isWindowKey(sessionId)) return { text: await lastAssistantText(path), shared: false };");
-    expect(helper).toContain("transcriptFormatFor(path), {\n    window,\n  });");
-    const branchReply = "return { text: lastAssistantReply(conversation), shared: conversation.shared === true };";
-    expect(helper).toContain(branchReply);
-    expect(helper.indexOf("if (!isWindowKey(sessionId))")).toBeLessThan(helper.indexOf(branchReply));
-    expect(daemon).toContain("? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId, panelSessions.get(contentEvent.sessionId))");
-    expect(daemon).toContain("previewPath && previewId ? lastReplyFor(previewPath, previewId, panelSessions.get(previewId))");
-    expect(daemon).toContain("path && !isWindowKey(sessionId) ? await currentTurnText(path)");
-    expect(daemon).toContain("const finalMessage = path ? (await lastReplyFor(path, sessionId, panelSessions.get(sessionId))).text");
-    expect(voice).toContain("lastReplyFor(target.transcriptPath, target.sessionId, deps.window(target.sessionId)),");
-    expect(voice).toContain("await lastReplyFor(event.transcriptPath!, event.sessionId, deps.window(event.sessionId))");
-    const flat = (source: string) => source.match(/lastAssistantText\(/g)?.length ?? 0;
-    expect(flat(daemon) + flat(voice)).toBe(2);
-
-    const sessions = read("src/sessions.ts");
-    expect(sessions).toContain("? { bridgeSessionId: entry.bridgeSessionId }");
-  });
 });
 
 describe("the TUI preview and the voice say so too", () => {
   test("the note is said once, just before what is left to read", () => {
-    expect(SHARED_WINDOW_NOTE).toBe("Shared with another window.");
     const sentences = ["One.", "Two.", "Three."];
     // Recite: nothing announced, so the note comes first.
     expect(withSharedNote(sentences, countCoveredSentences("", sentences)))
@@ -294,60 +232,6 @@ describe("the TUI preview and the voice say so too", () => {
       .toEqual(["One.", SHARED_WINDOW_NOTE, "Two.", "Three."]);
     // Nothing left to read, nothing to say it before.
     expect(withSharedNote(sentences, 3)).toEqual(sentences);
-  });
-
-  test("recite and read-full add it from the same read; the TUI preview gets the flag", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-    const voice = readFileSync(join(import.meta.dir, "..", "src/voice-loop.ts"), "utf8");
-    const loaderAt = voice.indexOf("const ensureSentences = async (): Promise<string[]> => {");
-    expect(loaderAt).toBeGreaterThan(-1);
-    const loader = voice.slice(loaderAt);
-    const read = "const reply = await lastReplyFor(event.transcriptPath!, event.sessionId, deps.window(event.sessionId));";
-    const note = "if (reply.shared) sentences = withSharedNote(sentences, cursor);";
-    expect(loader).toContain(read);
-    expect(loader).toContain(note);
-    // After the cursor is counted against the reply's own sentences, before progress is published.
-    expect(loader.indexOf(read)).toBeLessThan(loader.indexOf("sentences = splitSentences(stripMarkdown(reply.text));"));
-    expect(loader.indexOf("countCoveredSentences(event.announce, sentences);")).toBeLessThan(loader.indexOf(note));
-    expect(loader.indexOf(note)).toBeLessThan(loader.indexOf('const text = sentences.join(" ");'));
-    // Recite goes through the same loader: conversationLoop reads with ensureSentences.
-    expect(daemon).toContain("const previewRaw = previewReply?.text ?? \"\";");
-    expect(daemon).toContain("previewReply?.shared,");
-  });
-});
-
-describe("the apps say when a window's conversation is shared", () => {
-  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
-  test("the Mac decodes the flag, shows the note, and never reads a shared transcript itself", () => {
-    const models = read("mac-app/conch-mac/Models.swift");
-    expect(models).toContain("case sessionId, items, truncated, shared");
-    expect(models).toContain('shared = (try? c.decodeIfPresent(Bool.self, forKey: .shared)) ?? false');
-    const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-    // Said at the top of the history region, with what it says about where the history starts,
-    // and before the window's own messages.
-    const note = 'note: conversation.shared ? "Shared with another window — both windows\' messages are shown" : nil';
-    expect(stack).toContain(note);
-    expect(stack).toContain("liveIsWhole: !conversation.truncated && !conversation.items.isEmpty");
-    expect(stack.indexOf(note)).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
-    // The Mac's own file reader shows whichever window wrote last; a row keyed
-    // per window must wait for the daemon's stack instead.
-    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    const watch = dashboard.slice(
-      dashboard.indexOf("private var watchesTranscriptForRow"),
-      dashboard.indexOf("private var isFocusedSessionLive"),
-    );
-    expect(watch).toContain('focusedRow?.id.contains("#") != true');
-  });
-
-  test("the phone decodes the flag and shows the note", () => {
-    const models = read("mobile/conch-ios/conch-ios/Models.swift");
-    expect(models).toContain("case sessionId, items, truncated, shared");
-    expect(models).toContain('shared = (try? c.decodeIfPresent(Bool.self, forKey: .shared)) ?? false');
-    const stack = read("mobile/conch-ios/conch-ios/ConversationStack.swift");
-    const note = 'note: conversation.shared ? "Shared with another window — both windows\' messages are shown" : nil';
-    expect(stack).toContain(note);
-    expect(stack.indexOf(note)).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
   });
 });
 

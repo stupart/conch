@@ -13,17 +13,6 @@ final class DeliveryOutboxTests: XCTestCase {
         ConchOutboxEntry(id: id, session: session, text: text, sentAt: Date(timeIntervalSince1970: 1_000))
     }
 
-    /// Optimistic, immediately, in the conversation — and NOT confirmed, so the words stay.
-    func testASendIsVisibleAtOnceAndKeepsItsWordsUntilProven() {
-        var outbox = ConchOutbox()
-        outbox.begin(sent())
-        XCTAssertEqual(outbox.entries.count, 1)
-        XCTAssertEqual(outbox.entries[0].state, .sent)
-        XCTAssertFalse(outbox.entries[0].state.clearsDraft)
-        XCTAssertFalse(outbox.entries[0].state.isTerminal)
-        XCTAssertEqual(outbox.unsettled(for: "s1")?.text, "ship it")
-    }
-
     /// Acceptance is not delivery. An accepted send that fails twenty seconds later ends at
     /// "not delivered", with its words still recoverable — the exact sequence that lied.
     func testALateFailureAfterAcceptanceEndsNotDeliveredWithTheWordsRecoverable() {

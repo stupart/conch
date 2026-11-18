@@ -160,24 +160,4 @@ describe("which sessions can't get the current tools", () => {
     expect(listed.sessions.find((one: { id: string }) => one.id === "a").toolsStale.missing).toContain("conch_run");
     expect(listed.sessions.find((one: { id: string }) => one.id === "b")).not.toHaveProperty("toolsStale");
   });
-
-  test("the daemon publishes it on the sessions file, refreshed once a minute", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    expect(daemon).toContain("sessionsFile.publish(withToolsStale(state, toolsStale));");
-    expect(daemon).toContain("const toolsStaleTimer = setInterval(lookForStaleTools, 60_000);");
-    // One look at a time (runaway guards): a look whose `ps` hung never stacks another behind it.
-    expect(daemon).toContain("if (toolsStaleLook) return;");
-  });
-
-  test("a session conch closes or restarts loses its verdict at once, so the app's Restart doesn't come back for it", () => {
-    // The verdict was about the process that just exited; the next look judges the one a restart resumes it in.
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    const close = daemon.slice(daemon.indexOf("const closeLiveSession = async"), daemon.indexOf("if (!relaunch) return;"));
-    expect(close).toContain("await closeSession(session, { restart });\n");
-    const closed = close.indexOf("await closeSession(session, { restart });");
-    expect(close.indexOf("if (toolsStale.delete(sessionId)) publishedStateWriter.request();", closed)).toBeGreaterThan(closed);
-    // A Restart that finds the process already gone resumes it without a close, and drops the verdict there.
-    const gone = close.slice(close.indexOf("if (restart && !session.jobId && session.pid && !registryProcessAlive("), closed);
-    expect(gone).toContain("if (toolsStale.delete(sessionId)) publishedStateWriter.request();");
-  });
 });

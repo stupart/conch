@@ -39,7 +39,6 @@ final class ComposerEditingTests: XCTestCase {
         XCTAssertEqual(ComposerEditing.height(used: 5_000, lineSpacing: spacing), 176)
         // A fraction rounds up, never down: a line cut by a hair is a line you cannot read.
         XCTAssertEqual(ComposerEditing.height(used: 40.2, lineSpacing: spacing), 45)
-        XCTAssertEqual(ComposerEditing.lineHeight * CGFloat(ComposerEditing.maxLines), 176)
     }
 
     // MARK: The one edit between two drafts

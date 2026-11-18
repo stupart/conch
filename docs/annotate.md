@@ -128,8 +128,7 @@ agent's mark takes. A note on a document reads `{quote: "…"} in /path/README.m
   the pictures. `AnnotateScriptTests` run the page script in real WebKit, in its own content world. They check that a
   click names the element with a unique selector and doesn't follow the link; that selected words become a one-line quote
   which agent ink's finder finds at the same place; and that notes are found as the page scrolls, lost when it changes,
-  found again after a reload, and never moved onto another element. `AnnotateRenderTests` draw the tray and the field,
-  light and dark.
+  found again after a reload, and never moved onto another element.
 - `scripts/annotate-e2e.ts` runs this checkout's daemon and this checkout's app against each other and nothing else. It
   uses a temporary home, its own socket and its own tmux server, with `$TMUX` unset. The app is built under its own bundle
   id, so it never shares conch's preferences. Three stand-in sessions publish a live page, a picture and a folder. The

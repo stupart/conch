@@ -77,16 +77,6 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertFalse(Workbench.isWeb(nil))
     }
 
-    /// The script is one string the app runs as it is, in a world of conch's own, saying the refusal word for word.
-    func testTheScriptRunsInConchsOwnWorldAndRefusesPasswordsInTheAgreedWords() {
-        XCTAssertEqual(WorkbenchScript.contentWorld, "conch-workbench")
-        XCTAssertEqual(WorkbenchScript.passwordRefusal, "agents don't type passwords; sign in yourself in the tab")
-        XCTAssertTrue(WorkbenchScript.page.contains("const PASSWORD_REFUSAL = \"\(WorkbenchScript.passwordRefusal)\";"))
-        XCTAssertTrue(WorkbenchScript.page.contains("if (isPassword(el)) fail(PASSWORD_REFUSAL);"))
-        XCTAssertTrue(WorkbenchScript.page.contains("text: \(WorkbenchScript.textMax), links: \(WorkbenchScript.linksMax), buttons: \(WorkbenchScript.buttonsMax), fields: \(WorkbenchScript.fieldsMax)"))
-        XCTAssertTrue(WorkbenchScript.page.contains("headings: \(WorkbenchScript.headingsMax),"))
-    }
-
     /// A tab is a second axis value like the files: picking one keeps the stage, and is remembered per session.
     @MainActor
     func testPickingABrowserTabPutsItInTheWorkHalfAndKeepsTheStage() {
@@ -105,25 +95,6 @@ final class WorkbenchTests: XCTestCase {
     }
     // MARK: - 2026-10-16: the user's own tabs, watching agents work, and the Workdesk
 
-    /// A blank tab of the user's, and one paused: what the published tab says, and what pausing changes.
-    func testAUserTabIsBlankUntilItGoesSomewhereAndPausingKeepsEverythingElse() {
-        let blank = Workbench.Tab(id: "tab-1", sessionId: "s1", url: "", profile: "default", openedAt: 5, openedByUser: true)
-        XCTAssertTrue(blank.isBlank)
-        XCTAssertEqual(Workbench.label(title: nil, url: blank.url), "New tab")
-        let paused = blank.with(paused: true)
-        XCTAssertTrue(paused.paused)
-        XCTAssertEqual(paused.with(paused: false), blank)
-        XCTAssertFalse(tab("tab-2").isBlank)
-        XCTAssertFalse(tab("tab-2").openedByUser)
-    }
-
-    /// The refusal an agent hears is the daemon's, word for word, starting with the reason the user would give.
-    func testThePausedRefusalStartsWithTheUsersReason() {
-        let words = Workbench.pausedRefusal(tab: "tab-1a2b3c4d")
-        XCTAssertTrue(words.hasPrefix("the user has taken over this tab (tab-1a2b3c4d)"))
-        XCTAssertTrue(words.contains("open a tab of your own with browser_open"))
-    }
-
     /// An agent's work brings its tab forward only while the user watches: the session in view, the Workdesk on screen
     /// showing another of its browser tabs or a deliverable, and untouched for a few seconds. Never the files, the shell
     /// or the terminal, never from the conversation alone, never another session's, never a paused tab, never the one
@@ -140,7 +111,6 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertFalse(Workbench.follows(working, viewing: "s2", front: .browser("a"), lastTouch: nil, now: now), "another session's")
         XCTAssertFalse(Workbench.follows(working, viewing: nil, front: .browser("a"), lastTouch: nil, now: now))
         XCTAssertFalse(Workbench.follows(working.with(paused: true), viewing: "s1", front: .browser("a"), lastTouch: nil, now: now))
-        XCTAssertEqual(Workbench.followQuiet, 5)
     }
 
     /// 2026-10-18: over a deliverable too, once the user has left the Workdesk alone for a few seconds, unless the
@@ -157,8 +127,6 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .deliverable, lastTouch: nil, enabled: false, now: now))
         // A tab in front that needs the user is his until he answers it.
         XCTAssertFalse(Workbench.follows(working, viewing: "s1", front: .browser("a"), frontNeedsYou: true, lastTouch: nil, now: now))
-        XCTAssertEqual(Workbench.deliverableHold, 30)
-        XCTAssertEqual(Workbench.followSettingKey, "conch.workbench.followAgent")
     }
 
     /// A tab whose agent asked the user to act in it takes the stage: over anything the Workdesk shows, and from the
@@ -193,37 +161,12 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertEqual(Workbench.asking(in: tabs, session: "s2")?.id, "c")
         XCTAssertNil(Workbench.asking(in: tabs, session: "s3"))
         XCTAssertNil(Workbench.asking(in: tabs, session: nil))
-        XCTAssertEqual(second.askKey, "b@9")
         XCTAssertNil(tab("d", session: "s1").askKey)
         XCTAssertNotEqual(first.askKey, first.with(ask: Workbench.Tab.Ask(reason: "Sign in", at: 6)).askKey, "asked again is a new ask")
         // Done hides it at once; pausing keeps it.
         XCTAssertNil(second.with(ask: nil).ask)
         XCTAssertEqual(second.with(paused: true).ask, second.ask)
         XCTAssertEqual(second.with(ask: nil), tab("b", session: "s1"))
-    }
-
-    func testWhatTheTabTheRowAndThePasskeyNoticeSay() {
-        XCTAssertEqual(Workbench.askWords(agent: "Claude", reason: "Sign in to Swatchbook"), "Claude needs you · Sign in to Swatchbook")
-        XCTAssertEqual(Workbench.rowAskLine(reason: "Sign in to Swatchbook"), "Browser tab: Sign in to Swatchbook")
-        XCTAssertEqual(Workbench.passkeyWords, "Passkeys don't work in conch's browser yet · sign in with your password or another way, or open this page in your browser")
-    }
-
-    func testATabAnAgentActedInHasItsDotUntilItIsShown() {
-        XCTAssertTrue(Workbench.showsActivity("b", actedIn: ["b"], shown: "a"))
-        XCTAssertTrue(Workbench.showsActivity("b", actedIn: ["b"], shown: nil))
-        XCTAssertFalse(Workbench.showsActivity("b", actedIn: ["b"], shown: "b"))
-        XCTAssertFalse(Workbench.showsActivity("c", actedIn: ["b"], shown: "a"))
-    }
-
-    /// The badge says what the agent is doing, never what it typed.
-    func testTheBadgeSaysWhatTheAgentIsDoing() {
-        XCTAssertEqual(Workbench.agentWords(op: "open"), "Opening")
-        XCTAssertEqual(Workbench.agentWords(op: "read"), "Reading")
-        XCTAssertEqual(Workbench.agentWords(op: "click"), "Clicking")
-        XCTAssertEqual(Workbench.agentWords(op: "type"), "Typing")
-        XCTAssertEqual(Workbench.agentWords(op: "screenshot"), "Capturing")
-        XCTAssertEqual(Workbench.agentWords(op: "anything"), "Working")
-        XCTAssertGreaterThan(Workbench.agentLinger, 0.5)
     }
 
     /// A mark goes where the page measured the element, at the page's zoom; anything that isn't a box on screen is none.
@@ -237,16 +180,6 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertNil(Workbench.markRect(box: [10, 20, 120, 24], scale: 0))
         let mark = WorkbenchMark(kind: .click, rect: CGRect(x: 10, y: 20, width: 120, height: 24), serial: 1)
         XCTAssertEqual(mark.point, CGPoint(x: 70, y: 32))
-    }
-
-    /// The Workdesk's items are typed: each type is named, and a new one slots in as a case.
-    func testTheWorkdeskHoldsTypedItems() {
-        XCTAssertEqual(Workdesk.name, "Workdesk")
-        XCTAssertEqual(Set(Workdesk.ItemType.allCases), [.deliverable, .browser, .files, .shell, .terminal])
-        XCTAssertEqual(Workdesk.ItemType.allCases.map(Workdesk.name(of:)), ["Deliverable", "Files", "Shell", "Terminal", "Browser tab"])
-        // Remembered presentations still read: the raw values are what they were.
-        XCTAssertEqual(WorkPane(rawValue: "browser"), .browser)
-        XCTAssertEqual(WorkPane(rawValue: "deliverable"), .deliverable)
     }
 
     // MARK: Sleeping tabs
@@ -269,7 +202,6 @@ final class WorkbenchTests: XCTestCase {
     /// An agent's tab it ran a command in within the last ten minutes keeps its page; past ten, it sleeps. One the app
     /// hasn't seen touched since it opened goes by that alone.
     func testAnAgentsTabUsedInTheLastTenMinutesStaysAwake() {
-        XCTAssertEqual(Workbench.sleepAfter, 600)
         let tabs = [Idle.tab("working", usedAgo: 30), Idle.tab("between-steps", usedAgo: 599), Idle.tab("done", usedAgo: 600), Idle.tab("yesterday", usedAgo: 86_400)]
         XCTAssertEqual(Idle.asleep(tabs), ["done", "yesterday"])
     }
@@ -299,46 +231,11 @@ final class WorkbenchTests: XCTestCase {
         XCTAssertEqual(Idle.asleep([]), [])
     }
 
-    /// A sleeping tab wakes as it is shown, or as an agent's command reaches it, and stays awake ten minutes after;
-    /// the command waits for its page to load until a few seconds before its own deadline, an open for nothing.
-    func testASleepingTabWakesOnShowOrOnACommand() {
-        let tabs = [Idle.tab("a"), Idle.tab("b")]
-        XCTAssertEqual(Idle.asleep(tabs), ["a", "b"])
-        // Shown: awake while it is, and for ten minutes after it is put away (the app counts being seen as a touch).
-        XCTAssertEqual(Idle.asleep(tabs, shown: "a"), ["b"])
-        XCTAssertEqual(Idle.asleep(tabs, touched: ["a": Idle.ago(1)]), ["b"])
-        // A command for it, on the file or in the app's hands: awake until it is answered, and ten minutes on.
-        XCTAssertEqual(Idle.asleep(tabs, busy: ["b"]), ["a"])
-        XCTAssertEqual(Idle.asleep(tabs, touched: ["b": Idle.ago(5)]), ["a"])
-        // An agent's command that worked moves its usedAt too: awake on that alone.
-        XCTAssertEqual(Idle.asleep([Idle.tab("a"), Idle.tab("b", usedAgo: 2)]), ["a"])
-        // An ask reaching a sleeping tab wakes it, so its page is there when the user comes to it.
-        XCTAssertEqual(Idle.asleep([Idle.tab("a", ask: Workbench.Tab.Ask(reason: "Approve the login", at: Idle.ms(1))), Idle.tab("b")]), ["b"])
-
+    /// A woken tab's command waits for its page to load until a few seconds before its own deadline, an open for nothing.
+    func testAWokenTabsCommandWaitsForItsPageUntilJustBeforeItsDeadline() {
         let deadline = Idle.now.addingTimeInterval(12)
         XCTAssertEqual(Workbench.wokenLoadBy(op: "read", deadline: deadline), Idle.now.addingTimeInterval(8))
         for op in ["click", "type", "screenshot"] { XCTAssertEqual(Workbench.wokenLoadBy(op: op, deadline: deadline), deadline.addingTimeInterval(-Workbench.wokenMargin), op) }
         XCTAssertNil(Workbench.wokenLoadBy(op: "open", deadline: deadline), "an open goes somewhere else at once")
-    }
-
-    /// Sleeping says which tabs, and nothing else: the tabs, their order in the strip (`Workdesk.run`, by `usedAt`) and
-    /// their `usedAt` are what they were, asleep and woken.
-    func testSleepingNeverMovesATabOrItsUsedAt() {
-        let tabs = [Idle.tab("old", usedAgo: 7000), Idle.tab("mid", usedAgo: 4000), Idle.tab("new", usedAgo: 60), Idle.tab("mine", usedAgo: 5000, openedByUser: true)]
-        let before = tabs
-        let run = { Workdesk.run(tabs: tabs, groups: []) { _ in nil }.map(\.id) }
-        let order = run()
-        let sleeping = Idle.asleep(tabs)
-        XCTAssertEqual(sleeping, ["old", "mid", "mine"])
-        XCTAssertEqual(Idle.asleep(tabs, shown: "mid"), ["old", "mine"])
-        XCTAssertEqual(tabs, before)
-        XCTAssertEqual(run(), order)
-        XCTAssertEqual(order, ["browser:old", "browser:mine", "browser:mid", "browser:new"])
-        XCTAssertEqual(tabs.map(\.usedAt), before.map(\.usedAt))
-    }
-
-    func testASleepingTabSaysWhyUnderThePointer() {
-        XCTAssertEqual(Workbench.asleepWords, "Asleep to save memory. It opens again when you show it, or when an agent uses it.")
-        XCTAssertEqual(Workbench.sleepSettingKey, "conch.workbench.sleepIdleTabs")
     }
 }

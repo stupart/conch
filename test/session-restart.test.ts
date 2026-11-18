@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { dispatchRuntimeControlMessage, injectTimeoutFor } from "../src/daemon.ts";
 import { CLOSE_TIMED_STEPS_MS, readProcessArgs, restartRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateControlMessage, validateControlResponse } from "../src/settings.ts";
@@ -116,66 +114,11 @@ describe("the restart request on the wire", () => {
     expect(validateControlResponse({ kind: "session-closed", sessionId: "s1", notCarriedOver: [""] }).ok).toBe(false);
   });
 
-  test("a restart gets longer than a close: it opens a Terminal window afterwards", () => {
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close", restart: true }))).toBe(55_000);
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(45_000);
-  });
-
   // The phone's answer comes through this budget: shorter than the close itself, and a close that worked
-  // reads on the phone as "The Mac didn't confirm a clean session exit." The Mac app's own is the same 45 s.
-  test("a close's budget outlasts the close's own timed steps, with room for the lookups before them", () => {
-    expect(CLOSE_TIMED_STEPS_MS).toBe(39_300);
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBeGreaterThanOrEqual(CLOSE_TIMED_STEPS_MS + 5_000);
-  });
-});
-
-describe("the daemon's restart path, as source", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-  const at = daemon.indexOf("const closeLiveSession = async (sessionId: string, restart = false)");
-  const body = daemon.slice(at, daemon.indexOf("\n  };", at));
-
-  test("everything that can refuse runs before the close", () => {
-    expect(at).toBeGreaterThan(-1);
-    expect(body.length).toBeGreaterThan(800);
-    const close = body.indexOf("await closeSession(session, { restart });");
-    expect(close).toBeGreaterThan(-1);
-    for (const guard of [
-      "if (session.jobId) {",
-      "const args = session.pid ? await readProcessArgs(session.pid) : null;",
-      "relaunch = restartRequest(session, args);",
-      "terminalSessionCommand(relaunch.request);",
-    ]) {
-      const index = body.indexOf(guard);
-      expect(index).toBeGreaterThan(-1);
-      expect(index).toBeLessThan(close);
-    }
-    expect(body.indexOf("await launchSession(relaunch.request);")).toBeGreaterThan(close);
-  });
-
-  test("a relaunch that fails after the close says the session is closed", () => {
-    expect(body).toContain("closed, but could not open it again");
-  });
-});
-
-describe("the Mac app's restart", () => {
-  const app = (name: string) => readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", name), "utf8");
-  const dashboard = app("DashboardView.swift");
-  const store = app("StateStore.swift");
-  const inspector = app("CapabilityInspectorView.swift");
-
-  test("the session menu offers it, confirmed first, and not for a row with no terminal", () => {
-    expect(dashboard).toMatch(/Button\("Restart session…"\) \{\s*sessionPendingRestart = row\s*\}\s*\.disabled\(row\.noTerminal != nil\)/);
-    expect(dashboard).toMatch(/\.alert\(\s*"Restart [\s\S]*?Button\("Restart"\) \{[\s\S]*?store\.closeSession\(row, restart: true\)/);
-  });
-
-  test("a successful restart clears the row's message, or says what didn't carry over", () => {
-    const finish = store.slice(store.indexOf("private func finishClose("), store.indexOf("func reportAppError"));
-    expect(finish).toContain("notCarriedOver = closed.notCarriedOver ?? []");
-    expect(finish).toMatch(/\} else if restart \{\s*[\s\S]*?rowMessages\[row\.id\] = notCarriedOver\.isEmpty\s*\? nil/);
-  });
-
-  test("the inspector offers Restart only where a newer version is already installed", () => {
-    expect(inspector).toMatch(/if install\.restartToUpdate == true, let onRestart \{\s*Button\("Restart session", action: onRestart\)/);
-    expect(inspector).toMatch(/onRestart: row\.noTerminal == nil \? \{\s*store\.closeSession\(row, restart: true\)/);
+  // reads on the phone as a failed one.
+  test("a close's budget outlasts the close's own timed steps, and a restart's (which opens a window after) outlasts a close's", () => {
+    const close = injectTimeoutFor(JSON.stringify({ kind: "session-close" }));
+    expect(close).toBeGreaterThanOrEqual(CLOSE_TIMED_STEPS_MS + 5_000);
+    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close", restart: true }))).toBeGreaterThan(close);
   });
 });

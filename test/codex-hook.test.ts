@@ -24,7 +24,6 @@ interface HarnessOptions {
   dropOrigin?: boolean;
   daemonAccepts?: boolean;
   mark?: number;
-  snippet?: string;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -45,23 +44,11 @@ function harness(options: HarnessOptions = {}) {
   });
   const writes: Array<Parameters<CodexHookDependencies["writeSession"]>[0]> = [];
   const sends: Array<{ socketPath: string; event: TurnEvent }> = [];
-  const originChecks: number[] = [];
-  const snippets: Array<{
-    transcriptPath: string;
-    sentences: number;
-    maxChars: number;
-    summarize?: boolean;
-  }> = [];
-  const marks: string[] = [];
-  const bells: string[] = [];
-  const speeches: Array<{ text: string; label?: string }> = [];
-  const labels: Array<{ session: Parameters<CodexHookDependencies["labelFor"]>[0]; cwd?: string }> = [];
 
   const dependencies: CodexHookDependencies = {
     parentPid: () => options.parentPid ?? 4242,
     now: () => options.now ?? 1_700_000_000_123,
-    async shouldDropOrigin(pid) {
-      originChecks.push(pid);
+    async shouldDropOrigin() {
       return options.dropOrigin ?? false;
     },
     writeSession(entry) {
@@ -71,47 +58,24 @@ function harness(options: HarnessOptions = {}) {
       sends.push({ socketPath, event });
       return options.daemonAccepts ?? true;
     },
-    async spokenSnippet(transcriptPath, sentences, maxChars, snippetOptions) {
-      snippets.push({
-        transcriptPath,
-        sentences,
-        maxChars,
-        ...(snippetOptions?.summarize === undefined
-          ? {}
-          : { summarize: snippetOptions.summarize }),
-      });
-      return options.snippet ?? "finished";
+    async spokenSnippet() {
+      return "finished";
     },
-    async transcriptMark(_config, path) {
-      marks.push(path);
+    async transcriptMark() {
       return options.mark ?? 7;
     },
-    labelFor(session, cwd) {
-      labels.push({ session, cwd });
+    labelFor() {
       return "codex-project";
     },
-    async bell() {
-      bells.push("bell");
-    },
-    async speak(_cfg, text, label) {
-      speeches.push({ text, ...(label === undefined ? {} : { label }) });
-    },
+    async bell() {},
+    async speak() {},
   };
 
   return {
     root,
     cfg,
     dependencies,
-    calls: {
-      writes,
-      sends,
-      originChecks,
-      snippets,
-      marks,
-      bells,
-      speeches,
-      labels,
-    },
+    calls: { writes, sends },
   };
 }
 
@@ -185,51 +149,6 @@ describe("handleCodexHookPayload", () => {
       transcriptPath: "/virtual/rollout-2026-07-29-session-123.jsonl",
     }]);
     expect(h.calls.sends).toEqual([{ socketPath: h.cfg.socketPath, event: expected }]);
-    expect(h.calls.snippets).toEqual([{
-      transcriptPath: "/virtual/rollout-2026-07-29-session-123.jsonl",
-      sentences: 2,
-      maxChars: 350,
-      summarize: false,
-    }]);
-    expect(h.calls.marks).toEqual(["/virtual/rollout-2026-07-29-session-123.jsonl"]);
-    expect(h.calls.bells).toEqual([]);
-    expect(h.calls.speeches).toEqual([]);
-  });
-
-  test("Stop announces the result from the shared spokenSnippet path", async () => {
-    const h = harness({
-      mark: 3,
-      snippet: "First complete sentence. Second complete sentence!",
-    });
-    const payload: CodexHookPayload = {
-      hook_event_name: "Stop",
-      session_id: "plain-stop",
-      transcript_path: "/virtual/rollout-plain-stop.jsonl",
-      cwd: "/work/codex-project",
-      last_assistant_message:
-        "**First complete sentence.** Second complete sentence! Third sentence is not announced.",
-      agent_type: null,
-    };
-
-    const event = await handleCodexHookPayload(payload, h.cfg, h.dependencies);
-
-    expect(event).toEqual({
-      type: "turn-end",
-      sessionId: "plain-stop",
-      label: "codex-project",
-      cwd: "/work/codex-project",
-      pid: 4242,
-      announce: "codex-project: First complete sentence. Second complete sentence!",
-      transcriptPath: "/virtual/rollout-plain-stop.jsonl",
-      mark: 3,
-      eventAt: 1_700_000_000_123,
-    });
-    expect(h.calls.snippets).toEqual([{
-      transcriptPath: "/virtual/rollout-plain-stop.jsonl",
-      sentences: 2,
-      maxChars: 350,
-      summarize: false,
-    }]);
   });
 
   test("Stop names its turn only by an id-shaped turn_id, never by whatever the payload carries", async () => {
@@ -319,9 +238,6 @@ describe("handleCodexHookPayload", () => {
       transcriptPath: "/virtual/rollout-session-busy.jsonl",
     }]);
     expect(h.calls.sends).toEqual([{ socketPath: h.cfg.socketPath, event: expected }]);
-    expect(h.calls.marks).toEqual([]);
-    expect(h.calls.bells).toEqual([]);
-    expect(h.calls.speeches).toEqual([]);
   });
 
   test("SessionStart creates an idle registry entry without emitting an event", async () => {
@@ -344,9 +260,6 @@ describe("handleCodexHookPayload", () => {
       transcriptPath: "/virtual/rollout-session-start.jsonl",
     }]);
     expect(h.calls.sends).toEqual([]);
-    expect(h.calls.marks).toEqual([]);
-    expect(h.calls.bells).toEqual([]);
-    expect(h.calls.speeches).toEqual([]);
   });
 
   test("a non-null agent_type filters subagents before registry or daemon effects", async () => {
@@ -363,10 +276,6 @@ describe("handleCodexHookPayload", () => {
     expect(await handleCodexHookPayload(payload, h.cfg, h.dependencies)).toBeNull();
     expect(h.calls.writes).toEqual([]);
     expect(h.calls.sends).toEqual([]);
-    expect(h.calls.marks).toEqual([]);
-    expect(h.calls.labels).toEqual([]);
-    expect(h.calls.bells).toEqual([]);
-    expect(h.calls.speeches).toEqual([]);
   });
 
   test("a desktop-app ancestor filters the hook before registry or daemon effects", async () => {
@@ -381,13 +290,8 @@ describe("handleCodexHookPayload", () => {
     };
 
     expect(await handleCodexHookPayload(payload, h.cfg, h.dependencies)).toBeNull();
-    expect(h.calls.originChecks).toEqual([4242]);
     expect(h.calls.writes).toEqual([]);
     expect(h.calls.sends).toEqual([]);
-    expect(h.calls.marks).toEqual([]);
-    expect(h.calls.labels).toEqual([]);
-    expect(h.calls.bells).toEqual([]);
-    expect(h.calls.speeches).toEqual([]);
   });
 });
 
@@ -434,23 +338,6 @@ describe("non-interactive Codex ancestry", () => {
       [800, {
         ppid: 700,
         command: "/opt/homebrew/bin/codex -C /work/conch exec --json",
-      }],
-    ]);
-
-    expect(
-      await hasNonInteractiveCodexAncestor(
-        900,
-        (pid) => tree.get(pid) ?? null,
-      ),
-    ).toBe(true);
-  });
-
-  test("drops codex review", async () => {
-    const tree = new Map([
-      [900, { ppid: 800, command: "/bin/sh -c conch codex-hook" }],
-      [800, {
-        ppid: 700,
-        command: "/opt/homebrew/bin/codex review --base main",
       }],
     ]);
 

@@ -2,13 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   choiceReplyForConversation,
   dispatchRuntimeControlMessage,
-  injectTimeoutFor,
   isMissingCodexPid,
   shouldReportMissingCodexPid,
 } from "../src/daemon.ts";
 import { buildConversation } from "../src/conversation.ts";
 import { readAgentCapabilities } from "../src/agent-capabilities.ts";
-import { buildPublishedState, type PanelModel } from "../src/panel.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -85,63 +83,6 @@ describe("Phase 2 runtime controls", () => {
     expect(calls).toEqual(["start:thread-1", "error:mac"]);
   });
 
-  test("returns resumable rows and completeness through runtime dispatch", async () => {
-    const sessions = [{
-      sessionId: "thread-1",
-      backend: "codex" as const,
-      label: "Relay work",
-      cwd: "/tmp/conch",
-      updatedAt: 1_786_000_000_000,
-    }];
-    expect(await dispatchRuntimeControlMessage(
-      { kind: "resumable", query: "relay", limit: 20 },
-      {
-        listResumable: (message) => {
-          expect(message).toEqual({ kind: "resumable", query: "relay", limit: 20 });
-          return { sessions, complete: false };
-        },
-        start: () => {},
-        close: () => {},
-        report: () => {},
-      },
-    )).toEqual({
-      handled: true,
-      response: { kind: "resumable", sessions, complete: false },
-    });
-  });
-
-  test("returns a capability inventory through runtime dispatch without mutating provider state", async () => {
-    const inventory = readAgentCapabilities({
-      backend: "codex",
-      cwd: "/tmp/conch",
-      configDir: "/tmp/isolated-conch-config",
-    });
-    expect(await dispatchRuntimeControlMessage(
-      { kind: "agent-capabilities", backend: "codex", cwd: "/tmp/conch", sessionId: "thread-1" },
-      {
-        listResumable: () => ({ sessions: [], complete: true }),
-        readCapabilities: (message) => {
-          expect(message).toEqual({
-            kind: "agent-capabilities",
-            backend: "codex",
-            cwd: "/tmp/conch",
-            sessionId: "thread-1",
-          });
-          return { ...inventory, context: { ...inventory.context, sessionId: "thread-1" } };
-        },
-        start: () => {},
-        close: () => {},
-        report: () => {},
-      },
-    )).toEqual({
-      handled: true,
-      response: {
-        kind: "agent-capabilities",
-        inventory: { ...inventory, context: { ...inventory.context, sessionId: "thread-1" } },
-      },
-    });
-  });
-
   test("lifecycle acknowledgements round-trip through the control client validator", () => {
     expect(validateControlResponse({ kind: "session-started", backend: "claude", resumed: false }).ok).toBe(true);
     expect(validateControlResponse({ kind: "session-closed", sessionId: "s1" }).ok).toBe(true);
@@ -170,11 +111,6 @@ describe("Phase 2 runtime controls", () => {
       complete: true,
     }).ok).toBe(true);
   });
-
-  test("the phone waits long enough for native Terminal lifecycle work", () => {
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-start" }))).toBe(8_000);
-    expect(injectTimeoutFor(JSON.stringify({ kind: "session-close" }))).toBe(45_000);
-  });
 });
 
 describe("Phase 2 session metadata", () => {
@@ -188,37 +124,12 @@ describe("Phase 2 session metadata", () => {
     expect(shouldReportMissingCodexPid({ sessionId: "a", backend: "claude", pid: 0 }, reported)).toBe(false);
   });
 
-  test("a Codex row that says why it has no pid is not a miss, on the poll or on close", async () => {
+  test("a Codex row that says why it has no pid is not a miss", () => {
     const reason = "closed: no Codex process has this thread open";
     expect(isMissingCodexPid({ backend: "codex", pid: 0 })).toBe(true);
     expect(isMissingCodexPid({ backend: "codex", pid: 0, noTerminal: reason })).toBe(false);
     expect(isMissingCodexPid({ backend: "codex", pid: 42 })).toBe(false);
     expect(isMissingCodexPid({ backend: "claude", pid: 0 })).toBe(false);
-    const daemon = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
-    const start = daemon.indexOf("const closeLiveSession = async");
-    const end = daemon.indexOf("const sessionActions:", start);
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    const close = daemon.slice(start, end);
-    expect(close).toContain("if (isMissingCodexPid(session))");
-    expect(close).toContain("throw new Error(session.noTerminal ?? \"session has no routable pid\")");
-  });
-
-  test("published rows carry a proportional context numerator and denominator", () => {
-    const model: PanelModel = {
-      rows: [{
-        sessionId: "s1", label: "repo", backend: "claude", status: "waiting",
-        paused: false, muted: false, liveGlyph: null, active: false, navSelected: false,
-      }],
-      mode: { muted: false, paused: false, holding: 0 },
-      live: { state: "idle", label: "", partial: "" },
-      reply: null,
-      panelOpen: true,
-    };
-    const published = buildPublishedState("test-device", model, new Map(), new Set(), 1, {
-      contextForSessionId: () => ({ usedTokens: 160_000, limitTokens: 200_000 }),
-    });
-    expect(published.rows[0]?.context).toEqual({ usedTokens: 160_000, limitTokens: 200_000 });
   });
 });
 

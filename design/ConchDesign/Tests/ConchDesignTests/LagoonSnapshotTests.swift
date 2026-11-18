@@ -104,44 +104,21 @@ final class LagoonSnapshotTests: XCTestCase {
         XCTAssertFalse(text.contains("You've hit your limit"), "the provider's words reached the page")
     }
 
+    /// What the snapshot makes of a row, beyond passing fields through: home as a tilde, three work folders, the context
+    /// as one object, the provider's limit words as a flag, and a status the lagoon doesn't know as null.
     func testTheRowAsTheLagoonReadsIt() throws {
         let object = try json(LagoonSnapshot(rich(), home: home))
-        XCTAssertEqual(object["v"] as? Int, 1)
-        XCTAssertEqual(object["ts"] as? Double, 1_791_039_810_478)
-        let mode = try XCTUnwrap(object["mode"] as? [String: Any])
-        XCTAssertEqual(mode["paused"] as? Bool, true)
-        XCTAssertEqual(mode["holding"] as? Int, 2)
-        XCTAssertEqual(object["live"] as? [String: String], ["state": "speaking"])
         let rows = try XCTUnwrap(object["rows"] as? [[String: Any]])
         let row = rows[0]
-        XCTAssertEqual(row["status"] as? String, "needs")
         XCTAssertEqual(row["cwd"] as? String, "~/Projects/Conch")
         XCTAssertEqual(row["workDirs"] as? [String], ["~/Projects/Conch", "/tmp/x", "~"])
-        XCTAssertEqual(row["backend"] as? String, "codex")
         XCTAssertEqual(row["context"] as? [String: Int], ["usedTokens": 120_000, "limitTokens": 200_000])
-        XCTAssertEqual(row["pauseExempt"] as? Bool, true)
-        XCTAssertEqual(row["muted"] as? Bool, false)
         XCTAssertEqual(row["usageLimit"] as? Bool, true)
-        XCTAssertEqual(row["waitingOnAgents"] as? Bool, true)
-        XCTAssertEqual(row["startedBySessionId"] as? String, "s0")
-        let activity = try XCTUnwrap(row["activity"] as? [String: Any])
-        XCTAssertEqual(activity["text"] as? String, "Running the test suite")
-        XCTAssertEqual(activity["kind"] as? String, "step")
-        XCTAssertEqual(activity["at"] as? Double, 1_791_039_805_000)
-        let approval = try XCTUnwrap(row["approval"] as? [String: Any])
-        XCTAssertEqual(approval["id"] as? String, "a1")
-        XCTAssertEqual(approval["name"] as? String, "Bash")
-        XCTAssertEqual(approval["summary"] as? String, "rm -rf build")
-        XCTAssertEqual(approval["answerable"] as? Bool, false)
-        // A row with less: status not one the lagoon knows is null, live is null, the agent from the row's own backend.
         let quiet = rows[1]
         XCTAssertTrue(quiet["status"] is NSNull)
         XCTAssertTrue(quiet["live"] is NSNull)
-        XCTAssertEqual(quiet["backend"] as? String, "claude")
-        XCTAssertNil(quiet["pauseExempt"])
         XCTAssertNil(quiet["context"])
         XCTAssertNil(quiet["usageLimit"])
-        XCTAssertEqual((quiet["reviews"] as? [Any])?.count, 0)
     }
 
     func testReviewsCarryOpenNeverTheirLink() throws {

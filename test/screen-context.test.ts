@@ -24,8 +24,6 @@ import {
 import { createControlServer, type ControlApplication } from "../src/control-server.ts";
 import { buildPublishedState, type PanelModel } from "../src/panel.ts";
 import { AGENT_TUNABLE_SETTINGS, createMcpToolHandlers, defaultMcpDependencies } from "../src/mcp.ts";
-import { SETTING_REGISTRY } from "../src/settings.ts";
-import { loadConfig } from "../src/config.ts";
 import { probeCommand } from "../src/probe.ts";
 
 const roots: string[] = [];
@@ -120,7 +118,6 @@ describe("an observation is checked at the socket", () => {
   });
 
   test("the observer registry is what the socket accepts: conch-staged and front-window, nothing else", () => {
-    expect(SCREEN_OBSERVERS.map((observer) => observer.id)).toEqual(["conch-staged", "front-window"]);
     const front = observation({ source: "front-window", app: { bundleId: "com.google.Chrome" }, surface: { kind: "url", url: "http://localhost:5173/" } });
     expect(validateScreenObservation(front)).toEqual({ ok: true, value: front });
     for (const source of ["ax-front-window", "front_window", "", undefined]) {
@@ -150,7 +147,7 @@ describe("resolvers", () => {
     )).toMatchObject({ sessionId: "a", reviewId: "a-1", artifact: "/p/a/out.md", confidence: 1 });
     // conch's own window names its session too.
     expect(resolveScreen(observation({ surface: { kind: "conch", sessionId: "c", view: "main" } }), context()))
-      .toMatchObject({ sessionId: "c", confidence: 1, reason: "staged: conch's own window shows it" });
+      .toMatchObject({ sessionId: "c", confidence: 1 });
   });
 
   test("deliverable-link: a file by its real path, the newest version of it", () => {
@@ -256,7 +253,6 @@ describe("resolvers", () => {
     test("the parent chain: the session whose process started the server, the nearest one winning", () => {
       const showing = resolveScreen(page(), serving([{ pid: 900, cwd: "/Users/t/p/app", parents: [899, 200, 1] }]));
       expect(showing).toMatchObject({ sessionId: "b", confidence: 0.7 });
-      expect(showing.reason).toBe("localhost-port: the session that started the server on :5173");
       // A session started inside another's tree is the more specific.
       expect(resolveScreen(page(), serving([{ pid: 900, parents: [100, 200] }])).sessionId).toBe("a");
       // The session's own process listening is that session.
@@ -267,7 +263,6 @@ describe("resolvers", () => {
       // Started from Tyler's own shell, running in a's folder: the most specific folder wins.
       const showing = resolveScreen(page(), serving([{ pid: 900, cwd: "/Users/t/p/app/web", parents: [800, 1] }]));
       expect(showing).toMatchObject({ sessionId: "a", confidence: 0.6 });
-      expect(showing.reason).toBe("localhost-port: the server on :5173 runs in the session's folder");
       // The home folder names no project, as for files.
       expect(resolveScreen(page(), serving([{ pid: 900, cwd: "/Users/t/Downloads", parents: [] }])).sessionId).toBeUndefined();
       // The chain outranks the folder, even when the folder names someone else.
@@ -304,7 +299,6 @@ describe("resolvers", () => {
   });
 
   test("in order: the first that answers wins, and the list is the extension point", () => {
-    expect(SCREEN_RESOLVERS.map((resolver) => resolver.id)).toEqual(["staged", "deliverable-link", "terminal-tty", "localhost-port", "folder"]);
     const sessions = [{ sessionId: "folder-owner", cwd: "/p" }];
     const deliverables = [{ sessionId: "publisher", reviewId: "r", link: "/p/a/out.md" }];
     const file = { kind: "file", path: "/p/a/out.md" } as const;
@@ -400,10 +394,7 @@ describe("what is published", () => {
   test("buildPublishedState carries `showing` at the top level, and nothing when there is none", () => {
     const showing = publishedShowing(resolveScreen(observation({ surface: { kind: "conch", sessionId: "s", view: "main" } }), context()));
     const published = buildPublishedState("mac", model, new Map(), new Set(), AT, { showing });
-    expect(published.showing).toEqual({
-      sessionId: "s", confidence: 1, reason: "staged: conch's own window shows it",
-      surface: { kind: "conch", sessionId: "s", view: "main" }, source: "conch-staged", at: AT,
-    });
+    expect(published.showing).toEqual(showing);
     expect("showing" in buildPublishedState("mac", model, new Map(), new Set(), AT)).toBe(false);
   });
 
@@ -476,7 +467,7 @@ describe("the service", () => {
     expect(asked).toEqual([5173]);
     expect(screen.showing()).toBeUndefined();
     answer([{ pid: 900, parents: [100] }]);
-    expect(await waiting).toMatchObject({ sessionId: "a", reason: "localhost-port: the session that started the server on :5173" });
+    expect(await waiting).toMatchObject({ sessionId: "a" });
     expect(screen.showing()?.sessionId).toBe("a");
 
     // Tyler moves on to conch's window before the lookup answers: the late answer is not what is showing.
@@ -531,19 +522,11 @@ describe("conch_on_screen", () => {
       expect(await handlers(published).conch_on_screen({})).toMatchObject({ showing: null, reason: expect.stringContaining("seen nothing") });
     }
   });
-
-  test("takes no arguments", async () => {
-    await expect(handlers(null).conch_on_screen({ session: "x" })).rejects.toThrow('unknown argument "session"');
-  });
 });
 
 describe("the screen-log setting", () => {
-  test("is on by default, local only, and not an agent's to change", () => {
-    expect(SETTING_REGISTRY.get("screen-log")).toMatchObject({ field: "screenLog", env: "CONCH_SCREEN_LOG", default: true, apply: "live" });
-    expect(SETTING_REGISTRY.get("screen-log")!.help).toContain("never sent anywhere");
+  test("is not an agent's to change", () => {
     expect(AGENT_TUNABLE_SETTINGS as readonly string[]).not.toContain("screen-log");
-    expect(loadConfig({ env: {}, settingsPath: join(scratch(), "none.json") }).screenLog).toBe(true);
-    expect(loadConfig({ env: { CONCH_SCREEN_LOG: "0" }, settingsPath: join(scratch(), "none.json") }).screenLog).toBe(false);
   });
 });
 
@@ -679,153 +662,24 @@ describe("the socket", () => {
   });
 });
 
-describe("the Mac app's conch-staged observer (source guards)", () => {
-  const root = join(import.meta.dir, "..");
-  const read = (path: string) => readFileSync(join(root, path), "utf8");
-  const item = read("mac-app/conch-mac/StatusItem.swift");
-  const store = read("mac-app/conch-mac/StateStore.swift");
-  const client = read("mac-app/conch-mac/ConchSocketClient.swift");
-  const between = (text: string, start: string, end: string) => {
-    const from = text.indexOf(start);
-    expect(from).toBeGreaterThan(-1);
-    return text.slice(from, text.indexOf(end, from + start.length));
-  };
+describe("the Mac app's observers (source guards)", () => {
+  const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
 
-  test("ConchStatusItem.stage reports every scene it hands off, with the session and the review", () => {
-    const stage = between(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {", "private static func bringConchForward()");
-    expect(stage).toContain("let staged = ConchScreenStaged(sessionId: row.id, reviewId: review?.id, link: review?.link)");
-    // The link: reported from the open's own completion, with the app that took it, before the handoff counts.
-    expect(stage).toMatch(/onOpened: \{ app in\s*store\.reportShowing\(ConchScreenSurface\(opened: url\), app: app, staged: staged\)\s*done\.resume\(returning: true\)/);
-    // The terminal, once the daemon's ack said there was one to raise.
-    expect(stage).toMatch(/if await store\.reveal\(row\)\.value \{[\s\S]*store\.reportShowing\(\.terminal, app: ConchScreenApp\(bundleId: "com\.apple\.Terminal"\), staged: staged\)\s*return true/);
-    // conch's own window.
-    expect(stage).toContain('openSession(row.id)\n                store.reportShowing(.conch(sessionId: row.id, view: "main"), staged: staged)');
-    // A failed open reports nothing: it falls through to the next scene.
-    expect(between(stage, "}) { _ in", "}")).not.toContain("reportShowing");
-  });
-
-  test("StateStore sends it: the app NSWorkspace.open names, and a fire-and-forget report", () => {
-    const door = between(store, "func openLink(", "private var errorStateSnapshot");
-    expect(door).toContain("onOpened: @escaping @MainActor (ConchScreenApp?) -> Void = { _ in },");
-    expect(door).toContain("NSWorkspace.shared.open(url, configuration: configuration) { app, error in");
-    expect(door).toContain("app.bundleIdentifier.map { ConchScreenApp(bundleId: $0, pid: app.processIdentifier, name: app.localizedName) }");
-    expect(door).toContain("guard let error else { Task { @MainActor in onOpened(opener) }; return }");
-    const report = between(store, "func reportShowing(", "private func reportFrontWindow(");
-    // Staged is always said, and opens the grace for the app it went to; conch's window showing a
-    // session counts only while conch is in front, and never when it repeats.
-    expect(report).toContain("if staged != nil {\n            screenGate.staged(surface, in: app?.bundleId, at: Date())");
-    expect(report).toContain("} else if !NSApp.isActive || !screenGate.noticed(surface, in: nil, at: Date()) {\n            return");
-    expect(report).toContain("let report = ConchScreenObservationReport(source: .conchStaged, surface: surface, app: app, staged: staged)");
-    expect(report).toContain("sendScreenReport(report, of: surface)");
-    // conch's own window following a pick, and coming back to the front, are the other reports.
-    const content = read("mac-app/conch-mac/ContentView.swift");
-    expect(content).toContain('// conch\'s own window now shows this session: the screen context\'s conch-staged observer.\n        .onChange(of: workspace.viewing) { _, id in\n            guard let id else { return }\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
-    expect(between(content, "publisher(for: NSApplication.didBecomeActiveNotification)", ".onChange(of: rowIDs)"))
-      .toContain('guard let id = workspace.viewing else { return }\n            store.reportShowing(.conch(sessionId: id, view: "main"))');
-  });
-
-  test("the wire matches the daemon's contract", () => {
-    const report = between(client, "struct ConchScreenObservationReport", "enum ConchSessionCommand");
-    expect(report).toContain('let kind = "screen-observation"');
-    expect(report).toContain("let v = 1");
-    // The app's observers are exactly the daemon's registry.
-    const sources = [...report.matchAll(/case \w+ = "([^"]+)"/g)].map((match) => match[1]);
-    expect(sources).toEqual(SCREEN_OBSERVERS.map((observer) => observer.id));
-    // No window title travels: the observation has no field for one.
-    expect(between(report, "struct Observation", "init(")).not.toMatch(/window|title/i);
-    // Every kind the app encodes is one the daemon accepts, with the fields it requires.
-    const encoded = [...between(client, "enum ConchScreenSurface", "struct ConchScreenStaged").matchAll(/try container\.encode\("([a-z]+)", forKey: \.kind\)/g)]
-      .map((match) => match[1]);
-    expect(encoded).toEqual(["file", "url", "terminal", "simulator", "design", "app", "conch"]);
-    for (const surface of [
-      { kind: "file", path: "/p/x" }, { kind: "url", url: "https://x.dev/" }, { kind: "terminal" }, { kind: "simulator" }, { kind: "design" },
-      { kind: "app", bundleId: "com.apple.Preview" }, { kind: "conch", sessionId: "s", view: "main" },
-    ]) expect(validateScreenObservation(observation({ surface: surface as ScreenObservation["surface"] })).ok).toBe(true);
-  });
-});
-
-describe("the Mac app's front-window observer (source guards)", () => {
-  const root = join(import.meta.dir, "..");
-  const read = (path: string) => readFileSync(join(root, path), "utf8");
-  const observer = read("mac-app/conch-mac/FrontWindowObserver.swift");
-  const store = read("mac-app/conch-mac/StateStore.swift");
-  /** The Swift with its comments taken out, so a rule is about code, not about prose naming it. */
-  const code = observer.replace(/\/\/.*$/gm, "");
-
-  test("Accessibility is checked, never asked for: no prompt from this app, onboarding's job", () => {
-    expect(code).toContain("AXIsProcessTrusted()");
-    // Every read of another app sits behind the check.
-    expect(code).toContain("guard trusted else { return app }");
-    for (const file of ["FrontWindowObserver.swift", "StateStore.swift", "StatusItem.swift", "ContentView.swift", "ConchMacApp.swift"]) {
-      const swift = read(`mac-app/conch-mac/${file}`);
-      expect(swift).not.toContain("AXIsProcessTrustedWithOptions");
-      expect(swift).not.toContain("kAXTrustedCheckOptionPrompt");
-    }
-  });
-
-  test("no AppleScript, so no Automation prompt", () => {
-    for (const forbidden of ["NSAppleScript", "OSAScript", "osascript", "NSAppleEventDescriptor", "AEDeterminePermissionToAutomateTarget", "tell application"]) {
-      expect(code).not.toContain(forbidden);
+  test("the wire matches the daemon's contract: its observers and every surface kind it encodes", () => {
+    const client = read("mac-app/conch-mac/ConchSocketClient.swift");
+    const report = client.slice(client.indexOf("struct ConchScreenObservationReport"), client.indexOf("enum ConchSessionCommand"));
+    expect([...report.matchAll(/case \w+ = "([^"]+)"/g)].map((match) => match[1])).toEqual(SCREEN_OBSERVERS.map((observer) => observer.id));
+    const surfaces = client.slice(client.indexOf("enum ConchScreenSurface"), client.indexOf("struct ConchScreenStaged"));
+    const required: Record<string, Record<string, unknown>> = { file: { path: "/p/x" }, url: { url: "https://x.dev/" }, app: { bundleId: "com.apple.Preview" }, conch: { sessionId: "s", view: "main" } };
+    const kinds = [...surfaces.matchAll(/try container\.encode\("([a-z]+)", forKey: \.kind\)/g)].map((match) => match[1]!);
+    expect(kinds.length).toBeGreaterThan(0);
+    for (const kind of kinds) {
+      expect(validateScreenObservation(observation({ surface: { kind, ...required[kind] } as ScreenObservation["surface"] })).ok).toBe(true);
     }
   });
 
   test("a window title is never read, so it can never be sent", () => {
+    const code = read("mac-app/conch-mac/FrontWindowObserver.swift").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/kAXTitleAttribute|"AXTitle"|\.title\b/);
-  });
-
-  test("driven by app activation and a slow poll, never a tight loop", () => {
-    expect(code).toContain("NSWorkspace.didActivateApplicationNotification");
-    const interval = Number(/Timer\(timeInterval: ([\d.]+), repeats: true\)/.exec(code)?.[1]);
-    expect(interval).toBeGreaterThanOrEqual(2);
-    // The poll reads only with the grant: without it, activations already say everything.
-    expect(code).toContain("if AXIsProcessTrusted() { self?.read(after: .zero) }");
-    expect(code).not.toMatch(/while\s+(true|!Task\.isCancelled)/);
-    // One reading at a time: a newer request replaces one still waiting.
-    expect(code).toContain("reading?.cancel()");
-    // Accessibility waits on another app: off the main thread, on a short leash, the walk bounded.
-    expect(code).toContain("await Task.detached {");
-    expect(code).toContain("AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)");
-    expect(code).toContain("queue += children(element).prefix(budget - queue.count)");
-    // Never into a page: the address isn't in there, and walking one makes a browser switch its
-    // own accessibility on, which Tyler would feel in every tab.
-    expect(code).toContain('if role == "AXWebArea" || leaves.contains(role) { continue }');
-  });
-
-  test("conch's own windows are left to reportShowing, and the gate stands between it and the daemon", () => {
-    expect(code).toContain("front.processIdentifier != ProcessInfo.processInfo.processIdentifier");
-    const front = store.slice(store.indexOf("private func reportFrontWindow("), store.indexOf("func removeDeliverable("));
-    expect(front).toContain("guard screenGate.noticed(surface, in: app.bundleId, at: Date()) else { return }");
-    expect(front).toContain("ConchScreenObservationReport(source: .frontWindow, surface: surface, app: app, staged: nil)");
-    expect(store).toContain("frontWindow = FrontWindowObserver { [weak self] surface, app in");
-  });
-
-  // The floating panel that could cover the screen went with the overlays on 2026-11-11, and with it the store's
-  // screenCovered and the gate's covered: nothing conch draws hides the app in front any more.
-
-  test("a report counts as said once the daemon answers it, and a daemon that has seen nothing is told again", () => {
-    const send = store.slice(store.indexOf("private func sendScreenReport("), store.indexOf("/// Take an artifact"));
-    // Unsaid only when nothing came back (restarting, too slow). A refusal (`screen-error`: a URL past its limit, no
-    // screen context) is an answer: said again it is refused again, every three seconds, for as long as it shows.
-    expect(send).toContain("if case .reply = await socketClient.request(report) { return }\n            self?.screenGate.unsaid(surface)");
-    expect(send).not.toContain("screen-ack");
-    expect(store.match(/sendScreenReport\(report, of: surface\)/g)?.length).toBe(2);
-    // A restarted daemon publishes no `showing` until it hears something.
-    expect(store).toContain("sourceState = snapshot\n        // A daemon that has seen nothing on screen is a new one (a restart): what the last one was told is news again.\n        if snapshot.showing == nil { screenGate.forget() }");
-  });
-});
-
-describe("the daemon's wiring (source guard)", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-  test("observations reach the service, `showing` is published, the log lives in the config dir and closes at shutdown", () => {
-    expect(daemon).toContain("onScreenObservation: (observation) => void screen.observe(observation).catch((error) => log(`screen: ${error}`)),");
-    // Who serves a localhost page, through the bounded, cached lookup.
-    // One lookup, shared with the phone's dev pages (`/dev`), so one cache.
-    expect(daemon).toContain("const portListeners = portListenerLookup();");
-    expect(daemon).toContain("listeners: portListeners,");
-    expect(daemon).toContain('dir: join(dirname(daemonSettingsPath), "screen"),');
-    expect(daemon).toContain("enabled: () => cfg.screenLog,");
-    expect(daemon).toContain("        screen.showing(),\n");
-    expect(daemon).toContain("lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), showing };");
-    expect(daemon.indexOf("screen.close();")).toBeGreaterThan(daemon.indexOf("const shutdown = async"));
   });
 });

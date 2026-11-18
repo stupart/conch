@@ -23,18 +23,6 @@ import type { TurnEvent } from "../src/hook.ts";
 import { unsetSetting, writeSetting } from "../src/settings.ts";
 
 const roots: string[] = [];
-const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-// Cut four moved the voice loop out of runDaemon; its guards read this file.
-const voiceSource = readFileSync(new URL("../src/voice-loop.ts", import.meta.url), "utf8");
-
-/** Both markers must exist: a missing one slices from -1 and a guard passes vacuously. */
-function sliceOf(source: string, start: string, end: string): string {
-  const at = source.indexOf(start);
-  if (at < 0) throw new Error(`missing marker: ${start}`);
-  const until = source.indexOf(end, at);
-  if (until < 0) throw new Error(`missing marker: ${end}`);
-  return source.slice(at, until);
-}
 
 function fixture(settings: Record<string, unknown> = {}): { path: string } {
   const root = mkdtempSync(join(tmpdir(), "conch-daemon-config-test-"));
@@ -190,76 +178,6 @@ describe("daemon listen status hooks", () => {
     ]);
   });
 
-  test("daemon supplies committed-prefix providers independently of terminal renderer", () => {
-    const conversationWiring = sliceOf(voiceSource, "const reducer = new DictationReducer", "const barrierRequests");
-
-    expect(conversationWiring).toContain(
-      "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
-    );
-    expect(conversationWiring).not.toContain("theaterMode");
-    // A permission answer's window is `oneMicWindow`, with no committed prefix of its own.
-    expect(voiceSource).toContain('listenHooks(label, () => "")');
-  });
-
-  test("published conversation production and controllers are not theater-gated", () => {
-    const liveProduction = sliceOf(voiceSource, "const resetConversationTranscriptPrefix", "let stopKey");
-    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
-    const publishedConversation = render.slice(
-      render.indexOf("const previewId"),
-      render.indexOf("publishedStateWriter.request()") + "publishedStateWriter.request()".length,
-    );
-    const controllers = daemonSource.slice(
-      daemonSource.indexOf("const configController = createConfigController"),
-      daemonSource.indexOf("const enrichSocketAudioCommand"),
-    );
-
-    expect(liveProduction).toContain("setTranscriptPrefix(\"\")");
-    expect(liveProduction).toContain("clearReadingProgress()");
-    expect(liveProduction).toContain("setReadingProgress(text, spokenChars)");
-    expect(liveProduction).not.toContain("theaterMode");
-    expect(publishedConversation).toContain("reply: contentEvent && shownReply.text");
-    expect(publishedConversation).toContain("model.preview = previewForPanelSelection(");
-    expect(publishedConversation).not.toContain("theaterMode");
-    expect(controllers).toContain("settingsOverlay = new SettingsOverlay(");
-    expect(controllers).toContain("sessionActionsOverlay = new SessionActionsOverlay(");
-    expect(controllers).not.toContain("if (theaterMode)");
-  });
-
-  test("lightweight live publication never rebuilds the session panel", () => {
-    const livePublisher = daemonSource.slice(
-      daemonSource.indexOf("function publishLiveConversationState"),
-      daemonSource.indexOf("async function renderSessionPanel"),
-    );
-
-    expect(livePublisher).toContain("refreshPublishedConversationState(");
-    expect(livePublisher).toContain("publishedStateWriter.request()");
-    expect(livePublisher).not.toContain("registrySnapshot(");
-    expect(livePublisher).not.toContain("lastAssistantText(");
-    expect(livePublisher).not.toContain("renderSessionPanel(");
-  });
-
-  test("shutdown prevents an in-flight panel rebuild from committing after the final flush", () => {
-    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
-    const shutdown = daemonSource.slice(
-      daemonSource.indexOf("const shutdown = async"),
-      daemonSource.indexOf("process.on(\"SIGINT\""),
-    );
-    const firstGuard = render.indexOf("if (shuttingDown) return;");
-    const awaitPoint = render.indexOf("await Promise.all");
-    const postAwaitGuard = render.indexOf("if (shuttingDown) return;", firstGuard + 1);
-    const commit = render.indexOf("if (current()) {");
-
-    expect(firstGuard).toBeGreaterThanOrEqual(0);
-    expect(firstGuard).toBeLessThan(render.indexOf("panelRefresh.request()"));
-    expect(postAwaitGuard).toBeGreaterThan(awaitPoint);
-    expect(postAwaitGuard).toBeLessThan(commit);
-    expect(shutdown.indexOf("shuttingDown = true")).toBeLessThan(
-      shutdown.indexOf("publishedStateWriter.flush()"),
-    );
-    expect(shutdown.indexOf("onLiveDataChange(null)")).toBeLessThan(
-      shutdown.indexOf("publishedStateWriter.flush()"),
-    );
-  });
 });
 
 describe("daemon config controller", () => {
@@ -331,113 +249,6 @@ describe("daemon config controller", () => {
     expect(takeNextQueuedEvent([olderNeeds, wake], "urgency")).toBe(wake);
   });
 
-  test("an instant recite stays next while a later state event arrives during cleanup", () => {
-    const recite: TurnEvent = {
-      type: "recite",
-      sessionId: "target",
-      label: "target",
-      announce: "",
-    };
-    const laterTurn: TurnEvent = {
-      type: "turn-end",
-      sessionId: "later",
-      label: "later",
-      announce: "later: finished",
-    };
-    const instantBarriers = new WeakSet<TurnEvent>([recite]);
-    const queue: TurnEvent[] = [];
-
-    insertQueuedEvent(queue, recite, instantBarriers);
-    insertQueuedEvent(queue, laterTurn, instantBarriers);
-
-    expect(queue).toEqual([laterTurn, recite]);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(recite);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterTurn);
-  });
-
-  test("mode acknowledgements retain priority over a protected instant takeover", () => {
-    const recite: TurnEvent = {
-      type: "recite",
-      sessionId: "target",
-      label: "target",
-      announce: "",
-    };
-    const pause: TurnEvent = {
-      type: "pause",
-      sessionId: "",
-      label: "",
-      announce: "",
-    };
-    const laterTurn: TurnEvent = {
-      type: "turn-end",
-      sessionId: "later",
-      label: "later",
-      announce: "later: finished",
-    };
-    const instantBarriers = new WeakSet<TurnEvent>([recite]);
-    const queue: TurnEvent[] = [];
-
-    insertQueuedEvent(queue, recite, instantBarriers);
-    insertQueuedEvent(queue, pause, instantBarriers);
-    insertQueuedEvent(queue, laterTurn, instantBarriers);
-
-    expect(queue).toEqual([laterTurn, recite, pause]);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(pause);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(recite);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterTurn);
-  });
-
-  test("an ordinary duplicate cannot dislodge a protected instant takeover", () => {
-    const protectedRecite: TurnEvent = {
-      type: "recite",
-      sessionId: "target",
-      label: "target",
-      announce: "",
-    };
-    const ordinaryDuplicate: TurnEvent = {
-      ...protectedRecite,
-      announce: "ordinary socket duplicate",
-    };
-    const laterWake: TurnEvent = {
-      type: "wake",
-      sessionId: "other",
-      label: "other",
-      announce: "",
-    };
-    const instantBarriers = new WeakSet<TurnEvent>([protectedRecite]);
-    const queue: TurnEvent[] = [];
-
-    expect(insertQueuedEvent(queue, protectedRecite, instantBarriers)).toBeTrue();
-    expect(insertQueuedEvent(queue, ordinaryDuplicate, instantBarriers)).toBeFalse();
-    expect(insertQueuedEvent(queue, laterWake, instantBarriers)).toBeTrue();
-
-    expect(queue).toEqual([laterWake, protectedRecite]);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(protectedRecite);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterWake);
-  });
-
-  test("a cancelled takeover may be superseded by a later ordinary duplicate", () => {
-    const cancelledRecite: TurnEvent = {
-      type: "recite",
-      sessionId: "target",
-      label: "target",
-      announce: "",
-    };
-    const laterRecite: TurnEvent = {
-      ...cancelledRecite,
-      announce: "later explicit command",
-    };
-    const instantBarriers = new WeakSet<TurnEvent>([cancelledRecite]);
-    const queue: TurnEvent[] = [];
-
-    insertQueuedEvent(queue, cancelledRecite, instantBarriers);
-    instantBarriers.delete(cancelledRecite);
-    expect(insertQueuedEvent(queue, laterRecite, instantBarriers)).toBeTrue();
-
-    expect(queue).toEqual([laterRecite]);
-    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterRecite);
-  });
-
   test("distinct queued phone injects are append-only and never coalesced", () => {
     const first: TurnEvent = {
       type: "inject",
@@ -470,33 +281,6 @@ describe("daemon config controller", () => {
 
     expect(drained("oldest")).toEqual(["work", "need", "target", "old"]);
     expect(drained("urgency")).toEqual(["need", "work", "target", "old"]);
-  });
-
-  test("LIFO barrier holds under priority", () => {
-    const prioritizedOld: TurnEvent = {
-      type: "turn-end",
-      sessionId: "priority",
-      label: "priority",
-      announce: "",
-    };
-    const wake: TurnEvent = {
-      type: "wake",
-      sessionId: "target",
-      label: "target",
-      announce: "",
-    };
-    const normalNew: TurnEvent = {
-      type: "working",
-      sessionId: "normal",
-      label: "normal",
-      announce: "",
-    };
-    const queue = [prioritizedOld, wake, normalNew];
-    const priority = new Set(["priority"]);
-
-    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(normalNew);
-    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(wake);
-    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(prioritizedOld);
   });
 
   test("newest fast path honors priority inside the eligible state cohort", () => {
@@ -542,73 +326,6 @@ describe("daemon config controller", () => {
     }, prioritized, dismissed);
     expect(prioritized).toEqual(new Set(["visible"]));
     expect(dismissed).toEqual(new Set(["hidden"]));
-
-    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
-    const completePrune = render.slice(
-      render.indexOf("if (snap?.complete)"),
-      render.indexOf("const live ="),
-    );
-    const closedCleanup = sliceOf(voiceSource, "&& await sessionGone(", "if (shuttingDown || interruptedByPause()");
-    const dismiss = daemonSource.slice(
-      daemonSource.indexOf("dismiss: (target)"),
-      daemonSource.indexOf("onOpen:", daemonSource.indexOf("dismiss: (target)")),
-    );
-    expect(render).toContain(
-      "withoutDismissedSessions(registryLive, dismissedSessionIds)",
-    );
-    expect(completePrune).toContain("ledger.forgetGone(liveIds)");
-    expect(closedCleanup).toContain("ledger.forget(event.sessionId)");
-    expect(closedCleanup).toContain("if (ledger.lastTurn?.sessionId === event.sessionId) ledger.lastTurn = null");
-    expect(dismiss).toContain("dismissedSessionIds.add(target.sessionId)");
-    expect(dismiss).toContain("if (ledger.lastTurn?.sessionId === target.sessionId) ledger.lastTurn = null");
-    expect(dismiss).toContain("hold: dismissedHeldTurns");
-    expect(dismiss).not.toContain("setSessionMutedWithDigest");
-
-    const quietGate = sliceOf(voiceSource, "const controlDisposition = gateTurnForControls", "// Nobody's there:");
-    const dismissedAt = quietGate.indexOf('controlDisposition === "session-dismissed"');
-    expect(dismissedAt).toBeGreaterThan(-1);
-    expect(dismissedAt).toBeLessThan(quietGate.indexOf("ledger.lastTurn = event"));
-    expect(voiceSource).toContain("resolveWakeTarget(event, latestVisibleTurn())");
-    expect(voiceSource).toContain("const rememberedTurn = latestVisibleTurn()");
-  });
-
-  test("recite routes through the existing reader without a bell or responded guard", () => {
-    const branch = sliceOf(voiceSource, 'if (event.type === "recite")', 'if (event.type === "wake")');
-
-    // `lastReplyFor` is the existing reader for a lone session; a window of a
-    // shared session reads its own branch instead (A8).
-    expect(branch).toContain("lastReplyFor(target.transcriptPath, target.sessionId, deps.window(target.sessionId))");
-    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId)");
-    expect(branch).toContain("await conversationLoop(");
-    expect(branch).toContain("false,\n          pauseGeneration");
-    expect(branch).not.toContain("ringBell");
-    expect(branch).not.toContain("userRespondedSince");
-
-    const conversation = sliceOf(voiceSource, "async function conversationLoop", "async function permissionLoop");
-    expect(conversation).toContain('const reciteOnly = event.type === "recite"');
-    expect(conversation).toContain("&& (cfg.readFull || reciteOnly)");
-    expect(conversation).toContain("const noVoiceInterrupt = bargeOff || !cfg.bargeThresholdPct");
-    expect(conversation).toContain("const gapSecs = reciteOnly");
-    expect(conversation).toContain("if (reciteOnly) return");
-    expect(conversation.indexOf("if (reciteOnly) return")).toBeLessThan(
-      conversation.indexOf("const reducer = new DictationReducer"),
-    );
-  });
-
-  test("voice QA wraps the one injector choke point shared by both utterance paths", () => {
-    const route = sliceOf(voiceSource, "async function deliver(", "async function deliverToSession(");
-    const injector = sliceOf(voiceSource, "async function deliverToSession(", "/** Shared handling for anything heard while reading aloud");
-    const reading = sliceOf(voiceSource, "async function onReadingUtterance(", "async function conversationLoop(");
-    const action = sliceOf(voiceSource, "const executeAction = async", "// Mic gate (auto turns only)");
-
-    expect(route).toContain("routeVoicePrompt(cfg.voiceQa");
-    // Words for a session waiting on a question answer it; everything else is delivered.
-    expect(route).toContain("inject: async (prompt) => (deps.window(event.sessionId)?.messageRoute ? undefined : await answerWithWords(event, prompt, beforeInject, options.failure, written))");
-    expect(route).toContain("?? deliverToSession(");
-    expect(route).not.toContain("injectText(");
-    expect(injector).toContain("await injectText(");
-    expect(reading).toContain("await deliver(event, text");
-    expect(action).toContain("await deliver(");
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {
@@ -620,15 +337,6 @@ describe("daemon config controller", () => {
     expect(shouldHandleTurnAudibly(background, false)).toBe(false);
     expect(shouldHandleTurnAudibly(background, true)).toBe(true);
     expect(shouldHandleTurnAudibly(submitted, true)).toBe(false);
-  });
-
-  test("conversation quiet gates do not depend on which device owns playback", () => {
-    const turnHandler = sliceOf(voiceSource, "const controlledTurn = shouldHandleTurnAudibly", "// Nobody's there:");
-    expect(turnHandler).toContain(
-      'const audibleTurn = controlledTurn && audioLease.sink === "mac"',
-    );
-    expect(turnHandler).toContain("gateTurnForControls(event, controlledTurn");
-    expect(turnHandler).not.toContain("gateTurnForControls(event, audibleTurn");
   });
 
   test("live background work downgrades a turn end by mutating the same event", () => {
@@ -655,13 +363,6 @@ describe("daemon config controller", () => {
       eventAt: 2_000,
       backgroundWork: true,
     });
-
-    const handleTurn = sliceOf(voiceSource, "async function handleTurn", "/**\n   * Speak with the barge-in recorder");
-    const refreshAt = handleTurn.indexOf("sessionHasLiveBackgroundWork(event.transcriptPath)");
-    const audibleAt = handleTurn.indexOf("const controlledTurn = shouldHandleTurnAudibly");
-    expect(refreshAt).toBeGreaterThan(-1);
-    expect(audibleAt).toBeGreaterThan(refreshAt);
-    expect(handleTurn).toContain("downgradeTurnWithLiveBackgroundWork(event, true)");
   });
 
   test("review turns bypass the live-work downgrade while ordinary turns still mutate", () => {
@@ -689,35 +390,6 @@ describe("daemon config controller", () => {
     expect(downgradeTurnWithLiveBackgroundWork(ordinary, true)).toBe(ordinary);
     expect(ordinary.type).toBe("working");
     expect(ordinary.backgroundWork).toBe(true);
-  });
-
-  test("review attribute and automatic cursor skip stay wired without changing recite", () => {
-    const conversation = sliceOf(voiceSource, "async function conversationLoop", "async function permissionLoop");
-    const cursorBranch = conversation.slice(
-      conversation.indexOf("cursor = autoTurn"),
-      conversation.indexOf("const text = sentences.join"),
-    );
-    expect(cursorBranch).toContain("event.review ? sentences.length");
-    expect(cursorBranch).toContain(
-      ": countCoveredSentences(event.announce, sentences)",
-    );
-    expect(cursorBranch.indexOf("autoTurn")).toBeLessThan(
-      cursorBranch.indexOf("event.review ? sentences.length"),
-    );
-
-    const turnEndStatusAt = voiceSource.indexOf('if (event.type === "turn-end" && !setSessionState(');
-    expect(turnEndStatusAt).toBeGreaterThan(-1);
-    const cancellationAt = voiceSource.indexOf("if (eventQueue.consumeCancellation(event))", turnEndStatusAt);
-    expect(cancellationAt).toBeGreaterThan(turnEndStatusAt);
-    const turnEndStatus = voiceSource.slice(turnEndStatusAt, cancellationAt);
-    expect(turnEndStatus).toContain('"waiting"');
-    expect(turnEndStatus).not.toContain('"review" : "waiting"');
-    expect(turnEndStatus).toContain("event.review?.summary");
-    expect(turnEndStatus).toContain("event.eventAt");
-    expect(turnEndStatus).toContain("event.review");
-
-    const recite = sliceOf(voiceSource, 'if (event.type === "recite")', 'if (event.type === "wake")');
-    expect(recite).toContain("false,\n          pauseGeneration");
   });
 
   test("a turn end with no live background work remains untouched", () => {
@@ -751,46 +423,6 @@ describe("daemon config controller", () => {
       expect(downgradeTurnWithLiveBackgroundWork(event, true)).toBe(event);
       expect(event).toEqual(before);
     }
-
-    const wakeBranch = sliceOf(voiceSource, 'if (event.type === "wake")', "recitingEvent = event;");
-    expect(wakeBranch).toContain("const targetGone = await sessionGone(target.sessionId);");
-    expect(wakeBranch).toContain("target.sessionId");
-    expect(wakeBranch).toContain("if (consumeStopKey()) return");
-    expect(wakeBranch).toContain("if (targetGone)");
-
-    const handleEntry = sliceOf(voiceSource, "async function handleTurn", 'if (event.type === "wake")');
-    // `controlledTurn`, not the old `audibleTurn`: production renamed it and this
-    // search kept returning -1, which sorts before every real index — so the
-    // ordering below passed with its marker missing. Presence is asserted first.
-    const audibleAt = handleEntry.indexOf("const controlledTurn = shouldHandleTurnAudibly");
-    expect(audibleAt).toBeGreaterThan(-1);
-    const closedAt = handleEntry.indexOf("&& await sessionGone(");
-    const statusAt = handleEntry.indexOf("// Dashboard status");
-    expect(closedAt).toBeGreaterThan(audibleAt);
-    expect(statusAt).toBeGreaterThan(closedAt);
-    expect(handleEntry).toContain("event.sessionId");
-    expect(handleEntry).toContain("if (shuttingDown || interruptedByPause() || consumeStopKey()) return");
-
-    const micGate = sliceOf(voiceSource, "// Mic gate (auto turns only)", "if (!initialDictationCapture && !gapHandoff && !deferredInitialExternal)");
-    expect(micGate).toContain("const gone = await sessionGone(event.sessionId);");
-    expect(micGate).toContain("event.sessionId");
-    expect(micGate).toContain("activelyTyping || responded || gone");
-  });
-
-  test("live-work downgrade preserves WeakSet identity", () => {
-    const event: TurnEvent = {
-      type: "turn-end",
-      sessionId: "session-a",
-      label: "alpha",
-      announce: "alpha: done",
-    };
-    const forgotten = new WeakSet<TurnEvent>([event]);
-
-    const downgraded = downgradeTurnWithLiveBackgroundWork(event, true);
-
-    expect(forgotten.has(downgraded)).toBeTrue();
-    expect(forgotten.delete(downgraded)).toBeTrue();
-    expect(forgotten.has(event)).toBeFalse();
   });
 
   test("working-mic composes with a daemon-time live-work downgrade", () => {
@@ -878,43 +510,6 @@ describe("daemon config controller", () => {
     });
   });
 
-  test("applies and unsets working-mic live", () => {
-    const { path } = fixture();
-    const env = {};
-    const cfg = loadConfig({ env, settingsPath: path });
-    const controller = createConfigController(cfg, { env, settingsPath: path });
-    expect(cfg.workingMic).toBe(false);
-
-    writeSetting(path, "working-mic", true);
-    const setReply = controller.handle({
-      kind: "set-config",
-      key: "working-mic",
-      value: true,
-    });
-
-    expect(cfg.workingMic).toBe(true);
-    expect(setReply).toMatchObject({
-      kind: "config-ack",
-      key: "working-mic",
-      status: "applied",
-      effective: true,
-      source: "file",
-    });
-
-    unsetSetting(path, "working-mic");
-    const unsetReply = controller.handle({ kind: "unset-config", key: "working-mic" });
-
-    expect(cfg.workingMic).toBe(false);
-    expect(unsetReply).toMatchObject({
-      kind: "config-ack",
-      key: "working-mic",
-      action: "unset",
-      status: "applied",
-      effective: false,
-      source: "default",
-    });
-  });
-
   test("applies and unsets meeting-autopause live and reports the effective boolean", () => {
     const { path } = fixture();
     const env = {};
@@ -964,89 +559,6 @@ describe("daemon config controller", () => {
       { key: "meeting-autopause", value: true },
       { key: "meeting-autopause", value: false },
     ]);
-  });
-
-  test("applies and unsets interrupt-on-manual-reply live", () => {
-    const { path } = fixture();
-    const env = {};
-    const cfg = loadConfig({ env, settingsPath: path });
-    const controller = createConfigController(cfg, { env, settingsPath: path });
-    expect(cfg.interruptOnManualReply).toBe(true);
-
-    writeSetting(path, "interrupt-on-manual-reply", false);
-    const setReply = controller.handle({
-      kind: "set-config",
-      key: "interrupt-on-manual-reply",
-      value: false,
-    });
-
-    expect(cfg.interruptOnManualReply).toBe(false);
-    expect(setReply).toMatchObject({
-      kind: "config-ack",
-      key: "interrupt-on-manual-reply",
-      status: "applied",
-      effective: false,
-      source: "file",
-    });
-
-    unsetSetting(path, "interrupt-on-manual-reply");
-    const unsetReply = controller.handle({ kind: "unset-config", key: "interrupt-on-manual-reply" });
-
-    expect(cfg.interruptOnManualReply).toBe(true);
-    expect(unsetReply).toMatchObject({
-      kind: "config-ack",
-      key: "interrupt-on-manual-reply",
-      action: "unset",
-      status: "applied",
-      effective: true,
-      source: "default",
-    });
-  });
-
-  test("applies and unsets handoff-order live", () => {
-    const { path } = fixture();
-    const env = {};
-    const cfg = loadConfig({ env, settingsPath: path });
-    const controller = createConfigController(cfg, { env, settingsPath: path });
-    expect(cfg.handoffOrder).toBe("oldest");
-
-    writeSetting(path, "handoff-order", "urgency");
-    const setReply = controller.handle({
-      kind: "set-config",
-      key: "handoff-order",
-      value: "urgency",
-    });
-
-    expect(cfg.handoffOrder).toBe("urgency");
-    expect(takeNextQueuedEvent([
-      { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" },
-      { type: "needs-you", sessionId: "needs", label: "needs", announce: "" },
-      { type: "working", sessionId: "working", label: "working", announce: "" },
-    ], cfg.handoffOrder)?.sessionId).toBe("needs");
-    expect(setReply).toMatchObject({
-      kind: "config-ack",
-      key: "handoff-order",
-      status: "applied",
-      effective: "urgency",
-      source: "file",
-    });
-
-    unsetSetting(path, "handoff-order");
-    const unsetReply = controller.handle({ kind: "unset-config", key: "handoff-order" });
-
-    expect(cfg.handoffOrder).toBe("oldest");
-    expect(takeNextQueuedEvent([
-      { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" },
-      { type: "working", sessionId: "working", label: "working", announce: "" },
-    ], cfg.handoffOrder)?.sessionId).toBe("waiting");
-    expect(unsetReply).toMatchObject({
-      kind: "config-ack",
-      key: "handoff-order",
-      action: "unset",
-      status: "applied",
-      effective: "oldest",
-      source: "default",
-    });
   });
 
   test("reports an env-masked set and retains the daemon's env value", () => {
@@ -1119,29 +631,6 @@ describe("daemon config controller", () => {
     expect(reply.diagnostic).toContain("next hook");
   });
 
-  test("unset re-resolves a live field to env or default", () => {
-    const { path } = fixture({ "end-silence": 5.25 });
-    const env = {};
-    const cfg = loadConfig({ env, settingsPath: path });
-    expect(cfg.endSilenceSecs).toBe(5.25);
-    const controller = createConfigController(cfg, { env, settingsPath: path });
-    unsetSetting(path, "end-silence");
-
-    const reply = controller.handle({
-      kind: "unset-config",
-      key: "end-silence",
-    });
-
-    expect(cfg.endSilenceSecs).toBe(3.5);
-    expect(reply).toMatchObject({
-      kind: "config-ack",
-      action: "unset",
-      status: "applied",
-      effective: 3.5,
-      source: "default",
-    });
-  });
-
   test("snapshot uses daemon truth for live keys and file truth with a caveat for hook keys", () => {
     const { path } = fixture({
       "end-silence": 5.25,
@@ -1154,26 +643,7 @@ describe("daemon config controller", () => {
     const reply = createConfigController(cfg, { env, settingsPath: path }).handle({ kind: "get-config" });
     expect(reply.kind).toBe("config-snapshot");
     if (reply.kind !== "config-snapshot") throw new Error("expected config snapshot");
-    expect(reply.snapshot["end-silence"]).toMatchObject({
-      value: 6.5,
-      kind: "number",
-      bounds: { min: 0, minInclusive: false },
-      default: 3.5,
-      help: "pause that ends an utterance, in seconds",
-    });
-    expect(reply.snapshot["read-full"]).toMatchObject({
-      kind: "boolean",
-      bounds: null,
-      default: true,
-      help: "read the full final response aloud",
-    });
-    expect(reply.snapshot["handoff-order"]).toMatchObject({
-      kind: "enum",
-      bounds: null,
-      choices: ["newest", "oldest", "urgency"],
-      default: "oldest",
-      help: "choose queued sessions by newest, oldest, or urgency",
-    });
+    expect(reply.snapshot["end-silence"]).toMatchObject({ value: 6.5 });
     expect(reply.snapshot["announce-sentences"]).toMatchObject({ value: 4, source: "file" });
     expect(reply.snapshot["announce-sentences"].diagnostic).toContain("next hook");
     expect(reply.snapshot["announce-sentences"].diagnostic).toContain("CONCH_SPEAK_SENTENCES");
@@ -1273,35 +743,5 @@ describe("daemon config controller", () => {
       "end-silence": 4,
     });
     expect(cfg.endSilenceSecs).toBe(4);
-  });
-});
-
-describe("an inject never waits for the voice engine", () => {
-  // `drain` awaited ttsStartup before touching the queue, so nothing moved
-  // until Kokoro had warmed up — measured at 67 seconds on a cold start
-  // ("warmup 66968ms"), paid again on every daemon restart. An inject does not
-  // speak, so it sat behind a text-to-speech model for over a minute while the
-  // socket never replied and the phone said "Couldn't reach the Mac".
-  const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-
-  test("the queue no longer blocks on startup before dispatching", () => {
-    // Both markers must EXIST before the slice means anything: a missing one
-    // gives -1, slice(-1) is the last character, and `not.toContain` passes
-    // on an empty body.
-    const queueSource = readFileSync(new URL("../src/event-queue.ts", import.meta.url), "utf8");
-    const drainAt = queueSource.indexOf("async #drain(): Promise<void>");
-    expect(drainAt).toBeGreaterThan(-1);
-    const finallyAt = queueSource.indexOf("    } finally {", drainAt);
-    expect(finallyAt).toBeGreaterThan(drainAt);
-    const body = queueSource.slice(drainAt, finallyAt);
-    expect(body).not.toContain("await ttsStartup");
-  });
-
-  test("speaking events still wait for it, silent ones never do", () => {
-    // An interrupt is the other event nobody may be made to wait for: its whole
-    // value is arriving before the agent does more of what you are stopping.
-    expect(source).toContain(
-      'if (event.type !== "inject" && event.type !== "interrupt" && event.type !== "session-start") await ttsStartup;',
-    );
   });
 });

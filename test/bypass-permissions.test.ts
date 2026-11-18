@@ -1,6 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { terminalSessionCommand } from "../src/session-lifecycle.ts";
 
 const command = (over: Record<string, unknown>) =>
@@ -12,15 +10,6 @@ test("off by default, for conch and for everyone who installs it", () => {
   // those sessions is not a default anyone should inherit.
   expect(command({})).not.toContain("dangerously");
   expect(command({ backend: "codex" })).not.toContain("dangerously");
-});
-
-test("each agent gets the flag it actually accepts", () => {
-  // Read from --help on the installed binaries, not from memory: Codex has
-  // renamed this more than once and has no `--yolo` alias despite the name.
-  expect(command({ bypassPermissions: true }))
-    .toContain("claude --dangerously-skip-permissions");
-  expect(command({ backend: "codex", bypassPermissions: true }))
-    .toContain("codex --no-daemon --dangerously-bypass-approvals-and-sandbox");
 });
 
 test("resumed sessions get it too", () => {
@@ -37,17 +26,4 @@ test("the flag precedes a Codex subcommand, not its positional id", () => {
   // `codex --dangerously-bypass-approvals-and-sandbox resume --help` parses.
   expect(command({ backend: "codex", bypassPermissions: true, resumeSessionId: "abc" }))
     .toBe("cd -- '/w' && exec codex --no-daemon --dangerously-bypass-approvals-and-sandbox resume 'abc'");
-});
-
-test("the daemon hands its setting to the launcher", () => {
-  // The seam. The flag is unit-tested above and the setting is unit-tested in
-  // settings.test.ts, but neither says the daemon actually connects them —
-  // which is the one line where a start would silently launch without it.
-  const source = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  // Bounded by the next handler rather than a character count, which cut a
-  // word in half the first time and failed for the wrong reason.
-  const from = source.indexOf("start: async (message) =>");
-  const start = source.slice(from, source.indexOf("folderTrusted:", from));
-  expect(from).toBeGreaterThan(-1);
-  expect(start).toContain("bypassPermissions: cfg.bypassPermissions");
 });

@@ -178,17 +178,9 @@ describe("the Mac app takes only the deliverable's own window, only with a grant
     ]);
   }, 60_000);
 
-  test("Screen Recording is checked, never asked for; only that app's own ordinary window, 0600", () => {
-    expect(mac).toContain("guard CGPreflightScreenCaptureAccess() else {");
-    expect(mac).not.toContain("CGRequestScreenCaptureAccess(");
-    expect(mac).toContain(".filter({ $0.owningApplication?.processID == owner && $0.windowLayer == 0 && $0.isOnScreen })");
+  test("only that app's own window is captured, never the display, and written 0600 (it goes to the phone)", () => {
     expect(mac).toContain("let filter = SCContentFilter(desktopIndependentWindow: window)");
     expect(mac).not.toContain("SCContentFilter(display:");
     expect(mac).toContain("attributes: [.posixPermissions: 0o600]");
-    expect(mac).toContain("guard let folder = PreviewOwner.folder(request.folder, temp: [NSTemporaryDirectory(), \"/tmp\"]) else {");
-    // Handled once however many snapshots name it; the store hands every snapshot's requests over.
-    expect(read("mac-app/conch-mac/StateStore.swift")).toContain("windowPreviewer.handle(snapshot.previewRequests, rows: snapshot.rows)");
-    expect(read("mac-app/conch-mac/StateStore.swift")).toContain("previewRequests: sourceState.previewRequests");
-    expect(read("mac-app/conch-mac.xcodeproj/project.pbxproj").match(/\/\* WindowPreview\.swift in Sources \*\/,/g)?.length).toBe(1);
   });
 });

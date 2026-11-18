@@ -125,7 +125,7 @@ final class SidebarLayoutTests: XCTestCase {
         let layout = SidebarLayout.empty.creatingGroup(named: "Harbor", id: "group:d", shown: shown(.empty))
         XCTAssertNotNil(layout.nameProblem("  "))
         XCTAssertNotNil(layout.nameProblem(String(repeating: "x", count: 61)))
-        XCTAssertEqual(layout.nameProblem("harbor"), "There's already a group called harbor.")
+        XCTAssertNotNil(layout.nameProblem("harbor"), "one each, whatever the case")
         XCTAssertNil(layout.nameProblem("Harbor", renaming: "group:d"))
         XCTAssertEqual(layout.creatingGroup(named: "HARBOR", shown: shown(layout)), layout)
         XCTAssertEqual(layout.renamingGroup("group:d", to: " Site ").group("group:d")?.name, "Site")

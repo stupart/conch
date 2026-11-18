@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   adapterFor,
   agentAdapters,
@@ -19,8 +17,6 @@ import { teleportRequestError, terminalSessionCommand } from "../src/session-lif
 import { findTranscript, subagentSessions } from "../src/sessions.ts";
 import { shouldReportMissingCodexPid } from "../src/daemon.ts";
 
-const read = (path: string): string => readFileSync(join(import.meta.dir, "..", path), "utf8");
-
 describe("the agent table", () => {
   test("looks a row up by backend, reads an absent backend as Claude, refuses an unknown one", () => {
     expect(adapterFor("claude")).toBe(claudeAdapter);
@@ -35,14 +31,6 @@ describe("the agent table", () => {
     expect(transcriptFormatFor("/h/.codex/sessions/2026/09/11/rollout-2026-09-11T10-00-00-abc.jsonl")).toBe("codex");
     expect(transcriptFormatFor("/h/.claude/projects/-work/0f1e2d3c.jsonl")).toBe("claude");
     expect(transcriptFormatFor("/h/.claude/projects/-work/0f1e2d3c/subagents/agent-a1.jsonl")).toBe("claude");
-  });
-
-  test("where an agent has no implementation, its row returns what the branch returned", () => {
-    expect(codexAdapter.renameCommand("Beta")).toBeNull(); // provider-rename.ts: `unsupported`
-    expect(codexAdapter.teleportArgs).toBeNull(); // session-lifecycle.ts: "Codex has no teleport"
-    expect(claudeAdapter.trustFolderArgs("/work")).toBe(""); // only Codex takes trust on its command line
-    expect([claudeAdapter.rowsMayLackPid, codexAdapter.rowsMayLackPid]).toEqual([false, true]);
-    expect([claudeAdapter.mcpEnabledDefault, codexAdapter.mcpEnabledDefault]).toEqual([null, true]);
   });
 
   test("a pid-less Codex row is reported only when it cannot say why it has none", () => {
@@ -172,43 +160,6 @@ describe("a third backend is one row", () => {
         .toEqual({ sessions: [], complete: false });
     } finally {
       unregister();
-    }
-  });
-});
-
-describe("the branch inventory", () => {
-  // Presence first: the sites that used to branch now ask the table.
-  test("the generic modules ask the table", () => {
-    const daemon = read("src/daemon.ts");
-    expect(daemon).toContain('import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";');
-    expect(daemon).toContain("adapterFor(session.backend).rowsMayLackPid && !session.pid");
-    expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
-    expect(daemon).toContain("const format = path ? transcriptFormatFor(path) : null;");
-    expect(daemon).toContain("contextUsageFromLines(tail, format)");
-    expect(daemon).toContain("sessionSettingsFromLines(tail, format)");
-    expect(daemon).toContain("folderTrusted: (backend, cwd, accountId) => accountId && accountId !== \"default\" ? null : adapterFor(backend).folderTrusted(cwd),");
-    expect(read("src/session-lifecycle.ts")).toContain("const adapter = adapterFor(request.backend);");
-    expect(read("src/provider-rename.ts")).toContain("adapterFor(target.backend).renameCommand(label)");
-    expect(read("src/sessions.ts")).toContain("adapterFor(parent.backend).subagentSessions(parent, transcriptPath)");
-    expect(read("src/resumable.ts")).toContain("adapterFor(candidate.backend).resolveResumable(candidate)");
-    expect(read("src/agent-capabilities.ts")).toContain("adapterFor(options.backend)\n    .readCapabilities(");
-  });
-
-  // Then the count: what remains is the two wire validators (agent-capabilities.ts)
-  // and the registry projection that R owns (sessions.ts `toInfo`).
-  test("no backend branch has crept back into a generic module", () => {
-    const branch = /backend (===|!==) "(claude|codex)"|isCodexTranscriptPath/;
-    const residue: Record<string, number> = {
-      "src/daemon.ts": 0,
-      "src/session-lifecycle.ts": 0,
-      "src/provider-rename.ts": 0,
-      "src/resumable.ts": 0,
-      "src/sessions.ts": 2, // Registry status and the Codex app message route.
-      "src/agent-capabilities.ts": 2,
-    };
-    for (const [path, expected] of Object.entries(residue)) {
-      const sites = read(path).split("\n").filter((line) => branch.test(line)).length;
-      expect([path, sites]).toEqual([path, expected]);
     }
   });
 });

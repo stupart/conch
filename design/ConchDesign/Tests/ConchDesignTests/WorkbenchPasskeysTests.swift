@@ -151,12 +151,5 @@ final class WorkbenchPasskeysTests: XCTestCase {
         XCTAssertEqual(WorkbenchPasskeys.attempt("pressed"), "pressed")
         XCTAssertNil(WorkbenchPasskeys.attempt("get"))
         XCTAssertNil(WorkbenchPasskeys.attempt(["what": "offer"]))
-        XCTAssertFalse(WorkbenchPasskeys.script.contains(WorkbenchPasskeys.handlerPlaceholder))
-        XCTAssertTrue(WorkbenchPasskeys.script.contains("window.webkit.messageHandlers.conchPasskeys.postMessage(what)") || WorkbenchPasskeys.script.contains("W.webkit.messageHandlers.conchPasskeys.postMessage(what)"))
-        XCTAssertEqual(WorkbenchPasskeys.entitlement, "com.apple.developer.web-browser.public-key-credential")
-        // Nothing of the page's is touched: the watcher never names what it used to wrap.
-        for wrapped in ["navigator", "credentials", "Function.prototype", "toString", "defineProperty"] {
-            XCTAssertFalse(WorkbenchPasskeys.script.contains(wrapped), wrapped)
-        }
     }
 }

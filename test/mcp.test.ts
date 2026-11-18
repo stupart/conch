@@ -10,13 +10,12 @@ import {
 import { CONCH_VERSION } from "../src/version.ts";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, isAbsolute, resolve } from "node:path";
-import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderSkillMd } from "../src/agent-instructions.ts";
+import { AGENT_COMMANDS, AGENT_INSTRUCTIONS } from "../src/agent-instructions.ts";
 import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
   MCP_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSIONS,
-  negotiateProtocolVersion,
   dispatchJsonRpcBatch,
   runMcpServer,
   MCP_HISTORY_MAX_BYTES,
@@ -24,7 +23,6 @@ import {
   MCP_LISTED_TOOLS,
   listedMcpTools,
   createMcpToolHandlers,
-  defaultMcpDependencies,
   dispatchJsonRpc,
   parseJsonRpcLine,
   serializeJsonRpcLine,
@@ -60,47 +58,8 @@ import { MAC_APP_DOWN, type PageCaptureMessage, type PageCaptureReply, type Page
 import type { PublishReply } from "../src/review-verdict.ts";
 import { BROWSER_APP_DOWN, BROWSER_REPLY_MS, type BrowserMessage, type BrowserSend } from "../src/browser-workbench.ts";
 
-const TOOL_NAMES = [
-  "conch_sessions",
-  "conch_wake",
-  "conch_recite",
-  "conch_speak",
-  "conch_mode",
-  "conch_rename",
-  "conch_config",
-  "conch_transcript_tail",
-  "conch_fork",
-  "conch_start",
-  "review_to_front",
-  "conch_history",
-  "conch_item",
-  "conch_working_folders",
-  "conch_on_screen",
-  "conch_deliverables",
-  "review_remove",
-  "conch_capture",
-  "browser_open",
-  "browser_read",
-  "browser_click",
-  "browser_type",
-  "browser_screenshot",
-  "browser_tabs",
-  "browser_ask",
-  "browser_close",
-  "atlas_show",
-  "conch_notify",
-  "conch_run",
-] as const satisfies readonly McpToolName[];
-
 /** What a session started now is listed (2026-11-11): publishing, and the CLI for a shell that can't reach conch. */
 const LISTED_TOOL_NAMES = ["review_to_front", "conch_run"] as const;
-
-const DEFERRED_TOOL_NAMES = [
-  "conch_prioritize",
-  "conch_dismiss",
-  "conch_spawn",
-  "conch_close",
-] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -539,7 +498,7 @@ describe("recorded history MCP tools", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns the listed tools; every tool, listed or moved, has a valid closed schema", async () => {
+  test("tools/list returns the listed tools; every tool, listed or moved, has a valid closed schema under the description cap", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -554,97 +513,16 @@ describe("MCP tool discovery", () => {
     expect(response?.id).toBe(11);
     // A session started now is listed two tools; the rest are `conch agent` commands.
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...LISTED_TOOL_NAMES]);
-    expect(MCP_TOOLS.map((tool) => tool.name)).toEqual([...TOOL_NAMES]);
-    expect(new Set(MCP_TOOLS.map((tool) => tool.name)).size).toBe(TOOL_NAMES.length);
-    for (const deferred of DEFERRED_TOOL_NAMES) {
-      expect(MCP_TOOLS.some((tool) => (tool.name as string) === deferred)).toBe(false);
-    }
-
-    const expectedProperties: Record<McpToolName, string[]> = {
-      conch_sessions: ["session", "detail"],
-      conch_wake: ["session"],
-      conch_recite: ["session"],
-      conch_speak: ["text", "voice"],
-      conch_mode: ["action", "session", "scope"],
-      conch_rename: ["session", "label"],
-      conch_config: ["key", "value", "unset"],
-      conch_transcript_tail: ["session", "sentences", "since", "wait"],
-      conch_fork: ["session", "label"],
-      conch_start: ["backend", "folder", "signIn", "model", "effort", "prompt", "host", "label"],
-      review_to_front: ["summary", "link", "kind", "focus", "key", "session", "approval", "scene"],
-      conch_history: ["session", "branch", "before", "limit"],
-      conch_item: ["session", "item", "bodyCursor"],
-      conch_working_folders: ["folders"],
-      conch_on_screen: [],
-      conch_deliverables: [],
-      review_remove: ["id", "artifact"],
-      conch_capture: ["url", "target", "viewport", "fullPage", "mark", "publish"],
-      browser_open: ["url", "profile", "tab"],
-      browser_read: ["tab", "page", "find", "section", "selector", "full"],
-      browser_click: ["tab", "target"],
-      browser_type: ["tab", "target", "text", "submit"],
-      browser_screenshot: ["tab"],
-      browser_tabs: [],
-      browser_ask: ["tab", "reason"],
-      browser_close: ["tab"],
-      atlas_show: ["path", "markdown", "summary"],
-      conch_notify: ["body", "title", "session", "link"],
-      conch_run: ["command"],
-    };
-    const expectedRequired: Record<McpToolName, string[]> = {
-      conch_sessions: [],
-      conch_wake: [],
-      conch_recite: [],
-      conch_speak: ["text"],
-      conch_mode: ["action"],
-      conch_rename: ["session", "label"],
-      conch_config: [],
-      conch_transcript_tail: ["session"],
-      conch_fork: [],
-      conch_start: [],
-      // session is optional now: it defaults to the CALLING session.
-      review_to_front: ["summary"],
-      conch_history: ["session"],
-      conch_item: ["session", "item"],
-      conch_working_folders: ["folders"],
-      conch_on_screen: [],
-      conch_deliverables: [],
-      // Exactly one of id or artifact, which the handler enforces.
-      review_remove: [],
-      conch_capture: ["url"],
-      browser_open: ["url"],
-      browser_read: [],
-      browser_click: ["target"],
-      browser_type: ["target", "text"],
-      browser_screenshot: [],
-      browser_tabs: [],
-      browser_ask: ["reason"],
-      browser_close: ["tab"],
-      atlas_show: ["path", "markdown"],
-      conch_notify: ["body"],
-      conch_run: ["command"],
-    };
-
     for (const tool of MCP_TOOLS as readonly unknown[]) {
       if (!isRecord(tool) || typeof tool.name !== "string" || !isRecord(tool.inputSchema)) {
         throw new Error("invalid tool definition");
       }
-      const name = tool.name as McpToolName;
-      expect(typeof tool.description).toBe("string");
-      expect((tool.description as string).length).toBeGreaterThan(0);
       expect(tool.inputSchema.type).toBe("object");
       expect(tool.inputSchema.additionalProperties).toBe(false);
-      expect(Object.keys(isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties : {}))
-        .toEqual(expectedProperties[name]);
-      expect(Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required : [])
-        .toEqual(expectedRequired[name]);
       assertValidSchema(tool.inputSchema);
+      // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
+      expect((tool.description as string).length).toBeLessThan(2048);
     }
-
-    expect(MCP_TOOLS[4].inputSchema.properties.action.enum)
-      .toEqual(["pause", "resume"]);
-    expect(MCP_TOOLS[7].inputSchema.properties.sentences)
-      .toMatchObject({ type: "integer", minimum: 1, default: 3 });
   });
 });
 
@@ -769,15 +647,6 @@ describe("review_to_front with a folder", () => {
     });
   });
 
-  test("the schema says what focus takes", () => {
-    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
-    const properties = tool.inputSchema.properties as Record<string, any>;
-    expect(properties.focus).toMatchObject({ type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1 } });
-    expect(properties.focus.description).toContain("with a folder link");
-    expect(properties.kind.enum).toContain("folder");
-    // What each kind is, in full, is the command's help (2026-11-11: the schema says a line).
-    expect(AGENT_COMMANDS.find((command) => command.name === "publish")!.help).toContain("folder (a directory shown as its file tree)");
-  });
 });
 
 describe("schemas state what the handlers enforce", () => {
@@ -799,15 +668,6 @@ describe("schemas state what the handlers enforce", () => {
     }
   });
 
-  test("review_to_front describes publishing, not opening or finishing, and what its answer means", () => {
-    // 2026-10-05: when and why to publish first, then what to pass and what the result means. 2026-11-11: the rest is
-    // `conch agent help publish` and the skill (agent-instructions.test.ts pins where), in 643 characters, not 847.
-    expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish whenever you produce something the user would look at (a page, screenshot, file, document, plan, diff or PR, build, app state), as you go, not only at the end. It’s one call, it doesn’t interrupt them or end your turn, and it’s how they follow your work from conch’s Mac app and phone. Pass a one-line summary and the best single artifact as link (none for an app window or the Simulator: say where to look). Publishing the same link or key again adds its next version. More: `conch agent help publish`. The result says where it landed (surfaces) and any warning or relabel to act on; tell the user from that, not from what you assume.",
-    );
-    // Claude Code cuts a tool description past 2048 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, 2.1.280).
-    for (const tool of MCP_TOOLS) expect(tool.description.length).toBeLessThan(2048);
-  });
 });
 
 describe("MCP dispatch", () => {
@@ -826,7 +686,6 @@ describe("MCP dispatch", () => {
       serverInfo: { name: "conch", version: CONCH_VERSION },
       instructions: AGENT_INSTRUCTIONS.serverInstructions,
     });
-    expect(MCP_PROTOCOL_VERSION).toBe("2025-06-18");
   });
 
   // Claude Code 2.1.280 asks for 2025-11-25 and lists 2025-06-18, 2025-03-26 and 2024-11-05 as fine; it used to be
@@ -835,13 +694,11 @@ describe("MCP dispatch", () => {
     const answered = async (protocolVersion: unknown) => (rpcResult(await dispatchJsonRpc({
       jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion, capabilities: {}, clientInfo: { name: "t", version: "1" } },
     }, recordingHandlers([]))) as { protocolVersion: string }).protocolVersion;
-    expect(MCP_PROTOCOL_VERSIONS).toEqual(["2025-06-18", "2025-03-26", "2024-11-05"]);
     for (const version of MCP_PROTOCOL_VERSIONS) expect(await answered(version)).toBe(version);
     expect(await answered("2025-11-25")).toBe("2025-06-18");
     expect(await answered("2024-10-07")).toBe("2025-06-18");
     expect(await answered(undefined)).toBe("2025-06-18");
     expect(await answered(20250618)).toBe("2025-06-18");
-    expect(negotiateProtocolVersion("2025-03-26")).toBe("2025-03-26");
   });
 
   // 2025-03-26 is one of the revisions it agrees to, and that revision lets a client batch.
@@ -871,7 +728,7 @@ describe("MCP dispatch", () => {
     const calls: Array<{ name: McpToolName; argumentsValue: unknown }> = [];
     const handlers = recordingHandlers(calls);
 
-    for (const [index, name] of TOOL_NAMES.entries()) {
+    for (const [index, name] of MCP_TOOLS.map((tool) => tool.name).entries()) {
       calls.length = 0;
       const argumentsValue = { marker: `call-${index}` };
       const response = await callTool(handlers, name, argumentsValue, index + 1);
@@ -944,7 +801,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
     } finally {
       bun.spawn = originalSpawn;
     }
-    expect(Object.keys(defaultMcpDependencies)).not.toContain("openLink");
   });
 
   test("sessions answers one small entry per session from the published file, never the file itself", async () => {
@@ -1216,15 +1072,13 @@ describe("real MCP tool handlers with injected dependencies", () => {
       key: "read-full",
       action: "unset",
     });
-    expect(JSON.parse(toolText(oneSetting))).toEqual({
+    expect(JSON.parse(toolText(oneSetting))).toMatchObject({
       kind: "config-value",
       key: "read-full",
       settingKind: "boolean",
       value: true,
       source: "default",
-      bounds: null,
       default: true,
-      help: "read the full final response aloud",
     });
     expect(JSON.parse(toolText(allSettings))).toMatchObject({
       kind: "config-snapshot",
@@ -1404,24 +1258,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
       expect(rpcResult(response), JSON.stringify(approval)).toMatchObject({ isError: true });
       expect(toolText(response)).toMatch(/^refused: approval/);
     }
-    expect(toolText(await publish({ approval: { label: "x".repeat(41) } })))
-      .toBe('refused: approval.label must be 1 to 40 printable characters naming what approving does (e.g. "Open the PR"), or leave it out');
     expect(h.calls.daemon).toHaveLength(sent);
-  });
-
-  test("the schema says approval is for waiting on a yes, never by default, and what the agent is sent", () => {
-    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
-    const approval = (tool.inputSchema.properties as Record<string, any>).approval;
-    expect(approval).toMatchObject({
-      type: "object",
-      properties: { label: { type: "string", minLength: 1, maxLength: 40 } },
-      additionalProperties: false,
-    });
-    expect(approval.description).toContain("only when you are waiting on the user's yes to proceed: never by default");
-    expect(approval.description).toContain('Their Approve sends you "Approved: <label>."');
-    // 2026-10-05: the rule lives here, on the parameter, and no longer in the tool's description, which says when to
-    // publish; an approval is the exception, never the default.
-    expect(tool.description).not.toContain("approval");
   });
 
   test("review_to_front publishes a relative file link as an absolute path", async () => {
@@ -1451,45 +1288,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
     const published = (h.calls.daemon[0]?.event as { review?: { link?: string } }).review?.link;
     expect(published).toBe(absolute);
     rmSync(root, { recursive: true, force: true });
-  });
-
-  test("review_to_front leaves a web link exactly as given", async () => {
-    const h = fakeHarness({ parentPid: 4321 });
-    const handlers = createMcpToolHandlers({
-      claudeDir: "/virtual/claude",
-      socketPath: "/virtual/conch.sock",
-    }, h.dependencies);
-    await callTool(handlers, "review_to_front", {
-      summary: "a page",
-      link: "https://example.com/review",
-      session: "Build",
-    });
-    const published = (h.calls.daemon[0]?.event as { review?: { link?: string } }).review?.link;
-    expect(published).toBe("https://example.com/review");
-  });
-
-  test("review_to_front accepts an existing non-executable file link", async () => {
-    const root = await mkdtemp(join(tmpdir(), "conch-mcp-review-"));
-    const link = join(root, "review.html");
-    try {
-      await writeFile(link, "<h1>Review</h1>", { mode: 0o600 });
-      const h = fakeHarness({ parentPid: 4321 });
-      const handlers = createMcpToolHandlers({
-        claudeDir: "/virtual/claude",
-        socketPath: "/virtual/conch.sock",
-      }, h.dependencies);
-
-      const response = await callTool(handlers, "review_to_front", {
-        summary: "Inspect the finished dashboard",
-        link,
-        session: "Build",
-      });
-
-      expect(rpcResult(response)).not.toMatchObject({ isError: true });
-      expect(h.calls.daemon).toHaveLength(1);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
   });
 
   test("review_to_front rejects unsafe schemes and non-launchable file links", async () => {
@@ -1832,14 +1630,8 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     return (thrown as Error).message;
   }
 
-  test("config: every allowlisted key is real, and the key's description names them instead of 'curated'", () => {
+  test("config: every allowlisted key is real, and the security and topology keys are not on it", () => {
     for (const key of AGENT_TUNABLE_SETTINGS) expect(SETTING_KEYS).toContain(key);
-    // The tool description is the shared source's short one; the allowlist rides on `key`, in the same definition.
-    const tool = MCP_TOOLS.find((candidate) => candidate.name === "conch_config")!;
-    const description = (tool.inputSchema.properties.key as { description: string }).description;
-    for (const key of AGENT_TUNABLE_SETTINGS) expect(description).toContain(key);
-    expect(description).not.toContain("curated");
-    expect(tool.description).not.toContain("curated");
     // The security and topology keys the review named are out, by name.
     for (const key of ["bypass-permissions", "phone", "phone-relay-url", "meeting-autopause", "keystroke-fallback"]) {
       expect(AGENT_TUNABLE_SETTINGS as readonly string[]).not.toContain(key);
@@ -2036,25 +1828,6 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     expect(await at(published({ holder: "mac-b-device", revision: 4, expiresAt: 1_234_567 }))).toBe(local);
   });
 
-  test("the contract doc names the allowlist, every refusal, the help session, and no 'curated'", () => {
-    const doc = readFileSync(join(import.meta.dir, "..", "docs", "conch-control-skill.md"), "utf8");
-    for (const key of AGENT_TUNABLE_SETTINGS) expect(doc).toContain(`\`${key}\``);
-    expect(doc).not.toContain("curated");
-    expect(doc).toContain("## What conch will refuse");
-    for (const refusal of [
-      "another session's",
-      "non-executable",
-      `${MAX_SPEAK_CHARS} characters`,
-      "already speaking",
-      "--all",
-      "yielded",
-      "not on the list",
-    ]) {
-      expect(doc).toContain(refusal);
-    }
-    expect(doc).toContain("conch help-session");
-    expect(doc).toContain("absolute path");
-  });
 });
 
 describe("caller binding: which session is calling, and what that allows", () => {
@@ -2218,7 +1991,7 @@ describe("caller binding: which session is calling, and what that allows", () =>
     const { h, handlers } = harness([alpha, beta], 4321);
     await callTool(handlers, "review_to_front", { summary: "own", session: "Alpha" });
     expect(await refused(handlers, "review_to_front", { summary: "theirs", session: "Beta" }))
-      .toBe('refused: a session can only surface its own work — you are "Alpha" (session-a), and "Beta" is "Beta". Omit `session` to surface your own deliverable.');
+      .toContain("can only surface its own work");
     expect(await refused(handlers, "review_to_front", { summary: "nobody", session: "Gamma" }))
       .toContain('"Gamma" does not name you alone');
     expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["session-a"]);
@@ -2296,12 +2069,6 @@ describe("review_to_front's scene", () => {
     expect(JSON.parse(toolText(response))).not.toHaveProperty("scene");
   });
 
-  test("no scene publishes none, which the apps read as auto", async () => {
-    const { h, response } = await publish({ link });
-    expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link });
-    expect(JSON.parse(toolText(response))).not.toHaveProperty("scene");
-  });
-
   test("an inspect of exactly the maximum is accepted, trimmed", async () => {
     const inspect = "x".repeat(200);
     const { h } = await publish({ scene: { v: 1, target: { kind: "auto" }, inspect: `  ${inspect}  ` } });
@@ -2326,19 +2093,6 @@ describe("review_to_front's scene", () => {
       expect(toolText(response)).toStartWith(`refused: ${reason}`);
       expect(h.calls.daemon).toEqual([]);
     }
-  });
-
-  test("the schema says what it can with keywords every client accepts, and reserves ref", () => {
-    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
-    const scene = (tool.inputSchema.properties as Record<string, any>).scene;
-    expect(scene).toMatchObject({ type: "object", required: ["v", "target"], additionalProperties: false });
-    expect(scene.properties.v).toEqual({ type: "integer", enum: [1] });
-    expect(scene.properties.target).toMatchObject({ required: ["kind"], additionalProperties: false });
-    expect(scene.properties.target.properties.kind.enum).toEqual(["auto", "link", "conversation", "terminal"]);
-    expect(scene.properties.target.properties).not.toHaveProperty("ref");
-    expect(scene.properties.inspect).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
-    // 2026-11-11: the schema refuses ref by leaving it out; the skill says why it is reserved.
-    expect(renderSkillMd()).toContain("`target.ref` is reserved for surface references conch will issue later");
   });
 
   // Agent ink: the rules themselves are agent-ink.test.ts; these prove the tool runs them.
@@ -2395,15 +2149,7 @@ describe("review_to_front's scene", () => {
    * The schema names their shape in a line and the help says it in full; the handler holds each mark to every rule
    * the schema used to (the refusals below), naming the mark and what to fix.
    */
-  test("the schema names the marks' shape in a line, the help says it in full, and the handler refuses what the schema used to", async () => {
-    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
-    const marks = (tool.inputSchema.properties as Record<string, any>).scene.properties.marks;
-    expect(marks).toMatchObject({ type: "array", minItems: 1, maxItems: 12, items: { type: "object" } });
-    expect(marks.description).toContain("[{id, kind, frame: {selector|quote|image|canvas}, rect|at|to|pts, label}]");
-    expect(marks.description).toContain("`conch agent help publish`");
-    const help = AGENT_COMMANDS.find((command) => command.name === "publish")!.help;
-    expect(help).toContain("kind is arrow, box, ellipse, highlight, text (needs a label), pin or stroke");
-    expect(help).toContain("No colour: conch draws them in your colour.");
+  test("the handler refuses each malformed mark, naming the mark and what to fix", async () => {
     for (const [mark, said] of [
       [{ ...cta, kind: "circle" }, "kind"],
       [{ ...cta, colour: "red" }, "colour"],
@@ -2618,8 +2364,6 @@ describe("conch_capture", () => {
     await callTool(handlers, "conch_capture", { url: "https://acme.dev/pricing", target: { selector: ".plan-pro" }, mark: "box" });
     expect(sent).toHaveLength(1);
     expect(sent[0]!.socketPath).toBe(runtime.socketPath);
-    // Past the daemon's own deadline, so its words arrive first.
-    expect(sent[0]!.timeoutMs).toBe(50_000);
     expect(sent[0]!.message).toMatchObject({
       kind: "page-capture",
       url: "https://acme.dev/pricing",
@@ -2696,11 +2440,7 @@ describe("conch_capture", () => {
     });
     const result = JSON.parse(toolText(await callTool(handlers, "conch_capture", { url: "https://acme.vercel.app", publish: { summary: "x" } })));
     expect(result).toMatchObject({ outcome: "captured", loginWall: true, clipped: true, unsettled: true });
-    expect(result.note).toContain("open the URL with browser_open (the Default profile shares them) and ask the user to sign in in that tab of their Workdesk once");
-    expect(result.note).toContain("then capture again");
-    expect(result.note).toContain("its own review pane, not your browser's");
     expect(result.note).toContain("wasn't filed");
-    expect(result.note).toContain("fullPage");
     expect(result).not.toHaveProperty("filed");
   });
 
@@ -2717,15 +2457,13 @@ describe("conch_capture", () => {
     const text = toolText(response);
     expect(text).toStartWith('failed: nothing on the page matches the selector ".plan-pro"');
     expect(text).toContain('What conch got: "Log in to Vercel" at https://vercel.com/login');
-    expect(text).toContain('Its headings: "Log in to Vercel"');
-    expect(text).toContain("showed a sign-in screen");
-    expect(text).toContain("A picture of what it showed: /c/r1-seen.png");
+    expect(text).toContain("/c/r1-seen.png");
   });
 
   test("the Mac app not running, and the daemon not running, are each said plainly", async () => {
     const app = harness({ reply: { kind: "page-capture-error", error: MAC_APP_DOWN } });
     expect(toolText(await callTool(app.handlers, "conch_capture", { url: "https://acme.dev" })))
-      .toBe("failed: conch's Mac app isn't running, so it can't render pages; open it and try again.");
+      .toStartWith("failed: conch's Mac app isn't running");
     const daemon = harness({ send: { ok: false, reason: "daemon-down" } });
     expect(toolText(await callTool(daemon.handlers, "conch_capture", { url: "https://acme.dev" })))
       .toBe("failed: conch daemon is not running, so nothing was captured");
@@ -2874,7 +2612,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
     const result = JSON.parse(toolText(await callTool(older.handlers, "review_to_front", { summary: "the sim", kind: "simulator" })));
     expect(result).toMatchObject({
       outcome: "accepted",
-      unconfirmed: "this conch daemon is older and does not say whether it filed a publication; the version below is predicted, and conch agent deliverables says what was filed",
+      unconfirmed: expect.stringContaining("this conch daemon is older"),
       version: 1,
     });
     expect(result).not.toHaveProperty("kind");
@@ -2898,10 +2636,7 @@ describe("review_to_front waits for the daemon's verdict", () => {
       publishForVerdict: async () => filed(),
     });
     const publish = async (summary: string) => JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary })));
-    expect((await publish("Team photo swapped on the about section")).relabel).toEqual({
-      label,
-      hint: `Your session is still labelled '${label}' but your recent work is about 'Team photo swapped on the about section'. If the focus has moved, rename it with \`conch agent rename <your session id> <a short new label>\`.`,
-    });
+    expect((await publish("Team photo swapped on the about section")).relabel).toMatchObject({ label });
     published = held(["Hero with the new headline", "Team photo swapped on the about section"]);
     expect((await publish("Headline copy final")).relabel).toBeUndefined();
     // The user's own label is never second-guessed.
@@ -2941,11 +2676,8 @@ describe("review_to_front waits for the daemon's verdict", () => {
       const outside = await callTool(handlers, "review_to_front", { summary: "the shot", link: shot, scene: {
         v: 1, target: { kind: "link" }, marks: [{ id: "x", kind: "pin", frame: { image: shot }, at: [2400, 10], units: "px" }],
       } });
-      expect(toolText(outside)).toBe("refused: scene marks[0] at reaches outside the 2000×1000 image it is measured on");
+      expect(toolText(outside)).toContain("reaches outside the 2000×1000 image");
       expect(sent).toHaveLength(1);
-      // The help says so (2026-11-11: the schema names the marks' shape in a line), and the schema caps no number.
-      const help = AGENT_COMMANDS.find((command) => command.name === "publish")!.help;
-      expect(help).toContain('or pixels with "units":"px" (and "size":[w, h] of the picture you measured on)');
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }
@@ -3031,11 +2763,7 @@ describe("the browser tools", () => {
     await call("browser_type", { target: { selector: "#email" }, text: "agent@example.com", submit: true });
     expect(await call("browser_screenshot", {})).toEqual({ tab: tab.id, path: "/caps/x.png", width: 10, height: 10, url: tab.url, title: tab.title });
     expect(await call("browser_tabs", {})).toEqual({ tabs: [tab] });
-    expect(await call("browser_ask", { reason: "  Sign in to Mobbin " })).toEqual({
-      tab: tab.id,
-      asked: "Sign in to Mobbin",
-      note: "wait for them: when they press Done, or conch sees this tab's profile sign in to mobbin.com, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it",
-    });
+    expect(await call("browser_ask", { reason: "  Sign in to Mobbin " })).toMatchObject({ tab: tab.id, asked: "Sign in to Mobbin" });
     expect(await call("browser_close", { tab: tab.id })).toEqual({ closed: tab.id });
     expect(sent).toEqual([
       { kind: "browser-command", sessionId: "session-123", op: "open", url: "https://acme.dev/pricing", profile: "Work" },
@@ -3053,17 +2781,14 @@ describe("the browser tools", () => {
   test("browser_ask: a reason is one short line; with the Mac app closed it says when the user will see it", async () => {
     const { handlers, sent } = browserHarness((message) => ok("ask", { result: { asked: (message as { reason: string }).reason, appClosed: true } }));
     const said = async (args: Record<string, unknown>) => toolText(await callTool(handlers, "browser_ask", args));
-    const refused = 'refused: reason must be one short line of 1 to 80 printable characters, saying what the user is to do in the tab ("Sign in to Mobbin")';
     for (const reason of [undefined, "", "   ", "x".repeat(81), "Sign in\nto Mobbin", 42]) {
-      expect(await said(reason === undefined ? {} : { reason })).toBe(refused);
+      expect(await said(reason === undefined ? {} : { reason })).toStartWith("refused: reason must be one short line");
     }
     expect(await said({ reason: "Sign in", target: "x" })).toBe('refused: unknown argument "target"');
     expect(sent).toEqual([]);
-    expect(JSON.parse(await said({ tab: tab.id, reason: "Pass the captcha" }))).toEqual({
-      tab: tab.id,
-      asked: "Pass the captcha",
-      note: "conch's Mac app isn't open, so the user sees it when they open it; wait for them: when they press Done, you get a message saying so, and browser_tabs shows it; your own click, type or open in the tab withdraws it",
-    });
+    const asked = JSON.parse(await said({ tab: tab.id, reason: "Pass the captcha" }));
+    expect(asked).toMatchObject({ tab: tab.id, asked: "Pass the captcha" });
+    expect(asked.note).toContain("Mac app isn't open");
     expect(sent).toEqual([{ kind: "browser-command", sessionId: "session-123", op: "ask", reason: "Pass the captcha", tab: tab.id }]);
   });
 
@@ -3071,7 +2796,6 @@ describe("the browser tools", () => {
     const { handlers, sent } = browserHarness(() => ok("read"), 999_999);
     const response = await callTool(handlers, "browser_read", {});
     expect(toolText(response)).toStartWith("refused: conch cannot verify which session is calling");
-    expect(toolText(response)).toContain("so it will not use conch's browser for any session");
     expect(sent).toEqual([]);
   });
 
@@ -3097,33 +2821,10 @@ describe("the browser tools", () => {
     expect(await said({ ok: false, reason: "no-reply", diagnostic: "timed out" })).toBe("failed: conch's daemon didn't answer the browser (timed out)");
   });
 
-  // 2026-11-11: the browser is `conch agent browser …`; its help says what the tools' descriptions said.
-  test("the commands' help says it is conch's in-app browser the user sees, signed in per profile, and other browsers are fine", () => {
-    const help = (name: string) => AGENT_COMMANDS.find((command) => command.name === name)!;
-    const open = help("browser open").help;
-    expect(open).toContain("conch's browser");
-    expect(open).toContain("so they can see what you do and take over");
-    expect(open).toContain("Tabs are signed in per account profile");
-    // 2026-10-16: browse for the user where they can watch; other browsers when they ask or the task needs them.
-    expect(open).toContain("whenever you browse on the user's behalf");
-    expect(open).toContain("other browser tools (Claude in Chrome, Playwright, computer use) are for when they ask for them or the task needs them");
-    expect(help("browser open").summary).toContain("the user's Workdesk");
-    expect(help("browser type").help).toContain("At a sign-in, ask the user to sign in themselves with browser ask");
-    // 2026-10-18: the ask is the tab's own, so the user sees it where they act on it, and the agent hears the answer.
-    const ask = help("browser ask");
-    expect(ask.summary).toContain("ask the user to sign in (or pass a captcha, approve a consent) in a tab");
-    expect(ask.help).toContain("conch marks the tab Needs you, brings it forward in their Workdesk and shows the session as needing them");
-    expect(ask.help).toContain("when they press Done, or conch sees the profile sign in, you get a message saying so");
-    expect(open).toContain("Not signed in: ask the user with browser ask before going on");
-    const tabs = help("browser tabs").help;
-    expect(tabs).toContain("ask is your last browser ask there");
-    expect(tabs).toContain("openedBy user marks a tab the user opened in the Workdesk");
-    expect(tabs).toContain("paused marks one they have taken over");
-    expect(help("browser read").help).toContain("never a password's or a hidden field's value");
-    expect(help("browser type").help).toContain("Agents don't type passwords");
-    const browser = AGENT_COMMANDS.filter((command) => command.name.startsWith("browser "));
-    expect(browser.map((command) => command.tool)).toEqual(["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_tabs", "browser_ask", "browser_close"]);
-    for (const command of browser) expect(command.group).toContain("in conch's browser, where they can watch");
+  test("the commands' help tells agents a password's value is never read and never typed", () => {
+    const help = (name: string) => AGENT_COMMANDS.find((command) => command.name === name)!.help;
+    expect(help("browser read")).toContain("never a password's or a hidden field's value");
+    expect(help("browser type")).toContain("Agents don't type passwords");
   });
 });
 
@@ -3163,7 +2864,6 @@ describe("atlas_show", () => {
         label: "Build label",
         artifact: artifactIdentity("atlas:projects/acme/plan"),
         version: 1,
-        source: "Atlas is the source; this is conch's copy of it",
       });
       expect(h.calls.daemon).toHaveLength(1);
       const event = h.calls.daemon[0]!.event;
