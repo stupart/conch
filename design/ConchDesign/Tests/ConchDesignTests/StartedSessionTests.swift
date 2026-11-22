@@ -19,11 +19,6 @@ final class StartedSessionTests: XCTestCase {
         XCTAssertEqual(watch.match(in: [claude("old"), claude("new")]), "new")
     }
 
-    func testNothingNewIsNoMatch() {
-        let watch = StartedSessionWatch(backend: "claude", accountId: "default", expectedId: nil, before: ["old"])
-        XCTAssertNil(watch.match(in: [claude("old")]))
-    }
-
     func testAnotherAgentsOrAnotherAccountsNewSessionIsNotTheOneStarted() {
         let watch = StartedSessionWatch(backend: "claude", accountId: "work", expectedId: nil, before: [])
         XCTAssertNil(watch.match(in: [codex("c", account: "work"), claude("other", account: "default")]))

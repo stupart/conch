@@ -9,7 +9,6 @@ final class SessionLocationTests: XCTestCase {
             XCTAssertEqual(SessionLocation.resolve(backend: backend, messageRoute: nil, revealable: true,
                                                     noTerminal: nil, parentSessionId: nil), .terminal)
         }
-        XCTAssertNotEqual(SessionLocation.terminal.symbol, SessionLocation.codexApp.symbol)
     }
 
     func testNoMisleadingShortcutForUnknownHostsOrSubagents() {

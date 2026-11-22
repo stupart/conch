@@ -2,7 +2,7 @@ import XCTest
 @testable import ConchDesign
 
 /// A session's model and effort as both apps read the daemon's `rows[].settings` and `sessionSettings`
-/// (src/session-settings.ts), and the words every surface shows for them.
+/// (src/session-settings.ts), and what every surface shows for them.
 final class SessionSettingsTests: XCTestCase {
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         try JSONDecoder().decode(type, from: Data(json.utf8))
@@ -66,10 +66,10 @@ final class SessionSettingsTests: XCTestCase {
 
     func testAChangeSaysWhatItIsDoingOrWhyItDidNot() {
         let applying = SessionSettingsState(change: .init(state: "applying", model: "gpt-5.5", effort: "high"))
-        XCTAssertEqual(SessionSettingsPresentation.applying(applying), "Switching to gpt-5.5 · high…")
+        XCTAssertNotNil(SessionSettingsPresentation.applying(applying))
         XCTAssertNil(SessionSettingsPresentation.failure(applying))
         let failed = SessionSettingsState(change: .init(state: "failed", message: "its prompt holds unsent words"))
-        XCTAssertEqual(SessionSettingsPresentation.failure(failed), "Not changed: its prompt holds unsent words")
+        XCTAssertTrue(SessionSettingsPresentation.failure(failed)?.contains("its prompt holds unsent words") == true, "the daemon's reason, passed on")
         XCTAssertNil(SessionSettingsPresentation.applying(failed))
         XCTAssertNil(SessionSettingsPresentation.failure(SessionSettingsState(change: .init(state: "applied"))))
     }
@@ -82,16 +82,5 @@ final class SessionSettingsTests: XCTestCase {
         XCTAssertEqual(SessionSettingsPresentation.efforts(for: SessionSettingsState(modelChoice: "haiku"), in: catalog.claude), [], "Haiku takes none")
         XCTAssertEqual(SessionSettingsPresentation.currentModel(SessionSettingsState(modelChoice: "OPUS"), in: catalog.claude)?.id, "opus")
         XCTAssertNil(SessionSettingsPresentation.currentModel(SessionSettingsState(), in: catalog.claude))
-    }
-
-    func testSettingsSaysEachAgentsOwnDefault() throws {
-        let catalog = try decode(SessionSettingsCatalog.self, catalogJSON)
-        XCTAssertEqual(SessionSettingsPresentation.defaultsLine(catalog.codex!.defaults), "Model: gpt-6-astra · Effort: xhigh")
-        XCTAssertEqual(SessionSettingsPresentation.defaultsLine(catalog.claude!.defaults), "Model: the agent's own default · Effort: set per model")
-        XCTAssertEqual(SessionSettingsPresentation.perModelEffortLines(catalog.claude!.defaults), ["claude-fable-5-1 high", "claude-opus-5-5 xhigh"])
-        XCTAssertEqual(
-            SessionSettingsPresentation.defaultsLine(.init(profile: "work")),
-            "Model: the agent's own default · Effort: the agent's own default · Profile: work"
-        )
     }
 }

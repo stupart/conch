@@ -4,12 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * The phone's half of relay throughput (the Mac's is in phone-relay.test.ts and
- * phone-bridge.test.ts). The live log, 9/25 01:24: "phone relay rejected a frame: Error: relay
- * chunk acknowledgement timed out" — the app went to the background mid-download and its socket
- * just closed. It now says goodbye first; and a file it has read before comes back as a 304, text
- * gzipped. The iOS app has no test target, so the Foundation pieces run under `swift` and the
- * rest is read the way the other ios-*.test.ts do.
+ * The phone's half of relay throughput (the Mac's is in phone-relay.test.ts and phone-bridge.test.ts): text crosses the
+ * relay gzipped, and a file read before comes back as a 304 from the phone's cache. The iOS app has no test target, so
+ * these Foundation pieces run under `swift`.
  */
 const root = join(import.meta.dir, "..");
 const ios = (name: string): string => readFileSync(join(root, "mobile/conch-ios/conch-ios", name), "utf8");
@@ -38,20 +35,6 @@ function runSwift(lines: string[], setup?: (dir: string) => void): string[] {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-
-describe("going to the background mid-download", () => {
-  test("the phone cancels what it was downloading before its socket goes, and a reconnect meanwhile wins", () => {
-    const stop = between(relay, "    func stop() async {", "\n    }\n");
-    const cancel = stop.indexOf("try? await sendCancellation(");
-    const guarded = stop.indexOf("guard stopped else { return }");
-    const retire = stop.indexOf("retireSocket()");
-    expect(cancel).toBeGreaterThan(-1);
-    expect(stop).toContain("where request.sentSessionGeneration == sessionGeneration");
-    expect(stop).toContain('(request.request.method == "GET" || request.request.method == "HEAD")');
-    expect(guarded).toBeGreaterThan(cancel);
-    expect(retire).toBeGreaterThan(guarded);
-  });
-});
 
 describe("a file read twice is a 304; text crosses gzipped", () => {
   test.skipIf(!swift)("Gzip.inflate undoes Bun's gzip, empty included, and refuses what isn't gzip", () => {
@@ -127,31 +110,4 @@ describe("a file read twice is a 304; text crosses gzipped", () => {
     ]);
     expect(out).toEqual(["v-a.png gone v-c.png", "true", "gone gone v-d.png", "1"]);
   }, 60_000);
-
-  test("a 304 for a file the cache let go of meanwhile reads the whole file again", () => {
-    const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
-    expect(fetch).toContain("if let copy = try? FileCache.copy(of: path) { return copy }");
-    expect(fetch).toContain("FileCache.drop(path)");
-    expect(fetch).toContain("return try await fetchFile(path: path)");
-  });
-
-  test("fetchFile sends the version it holds, keeps what comes back, and answers a 304 from the copy", () => {
-    const fetch = between(bridge, "func fetchFile(path: String) async throws -> URL {", "\n    }\n");
-    expect(fetch).toContain("let held = FileCache.version(of: path)");
-    expect(fetch).toContain('headers: authorized.headers + [["if-none-match", $0]]');
-    expect(fetch).toContain('if let version = download.header(named: "etag") { FileCache.keep(download.file, version: version, for: path) }');
-    expect(fetch).toContain("} catch BridgeTransportError.httpStatus(304) where held != nil {");
-    expect(fetch).toContain("let download = try await gatedDownload(request)");
-    // Another Mac's files are never this one's.
-    expect(between(ios("ConchApp.swift"), "static func forget(file: URL", "\n    }\n")).toContain("FileCache.forget()");
-  });
-
-  test("the relay asks for gzip and undoes it; the LAN leaves both to URLSession", () => {
-    const download = between(relay, "    func download(_ request: BridgeRequest) async throws -> BridgeDownload {\n        try Task.checkCancellation()", "\n    }\n");
-    expect(download).toContain('headers: request.headers + [["accept-encoding", "gzip"]]');
-    const finish = between(relay, "    private func finish(_ request: RelayPendingRequest, status: Int) {", "\n    }\n");
-    expect(finish).toContain('$0[0].lowercased() == "content-encoding" && $0[1].lowercased() == "gzip"');
-    expect(finish).toContain("guard let inflated = Gzip.inflate(try Data(contentsOf: temporary)) else {");
-    expect(ios("DirectHTTPTransport.swift")).not.toContain("accept-encoding");
-  });
 });

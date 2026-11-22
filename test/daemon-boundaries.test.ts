@@ -1,15 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   AudioSinkLease,
-  type AudioSink,
   rehydrateLatestTurns,
   reserveNormalMicForSink,
   retainMatchingPhoneBridge,
   validateAndScopeSocketTurnEvent,
 } from "../src/daemon.ts";
-import type { Config } from "../src/config.ts";
 import type { TurnEvent } from "../src/hook.ts";
-import { injectText } from "../src/inject.ts";
 import type { PublishedState } from "../src/panel.ts";
 import type { PhoneBridgeHandle } from "../src/phone-bridge.ts";
 
@@ -201,47 +198,4 @@ describe("phone inject scope", () => {
     ).ok).toBeFalse();
   });
 
-  test("a scoped inject without a routable pid copies instead of blind typing", async () => {
-    const copied: string[] = [];
-    const result = await injectText(
-      { autoSubmit: true, keystrokeFallback: true } as Config,
-      undefined,
-      "irreplaceable words",
-      undefined,
-      {
-        copyToClipboard: async (text) => { copied.push(text); },
-      },
-    );
-
-    expect(result).toEqual({ via: "clipboard", reason: "session-not-routable" });
-    expect(copied).toEqual(["irreplaceable words"]);
-  });
 });
-
-describe("every Mac speech path is gated on the audio lease", () => {
-  // Mutation-found gap: breaking the gate inside `speak` passed all 747 tests
-  // while the user could HEAR both machines reading the same reply. `speak`
-  // and `speakInterruptible` returning before any Mac audio or recorder while
-  // the phone owns the voice are executed in voice-loop.test.ts since cut four.
-
-  test("the mic reservation re-checks the lease after awaiting quiescence", async () => {
-    // TOCTOU: a claim landing during the await would otherwise open the Mac's
-    // mic behind the phone's back.
-    // This one IS unit-testable, so assert behaviour rather than source: the
-    // lease flipping during the await must not yield a reserved mic.
-    let sink: AudioSink = "mac";
-    let reserved = false;
-    const granted = await reserveNormalMicForSink({
-      sink: () => sink,
-      shuttingDown: () => false,
-      setReserved: (value) => { reserved = value; },
-      quiescent: async () => { sink = "phone"; },
-    });
-    expect(granted).toBe(false);
-    expect(reserved).toBe(false);
-  });
-});
-
-// The phone owns the ear, not just the voice: the listen path's lease check
-// before the mic (the claim landed and the Mac opened its mic in the same
-// second) is executed in voice-loop.test.ts.

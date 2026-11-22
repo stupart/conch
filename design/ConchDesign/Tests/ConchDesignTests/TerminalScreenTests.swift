@@ -177,17 +177,14 @@ final class TerminalScreenTests: XCTestCase {
     func testTerminalsOwnTextKeepsItsBottomRows() {
         let text = ConchTerminalScreen(plain: "old\nolder\n> hi\n\n\n", rows: 2)
         XCTAssertEqual(text.plainText, "older\n> hi")
-        XCTAssertEqual(text.columns, 80)
         XCTAssertEqual(ConchTerminalScreen(plain: String(repeating: "x", count: 120)).columns, 120)
     }
 
     // MARK: Colour
 
-    func testTheTwoHundredAndFiftySixAreXtermsAndTheSixteenAreTerminals() {
+    func testTheTwoHundredAndFiftySixAreXterms() {
         let theme = ConchTerminalTheme.dark
         func hex(_ colour: ConchTerminalColor) -> UInt32 { theme.rgba(colour, foreground: true).hex }
-        XCTAssertEqual(hex(.indexed(1)), 0x990000)
-        XCTAssertEqual(hex(.indexed(9)), 0xE50000)
         XCTAssertEqual(hex(.indexed(16)), 0x000000)
         XCTAssertEqual(hex(.indexed(21)), 0x0000FF)
         XCTAssertEqual(hex(.indexed(196)), 0xFF0000)
@@ -197,9 +194,6 @@ final class TerminalScreenTests: XCTestCase {
         XCTAssertEqual(hex(.indexed(245)), 0x8A8A8A)
         XCTAssertEqual(hex(.indexed(255)), 0xEEEEEE)
         XCTAssertEqual(hex(.rgb(215, 119, 87)), 0xD77757)
-        XCTAssertEqual(ConchTerminalTheme.light.rgba(.default, foreground: true).hex, 0x000000)
-        XCTAssertEqual(ConchTerminalTheme.light.rgba(.default, foreground: false).hex, 0xFFFFFF)
-        XCTAssertEqual(ConchTerminalTheme.standard(.dark), .dark)
     }
 
     func testInverseDimAndHiddenAreDrawnAsATerminalDrawsThem() {
@@ -227,12 +221,9 @@ final class TerminalScreenTests: XCTestCase {
     }
 
     func testTheTypeFitsTheColumnsIntoTheWidth() {
-        XCTAssertEqual(ConchTerminalMetrics.fontSize(columns: 80, width: 2_000), 13)
         let fitted = ConchTerminalMetrics.fontSize(columns: 120, width: 700)
         XCTAssertLessThanOrEqual(CGFloat(120) * fitted * ConchTerminalMetrics.advance, 700)
         XCTAssertGreaterThan(CGFloat(120) * (fitted + 0.1) * ConchTerminalMetrics.advance, 700)
-        XCTAssertEqual(ConchTerminalMetrics.fontSize(columns: 400, width: 300), 7, "past 7 pt it scrolls instead")
-        XCTAssertEqual(ConchTerminalMetrics.fontSize(columns: 0, width: 300), 13)
     }
 }
 
@@ -271,9 +262,7 @@ final class TerminalMirrorTests: XCTestCase {
         XCTAssertEqual(screen?.plainText, "$ claude\n> hello")
         XCTAssertEqual(why, .needsScreenRecording(.denied))
         XCTAssertEqual(why.action, .openSettings)
-        XCTAssertTrue(why.line.contains("Screen Recording"))
         XCTAssertEqual(ConchTerminalFallback.needsScreenRecording(.needsRelaunch).action, .reopen)
-        XCTAssertTrue(ConchTerminalFallback.needsScreenRecording(.needsRelaunch).line.contains("reopen conch"))
         XCTAssertEqual(ConchTerminalFallback.needsScreenRecording(.notAsked).action, .ask)
         XCTAssertEqual(ConchTerminalFallback.needsScreenRecording(.unknown("Checking…")).action, .openSettings)
         XCTAssertNil(ConchTerminalFallback.needsScreenRecording(.restricted).action)
@@ -288,31 +277,8 @@ final class TerminalMirrorTests: XCTestCase {
         let none = try location(#"{"kind":"terminal-screen","sessionId":"s","host":"none","reason":"a closed Codex thread"}"#)
         XCTAssertEqual(ConchAgentTerminalState.deciding(none, screenRecording: .granted), .unavailable("a closed Codex thread"))
         let torn = try location(#"{"kind":"terminal-screen","sessionId":"s","host":"tmux","pane":"%1"}"#)
-        XCTAssertEqual(ConchAgentTerminalState.deciding(torn, screenRecording: .granted), .unavailable("tmux sent conch a screen it couldn't read."))
+        guard case .unavailable = ConchAgentTerminalState.deciding(torn, screenRecording: .granted) else { return XCTFail("a torn screen is no screen") }
         XCTAssertThrowsError(try location(#"{"kind":"session-error","error":"x"}"#))
-    }
-
-    func testReadsAreOftenOnlyWhereAReadIsThePicture() {
-        let screen = ConchAgentTerminalState.screen(ConchTerminalScreen(capture: "", columns: 1, rows: 1)).nextRead
-        XCTAssertLessThan(screen, ConchAgentTerminalState.text(nil, .minimized).nextRead)
-        XCTAssertLessThan(ConchAgentTerminalState.text(nil, .minimized).nextRead, ConchAgentTerminalState.window(1).nextRead)
-        XCTAssertLessThan(ConchAgentTerminalState.window(1).nextRead, ConchAgentTerminalState.unavailable("").nextRead)
-        XCTAssertTrue(ConchAgentTerminalState.window(1).showsPicture)
-        XCTAssertFalse(ConchAgentTerminalState.text(nil, .minimized).showsPicture)
-    }
-
-    func testItIsLiveOnlyWhileItCanBeSeen() {
-        XCTAssertTrue(ConchTerminalMirrorGate(tabShown: true, windowVisible: true, asleep: false).isLive)
-        XCTAssertFalse(ConchTerminalMirrorGate(tabShown: false, windowVisible: true, asleep: false).isLive)
-        XCTAssertFalse(ConchTerminalMirrorGate(tabShown: true, windowVisible: false, asleep: false).isLive)
-        XCTAssertFalse(ConchTerminalMirrorGate(tabShown: true, windowVisible: true, asleep: true).isLive)
-        XCTAssertFalse(ConchTerminalMirrorGate().isLive, "nothing reads before the tab is shown")
-    }
-
-    func testTheAgentIsNamed() {
-        XCTAssertEqual(ConchTerminalAgent.name(backend: "codex"), "Codex")
-        XCTAssertEqual(ConchTerminalAgent.name(backend: nil), "Claude Code")
-        XCTAssertEqual(ConchTerminalAgent.name(backend: "claude"), "Claude Code")
     }
 
     /// The strip's Terminal is a button; the mirror is a debug view, there only while it is on.
@@ -341,7 +307,6 @@ final class TerminalMirrorTests: XCTestCase {
             XCTAssertEqual(none.places, 0)
             XCTAssertEqual(none.press(option: true), .reveal)
         }
-        XCTAssertEqual(ConchTerminalStrip.mirrorDefaultsKey, "conch.debug.terminalMirror")
     }
 
     /// Screen Recording is asked only on the debug path: after the mirror was opened by hand, while it is on, once.

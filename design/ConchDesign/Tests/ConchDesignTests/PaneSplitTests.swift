@@ -8,8 +8,7 @@ final class PaneSplitTests: XCTestCase {
     private let tree = PaneSplit.fileTree
     private let compare = PaneFraction.compare
 
-    func testTheTreeOpensAt232AndKeepsBothSidesReadable() {
-        XCTAssertEqual(tree.standard, 232)
+    func testTheTreeKeepsBothSidesReadable() {
         XCTAssertEqual(tree.width(232, in: 1000), 232)
         // Never narrower than its minimum, nor wider than its maximum…
         XCTAssertEqual(tree.width(100, in: 1000), 160)

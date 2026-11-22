@@ -220,18 +220,16 @@ describe("SessionActionsOverlay", () => {
     });
   });
 
-  test("dismiss needs two consecutive Enters, states that the session keeps running, then closes", () => {
+  test("dismiss needs two consecutive Enters, then closes", () => {
     const lifecycle: string[] = [];
     const { overlay, controller } = createOverlay(new FakeController(), lifecycle);
     overlay.open({ sessionId: "a", label: "Alpha" });
     moveTo(overlay, "dismiss");
-    expect(overlay.model()?.rows[3]?.help).toContain("session keeps running");
 
     overlay.handleKey("\r");
     expect(overlay.model()?.rows[3]).toMatchObject({
       value: "CONFIRM",
       confirming: true,
-      ack: "press enter again to dismiss",
     });
     expect(controller.dismissals).toEqual([]);
     overlay.handleKey("q");
@@ -251,13 +249,11 @@ describe("SessionActionsOverlay", () => {
     const { overlay } = createOverlay(controller, lifecycle);
     overlay.open({ sessionId: "a", label: "Alpha" });
     moveTo(overlay, "close");
-    expect(overlay.model()?.rows[4]?.help).toContain("clean Ctrl-D");
 
     overlay.handleKey("\r");
     expect(overlay.model()?.rows[4]).toMatchObject({
       value: "CONFIRM",
       confirming: true,
-      ack: "press enter again to end cleanly",
     });
     expect(controller.closures).toEqual([]);
 

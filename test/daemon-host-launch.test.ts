@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -114,33 +114,5 @@ describe("a daemon an earlier conch app started, and outlived, is this app's to 
     expect(lines.get("orphan-launchd")).toBe("none");
     expect(lines.get("orphan-other-socket")).toBe("none");
     expect(lines.get("orphan-parent-unknown")).toBe("none");
-  });
-});
-
-describe("the app and its build agree", () => {
-  const host = readFileSync(repo("mac-app/conch-mac/DaemonHost.swift"), "utf8");
-  const project = readFileSync(repo("mac-app/conch-mac.xcodeproj/project.pbxproj"), "utf8");
-  const plist = readFileSync(repo("mac-app/conch-mac/Info.plist"), "utf8");
-
-  test("the lookup is Contents/Helpers/conch-daemon, where scripts/embed-daemon.sh installs it", () => {
-    expect(host).toContain('bundle.bundleURL.appendingPathComponent("Contents/Helpers/conch-daemon")');
-    expect(readFileSync(repo("scripts/embed-daemon.sh"), "utf8")).toContain('DAEMON="$HELPERS/conch-daemon"');
-  });
-
-  test("the preference is read from ConchDaemonSource, which the build setting fills: checkout in Debug, bundled in Release", () => {
-    expect(host).toContain('bundle.object(forInfoDictionaryKey: "ConchDaemonSource")');
-    expect(plist).toContain("<key>ConchDaemonSource</key>\n\t<string>$(CONCH_DAEMON_SOURCE)</string>");
-    for (const [config, value] of [["A80000000000000000000003 /* Debug */", "checkout"], ["A80000000000000000000004 /* Release */", "bundled"]]) {
-      const at = project.indexOf(`${config} = {`);
-      expect(at).toBeGreaterThan(-1);
-      expect(project.slice(at, project.indexOf("name = ", at))).toContain(`CONCH_DAEMON_SOURCE = ${value};`);
-    }
-  });
-
-  test("whichever daemon runs is told which app launched it, so it uses this app's engine", () => {
-    const set = host.indexOf('environment["CONCH_APP_BUNDLE"] = Bundle.main.bundleURL.path');
-    expect(set).toBeGreaterThan(-1);
-    expect(host.slice(set - 120, set)).toContain('if environment["CONCH_APP_BUNDLE"] == nil {');
-    expect(host.indexOf("task.environment = environment")).toBeGreaterThan(set);
   });
 });

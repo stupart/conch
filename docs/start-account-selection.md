@@ -41,7 +41,6 @@ on a separate sign-in never switch; retire that profile to have one account
 (claude-accounts.md, `scripts/one-account.ts`): the sheet stops offering it,
 and its conversations resume in Default.
 
-Validation lives in `StartAccountsTests.swift` (availability and reply decoding)
-and `test/start-accounts-ui.test.ts` (both native clients and their wire routing).
+Validation lives in `StartAccountsTests.swift` (availability and reply decoding).
 The design gallery's `start-account` fixtures cover reported usage, an exhausted
 plan and unknown usage in light/dark at Mac and phone widths.

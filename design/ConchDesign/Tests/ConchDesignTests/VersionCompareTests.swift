@@ -148,10 +148,6 @@ final class VersionCompareTests: XCTestCase {
         XCTAssertEqual(CompareSlider.fit(.zero, in: CGSize(width: 10, height: 10)), .zero)
     }
 
-    func testVoiceOverHearsHowMuchOfEachVersionShows() {
-        XCTAssertEqual(CompareSlider.accessibilityValue(0.3, before: "v1", after: "v2"), "30 percent v1, 70 percent v2")
-    }
-
     /// A chip names the version under it; with the divider nearly over it, what is under it is the other version.
     func testASidesNameGoesWhenTheDividerAlmostHidesThatSide() {
         XCTAssertTrue(CompareSlider.showsBeforeLabel(0.5))

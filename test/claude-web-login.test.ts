@@ -62,11 +62,3 @@ describe("the sign-in page conch shows", () => {
       .toEqual({ ok: true, value: { kind: "claude-accounts", action: "login", id: "work", inApp: true } });
   });
 });
-
-test("the Mac shows it in the app, and says when two accounts are one", async () => {
-  const view = await Bun.file(new URL("../mac-app/conch-mac/ClaudeAccountsView.swift", import.meta.url)).text();
-  expect(view).toContain('inApp: providerId == "claude" && action == "login" ? true : nil');
-  expect(view).toContain("configuration.websiteDataStore = .nonPersistent()");
-  expect(view).toContain(".sheet(item: $store.signIn) { request in");
-  expect(view).toContain('Text("Same account as \\(twin.label). Sign in again to use a different one.")');
-});

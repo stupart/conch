@@ -169,7 +169,7 @@ public enum ConchColor {
     public static let idleGlow = ConchColorToken("idleGlow", both: .init(0x7F8CFF))
 
     // The conversation overlay, drawn over whatever is on screen, from the overlay lab's light and dark palettes.
-    // Every text level is held to 4.5:1 on the panel's glass at its worst, over black or white (PanelContrastTests).
+    // Every text level is held to 4.5:1 on the panel's glass at its worst, over black or white (ConchDesignTests).
     public static let overlayText = ConchColorToken("overlayText", .init(0x1D1D1F), .init(0xF5F5F7))
     /// The light value is the dashboard's `textSecondary`. The lab's #6E6E73 measured 1.7 to 3.5 for "You" over a real
     /// screen through the glass.

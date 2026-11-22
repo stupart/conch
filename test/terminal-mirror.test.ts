@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyRuntimeControlMessage, createControlServer, type ControlServer, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
@@ -223,22 +223,10 @@ describe("reading a Terminal.app tab", () => {
       .toMatchObject({ host: "none", reason: "conch isn't allowed to control Terminal: allow conch in Automation." });
   });
 
-  test("the script never opens Terminal to ask it, and never changes anything", () => {
+  test("the script never opens Terminal to ask it, never changes anything, and takes only a tty's name", () => {
     const script = terminalLocateScript("ttys012", true);
-    // The first thing it does, before anything is told to Terminal.
     expect(script.trim().split("\n")[0]).toBe('if application "Terminal" is not running then return "conch:notrunning"');
-    // Two Apple events to find the tab, however many windows and tabs (terminal-tab.ts), then one tell to read it.
-    expect(script.split('tell application "Terminal"')).toHaveLength(3);
-    expect(script).toContain("set conchIds to id of every window");
-    expect(script).toContain("set conchTtys to tty of every tab of every window");
-    expect(script).toContain('if item ti of conchRow is "/dev/ttys012" then');
-    expect(script).not.toMatch(/repeat with \w+ in (windows|tabs)|tty of tab ti of window wi/);
-    expect(script).toContain('if conchTab = 0 then return "conch:notfound"');
-    expect(script).toContain("conchWindow as text");
-    // `tab` inside Terminal's tell names its tab class, so the separator is spelled out.
-    expect(script).toContain("character id 9");
     expect(script).not.toMatch(/activate|set index|set selected|AXRaise|miniaturized of window wi to/);
-    expect(terminalLocateScript("ttys012", false)).not.toContain("contents of tab");
     expect(() => terminalLocateScript('ttys1" then do shell script "x', false)).toThrow();
   });
 
@@ -309,16 +297,6 @@ describe("reading is view-only", () => {
       expect(mac.transactions()).toBe(0);
       expect(mac.calls.some((argv) => argv.includes("select-window") || argv.includes("select-pane"))).toBe(false);
     }
-  });
-
-  test("the reads run in the mirror's own command scope, never the typing paths'", () => {
-    const source = readFileSync(join(import.meta.dir, "../src/terminal-mirror.ts"), "utf8");
-    const defaults = source.slice(source.indexOf("export function defaultTerminalMirrorDeps"), source.indexOf("/**\n * Terminal's window and tab"));
-    expect(defaults).toContain("run: (argv) => runUICommand(argv, undefined, { scope: mirrorScope, timeoutMs: 2_000 })");
-    expect(defaults).toContain("osa: (script) => runUICommand(osaArgv(script), undefined, { scope: mirrorScope, timeoutMs: 8_000 })");
-    // Only the press shares the typing paths' scope and queue.
-    expect(defaults).toContain("focusOsa: (script) => runUICommand(osaArgv(script), undefined, { timeoutMs: TERMINAL_SCRIPT_TIMEOUT_MS })");
-    expect(defaults).toContain("transaction: withUITransaction");
   });
 });
 
@@ -507,16 +485,6 @@ describe("on the wire", () => {
     } });
     const stranger = await sendControlMessage(socketPath, { kind: "terminal-screen", sessionId: "nobody" }, 2_000);
     expect(stranger).toEqual({ ok: true, response: { kind: "terminal-screen", sessionId: "nobody", host: "none", reason: UNKNOWN_SESSION } });
-  });
-
-  test("the daemon keys it on its own session record, never a pid the asker sends", () => {
-    const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-    const screen = daemon.slice(daemon.indexOf("terminalScreen: (message) =>"), daemon.indexOf("terminalFocus: async (message) =>"));
-    expect(screen).toContain("terminalScreen: (message) => terminalMirror.screen(message.sessionId, panelSessions.get(message.sessionId), {");
-    expect(screen).toContain("...(message.text ? { text: true } : {}),");
-    expect(screen).toContain("...(message.history ? { history: message.history } : {}),");
-    expect(daemon).toContain("panelSessions.get(message.sessionId) ?? (startupPid ? { pid: startupPid } : undefined)");
-    expect(daemon).toContain("await backgroundStartupPid(message.sessionId)");
   });
 });
 

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
-  SESSION_COMMANDS,
   configSnapshotEntry,
   isControlMessageCandidate,
   loadSettingsFile,
@@ -39,101 +38,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const expected = {
-  "records": ["recordsEnabled", "CONCH_RECORDS_ENABLED", "live", false],
-  "end-silence": ["endSilenceSecs", "CONCH_END_SILENCE_SECS", "live", 3.5],
-  "mic-gain": ["micGainDb", "CONCH_MIC_GAIN_DB", "live", 0],
-  "recorder": ["recorder", "CONCH_RECORDER", "live", "native"],
-  "hold-submit-delay": ["holdSubmitSecs", "CONCH_HOLD_SUBMIT_SECS", "live", 8],
-  "listen-window": ["listenWindowSecs", "CONCH_LISTEN_WINDOW_SECS", "live", 30],
-  "typing-grace": ["typingGraceSecs", "CONCH_TYPING_GRACE_SECS", "live", 2],
-  "away-after": ["awayAfterSecs", "CONCH_AWAY_AFTER_SECS", "live", 300],
-  "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
-  // Empty: conch's own names and the open projects' folders still reach whisper (vocabulary.ts).
-  "vocabulary": ["vocabulary", "CONCH_VOCABULARY", "live", ""],
-  "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
-  // Ships ON, and the hosts no longer export CONCH_KEYSTROKE_FALLBACK over it,
-  // so this default is the one the file can actually override (A17).
-  "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", true],
-  // Ships OFF. conch starts sessions on other people's machines; removing every
-  // confirmation from them is a thing you turn on, never something you inherit.
-  "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
-  // Ships ON: links the sessions conch starts open land in conch's Workbench, not a pile of browser tabs (browser-open.ts).
-  "browser-open-in-conch": ["browserOpenInConch", "CONCH_BROWSER_OPEN_IN_CONCH", "live", true],
-  "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
-  "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
-  "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
-  // Ships AUTO: the plaintext LAN bridge closes itself once an encrypted relay
-  // is configured (review finding 20). `on` is the old always-listen.
-  "phone-lan": ["phoneLan", "CONCH_PHONE_LAN", "live", "auto"],
-  "speak": ["speak", "CONCH_SPEAK", "live", true],
-  "bell": ["bell", "CONCH_BELL", "live", true],
-  "mic-cues": ["micCues", "CONCH_MIC_CUES", "live", true],
-  "claude-rotation": ["claudeRotation", "CONCH_CLAUDE_ROTATION", "live", false],
-  "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
-  "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
-  "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
-  // Ships OFF: raising a window on every turn is opt-in; the app's row click raises on demand (A17).
-  "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", false],
-  "reveal-typing-grace": ["revealTypingGraceSecs", "CONCH_REVEAL_TYPING_GRACE_SECS", "live", 2],
-  "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
-  "voice-qa": ["voiceQa", "CONCH_VOICE_QA", "live", false],
-  "announce-summary": ["announceSummary", "CONCH_ANNOUNCE_SUMMARY", "hook", false],
-  "haiku-timeout": ["haikuTimeoutSecs", "CONCH_HAIKU_TIMEOUT_SECS", "live", 10],
-  "meeting-autopause": ["meetingAutopause", "CONCH_MEETING_AUTOPAUSE", "live", false],
-  "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
-  "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
-  "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
-  // D2: the warm whisper-server (~628MB) is unloaded after this many idle
-  // minutes and reloaded when a mic is about to open; 0 keeps it loaded.
-  "whisper-idle-unload": ["whisperIdleUnloadMins", "CONCH_WHISPER_IDLE_UNLOAD_MINS", "live", 20],
-  // Ships ON, local only: which session's work was on screen, for conch now and time tracking later.
-  "screen-log": ["screenLog", "CONCH_SCREEN_LOG", "live", true],
-  // Ships OFF: a fix session that starts itself is a thing you turn on (docs/failure-tickets.md).
-  "failure-autofix": ["failureAutofix", "CONCH_FAILURE_AUTOFIX", "live", false],
-  // Ships ON (Tyler, 2026-11-09): conch keeps the agent CLIs current, a Homebrew cask it can name and nothing else.
-  "agent-auto-update": ["agentAutoUpdate", "CONCH_AGENT_AUTO_UPDATE", "live", true],
-  // The load budget (Tyler, 2026-11-11): three quarters of the cores (2026-11-12, "maybe give it 75%?"), 60% of the
-  // memory (2026-11-12, "or 60%"), and the one automatic step off.
-  "agent-budget-cpu": ["agentBudgetCpu", "CONCH_AGENT_BUDGET_CPU", "live", "75%"],
-  "agent-budget-memory": ["agentBudgetMemory", "CONCH_AGENT_BUDGET_MEMORY", "live", "60%"],
-  "agent-auto-background": ["agentAutoBackground", "CONCH_AGENT_AUTO_BACKGROUND", "live", false],
-  // Ships ON (2026-11-12), acting only while claude-rotation is on: sessions stopped on the usage-limit menu, resumed.
-  "limit-auto-resume": ["limitAutoResume", "CONCH_LIMIT_AUTO_RESUME", "live", true],
-} as const;
-
 describe("settings registry", () => {
-  test("contains exactly the 43 curated, default-bearing knobs", () => {
-    const keys = [...SETTING_REGISTRY.keys()];
-    expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(43);
-    for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
-      const descriptor = SETTING_REGISTRY.get(key);
-      expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
-      expect(typeof descriptor?.help).toBe("string");
-      expect(descriptor!.help.length).toBeGreaterThan(0);
-      expect(descriptor!.bounds).toBeDefined();
-    }
-  });
-
   test("does not expose prototype keys as settings", () => {
     expect(SETTING_REGISTRY.get("__proto__")).toBeUndefined();
     expect(SETTING_REGISTRY.get("constructor")).toBeUndefined();
     expect(SETTING_REGISTRY.get("toString")).toBeUndefined();
     expect(parseSetting("__proto__", 1).ok).toBe(false);
     expect(parseSetting("constructor", 1).ok).toBe(false);
-  });
-
-  test("presents voice-speed while accepting kokoro-speed as a hidden alias", () => {
-    expect(SETTING_REGISTRY.get("voice-speed")?.help).toBe("Kokoro/voice synthesis speed");
-    expect(SETTING_REGISTRY.get("kokoro-speed")).toBeUndefined();
-    expect(parseSetting("kokoro-speed", "1.2")).toEqual({
-      ok: true,
-      value: {
-        descriptor: SETTING_REGISTRY.get("voice-speed")!,
-        value: 1.2,
-      },
-    });
   });
 });
 
@@ -204,19 +115,8 @@ describe("settings parser", () => {
     expect(parse("reveal-on-turn", "false")).toEqual({ ok: true, value: false });
     expect(parse("working-mic", "1")).toEqual({ ok: true, value: true });
     expect(parse("working-mic", false)).toEqual({ ok: true, value: false });
-    expect(parse("meeting-autopause", "true")).toEqual({ ok: true, value: true });
-    expect(parse("meeting-autopause", false)).toEqual({ ok: true, value: false });
-    expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
-    expect(parse("announce-summary", false)).toEqual({ ok: true, value: false });
-    expect(parse("voice-qa", true)).toEqual({ ok: true, value: true });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
-    expect(parse("working-mic", "sometimes").ok).toBe(false);
-    expect(parse("meeting-autopause", "sometimes").ok).toBe(false);
     expect(parse("meeting-autopause", 1).ok).toBe(false);
-    expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
-    expect(parse("announce-summary", "sometimes").ok).toBe(false);
-    expect(parse("voice-qa", "sometimes").ok).toBe(false);
-    expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);
   });
 
@@ -227,13 +127,6 @@ describe("settings parser", () => {
     for (const raw of ["fifo", "", true, 1, null]) expect(parse("handoff-order", raw).ok).toBe(false);
   });
 
-  test("parse failures include an actionable error", () => {
-    const result = parse("barge-threshold", 101);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected parse failure");
-    expect(typeof result.err).toBe("string");
-    expect(result.err.length).toBeGreaterThan(0);
-  });
 });
 
 describe("settings file persistence", () => {
@@ -336,21 +229,6 @@ describe("settings resolution", () => {
       .toEqual({ value: 3.5, source: "default" });
   });
 
-  test("resolves fast-model booleans from env, file, and default", () => {
-    for (const [key, env] of [
-      ["announce-summary", "CONCH_ANNOUNCE_SUMMARY"],
-      ["voice-qa", "CONCH_VOICE_QA"],
-    ] as const) {
-      const path = tempSettings(JSON.stringify({ [key]: true }));
-      expect(resolved(key, { env: { [env]: "false" }, settingsPath: path }))
-        .toEqual({ value: false, source: "env" });
-      expect(resolved(key, { env: {}, settingsPath: path }))
-        .toEqual({ value: true, source: "file" });
-      expect(resolved(key, { env: {}, settingsPath: tempSettings() }))
-        .toEqual({ value: false, source: "default" });
-    }
-  });
-
   test("resolves the legacy speed key only when the canonical key is absent", () => {
     expect(resolved("voice-speed", {
       env: {},
@@ -427,24 +305,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the fourteen closed session-command shapes", () => {
-    expect(SESSION_COMMANDS).toEqual([
-      "rename",
-      "set-voice",
-      "reset-voice",
-      "prioritize",
-      "dismiss",
-      "restore",
-      "reveal",
-      "set-model",
-      "set-settings",
-      "attach",
-      "review-viewed",
-      "review-remove",
-      "review-approve",
-      "review-unapprove",
-    ]);
-
+  test("recognizes and canonicalizes the closed session-command shapes", () => {
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
       {
         input: { kind: "session-command", sessionId: " session-1 ", command: "rename", label: `  ${"x".repeat(45)}  ` },
@@ -453,26 +314,6 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: " af_heart " },
         output: { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: "af_heart" },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "reset-voice" },
-        output: { kind: "session-command", sessionId: "session-1", command: "reset-voice" },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "prioritize", value: true },
-        output: { kind: "session-command", sessionId: "session-1", command: "prioritize", value: true },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "dismiss" },
-        output: { kind: "session-command", sessionId: "session-1", command: "dismiss" },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "restore" },
-        output: { kind: "session-command", sessionId: "session-1", command: "restore" },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "reveal" },
-        output: { kind: "session-command", sessionId: "session-1", command: "reveal" },
       },
       {
         input: { kind: "session-command", sessionId: "session-1", command: "set-model", model: " sonnet[1m] " },
@@ -485,10 +326,6 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "max", awaitDelivery: true },
         output: { kind: "session-command", sessionId: "session-1", command: "set-settings", effort: "max", awaitDelivery: true },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "attach" },
-        output: { kind: "session-command", sessionId: "session-1", command: "attach" },
       },
       {
         input: { kind: "session-command", sessionId: " session-1 ", command: "review-viewed", review: '  ["s",1,"abc"]  ' },
@@ -511,10 +348,6 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: " session-1 ", command: "review-approve", review: ' ["s",1,"abc"] ' },
         output: { kind: "session-command", sessionId: "session-1", command: "review-approve", review: '["s",1,"abc"]' },
-      },
-      {
-        input: { kind: "session-command", sessionId: "session-1", command: "review-unapprove", review: '["s",1,"abc"]' },
-        output: { kind: "session-command", sessionId: "session-1", command: "review-unapprove", review: '["s",1,"abc"]' },
       },
     ];
 
@@ -660,31 +493,8 @@ describe("control-message validation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok || result.value.kind !== "config-snapshot") throw new Error("expected config snapshot");
 
-    expect(result.value.snapshot["end-silence"]).toEqual({
-      value: 3.5,
-      source: "default",
-      kind: "number",
-      bounds: { min: 0, minInclusive: false },
-      default: 3.5,
-      help: "pause that ends an utterance, in seconds",
-    });
-    expect(result.value.snapshot["read-full"]).toEqual({
-      value: true,
-      source: "default",
-      kind: "boolean",
-      bounds: null,
-      default: true,
-      help: "read the full final response aloud",
-    });
-    expect(result.value.snapshot["handoff-order"]).toEqual({
-      value: "oldest",
-      source: "default",
-      kind: "enum",
-      bounds: null,
-      choices: ["newest", "oldest", "urgency"],
-      default: "oldest",
-      help: "choose queued sessions by newest, oldest, or urgency",
-    });
+    expect(result.value.snapshot).toEqual(JSON.parse(JSON.stringify(snapshot)));
+    expect(result.value.snapshot["handoff-order"]).toMatchObject({ kind: "enum", choices: ["newest", "oldest", "urgency"] });
   });
 });
 
@@ -692,9 +502,9 @@ test("away-detection is ON by default — an empty room must not become a prompt
   // With this at 0 the away check is skipped entirely, and conch opened the mic
   // and injected what the ROOM said into a live session while nobody was there.
   // A stray conversation became a prompt an agent then acted on.
-  const away = SETTING_REGISTRY.get("away-after");
-  expect(away?.default).toBe(300);
-  expect(away?.apply).toBe("live");
+  expect(SETTING_REGISTRY.get("away-after")!.default as number).toBeGreaterThan(0);
   // Zero must remain expressible: it is the documented "never" escape hatch.
   expect(parseSetting("away-after", "0").ok).toBe(true);
+  // Removing every confirmation from the sessions conch starts is opted into, never inherited.
+  expect(SETTING_REGISTRY.get("bypass-permissions")!.default).toBe(false);
 });

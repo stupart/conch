@@ -10,7 +10,7 @@ import XCTest
 /// under it and SwiftUI walked it all again to find nothing had moved. Offscreen on the app's own window over Tyler's
 /// sessions file, a session's turn ending or starting cost ~115 ms of main thread, ~50 on this clock (the PR's numbers;
 /// the frame clock's share is too timing-bound to hold here). These hold it to ticking, and to stopping where it can't be
-/// seen; test/app-cpu.test.ts holds the window to it.
+/// seen.
 @MainActor
 final class PeriodicClockTests: XCTestCase {
     private final class Seen {

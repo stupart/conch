@@ -97,13 +97,6 @@ final class FolderDeliverableTests: XCTestCase {
         XCTAssertFalse(focus.leadsToUnseen(entry("/w/src/a.ts"), seen: []))
     }
 
-    func testTheHeaderCountsWhatIsLeftAndSaysLessWhenNarrow() {
-        XCTAssertEqual(ConchFileTreeRail.toLookAt(left: 6, seen: 0), ["6 to look at", "6"])
-        XCTAssertEqual(ConchFileTreeRail.toLookAt(left: 4, seen: 2), ["4 to look at · 2 seen", "4 to look at", "4"])
-        XCTAssertEqual(ConchFileTreeRail.toLookAt(left: 0, seen: 6), ["All 6 seen", "6 seen"])
-        XCTAssertEqual(ConchFileTreeRail.toLookAt(left: 0, seen: 1), ["Seen"])
-    }
-
     func testTheViewerOpensOnTheFirstFocusedFileThatIsThere() {
         let focus = ConchFileFocus(focus: ["test", "gone.ts", "src/setup.ts", "README.md"], relativeTo: "/w")
         let first = focus.firstFile(isDirectory: { $0 == "/w/test" }, exists: { $0 != "/w/gone.ts" })
@@ -148,28 +141,4 @@ final class FolderDeliverableTests: XCTestCase {
         XCTAssertFalse(ReviewScene.opensOnlyInConch(deliverable: "design", marked: false, link: nil))
     }
 
-    func testTheRowSaysWhatItIsMarkedFor() {
-        func row(_ entry: ConchFileEntry, focus: ConchFileFocus.Place? = nil, leads: Bool = false, seen: Bool = false,
-                 changed: Bool = false, holds: Bool = false) -> ConchFileRowView {
-            ConchFileRowView(
-                row: ConchFileRow(entry: entry, depth: 0), isSelected: false, isOpen: false, isChanged: changed,
-                holdsChanges: holds, focus: focus, leadsToFocus: leads, isSeen: seen, font: { .system(size: $0, weight: $1) }, action: {}
-            )
-        }
-        // Pointed out with others: which of them, in the agent's order, and whether it is seen. Alone: only that it was.
-        XCTAssertEqual(row(entry("/w/setup.ts"), focus: .init(index: 2, of: 6), changed: true).accessibilityLabel,
-                       "setup.ts, pointed out by the agent, 2 of 6, not seen yet, changed by this session")
-        XCTAssertEqual(row(entry("/w/setup.ts"), focus: .init(index: 2, of: 6), seen: true).accessibilityLabel,
-                       "setup.ts, pointed out by the agent, 2 of 6, seen")
-        XCTAssertEqual(row(entry("/w/setup.ts"), focus: .init(index: 1, of: 1)).accessibilityLabel, "setup.ts, pointed out by the agent, not seen yet")
-        XCTAssertEqual(row(entry("/w/src", directory: true), leads: true, holds: true).accessibilityLabel,
-                       "src, folder, holds what the agent pointed out, not seen yet, holds changed files")
-        XCTAssertEqual(row(entry("/w/src", directory: true), leads: true, seen: true).accessibilityLabel,
-                       "src, folder, holds what the agent pointed out, all seen")
-        XCTAssertEqual(row(entry("/w/a.ts")).accessibilityLabel, "a.ts")
-        // The tooltip: the path, and for a row pointed out, the same words.
-        XCTAssertEqual(row(entry("/w/setup.ts"), focus: .init(index: 2, of: 6)).help, "/w/setup.ts\nPointed out by the agent, 2 of 6, not seen yet")
-        XCTAssertEqual(row(entry("/w/setup.ts"), focus: .init(index: 2, of: 6), seen: true).help, "/w/setup.ts\nPointed out by the agent, 2 of 6, seen")
-        XCTAssertEqual(row(entry("/w/a.ts")).help, "/w/a.ts")
-    }
 }

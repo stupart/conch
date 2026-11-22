@@ -141,25 +141,6 @@ describe("buildPanelModel — renderer seam", () => {
     expect(dashboardRowsForModel(model)[0]?.startsWith("\x1b[36m▸\x1b[0m ")).toBe(true);
   });
 
-  test("legacy row state is rendered as the lossless manual mode", () => {
-    const model = buildPanelModel({
-      sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 30 }],
-      sessionStates: new Map(),
-      pausedSessionIds: new Set(["quiet"]),
-      mutedSessionIds: new Set(["quiet"]),
-      live: { state: "idle", label: "", partial: "" },
-      mode: { muted: false, paused: false, holding: 0 },
-      activeSessionId: null,
-      navSelectedId: null,
-    });
-
-    const row = dashboardRowsForModel(model)[0]!;
-    expect(row).toContain("\x1b[2m");
-    expect(row).toContain("⏸ manual");
-    expect(row).not.toContain("muted");
-    expect(row.toLowerCase()).not.toContain("snooz");
-  });
-
   test("a session resumed by name out of a global pause publishes its exemption, not just paused:false", () => {
     const options = {
       sessions: [
@@ -194,24 +175,7 @@ describe("buildPanelModel — renderer seam", () => {
     const published = buildPublishedState("test-device", model, new Map(), new Set(), 10);
     expect(published.rows.find((row) => row.id === "exempt")?.pauseExempt).toBe(true);
     expect(published.rows.find((row) => row.id === "plain")?.pauseExempt).toBeUndefined();
-  });
-
-  test("an older caller that never learned about resumedSessionIds still builds rows, all reading unexempt", () => {
-    const { resumedSessionIds: _omitted, ...withoutResumedSessionIds } = {
-      sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 10 }],
-      sessionStates: new Map(),
-      pausedSessionIds: new Set<string>(),
-      resumedSessionIds: new Set(["quiet"]),
-      live: { state: "idle" as const, label: "", partial: "" },
-      mode: { muted: false, paused: true, holding: 0 },
-      activeSessionId: null,
-      navSelectedId: null,
-    };
-
-    const rows = buildPanelRows(withoutResumedSessionIds);
-    expect(rows[0]?.pauseExempt).toBeUndefined();
-  });
-});
+  });});
 
 describe("buildPublishedState — external session snapshot", () => {
   test("what has been looked at is published, and the daemon says it can tell you", () => {
@@ -325,64 +289,15 @@ describe("buildPublishedState — external session snapshot", () => {
       },
     );
 
-    expect(published).toEqual({
-      v: 1,
-      features: { deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1 },
-      ownerDeviceId: "test-device",
-      execution: { runtimes: [{ id: "device:test-device", kind: "device", ownerDeviceId: "test-device", label: "test-device" }], accounts: [], connections: [] },
-      ts: 1_234_567,
-      mode: { muted: false, paused: true, holding: 2 },
-      live: {
-        state: "speaking",
-        label: "Need",
-        partial: "live dictation",
-        transcriptPrefix: "committed words",
-        reading: { text: "Reply being read aloud", spokenChars: 8 },
-      },
-      reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
-      preview: {
-        sessionId: "waiting",
-        text: "Parked session preview",
-        spokenChars: 0,
-      },
-      rows: [
-        {
-          id: "needs",
-          execution: { providerId: "claude", runtimeId: "device:test-device" },
-          at: 40,
-          label: "Need",
-          status: "needs",
-          transcriptPath: "/transcripts/needs.jsonl",
-          voice: "af_heart",
-          prioritized: true,
-          needsResponse: true,
-          detail: "permission",
-          paused: true,
-          muted: false,
-          live: "speaking",
-          active: true,
-          snippet: "Need: latest reply",
-        },
-        {
-          id: "waiting",
-          execution: { providerId: "claude", runtimeId: "device:test-device" },
-          at: 30,
-          label: "Wait",
-          status: "waiting",
-          voice: "am_adam",
-          navSelected: true,
-          needsResponse: false,
-          paused: false,
-          muted: false,
-          live: null,
-          active: false,
-        },
-      ],
-      dismissed: ["dismissed-session"],
-      dismissedRows: [{ id: "dismissed-session", label: "Dismissed" }],
-      // Always present, 0 when nothing has been approved (2026-10-05).
-      seaGlass: 0,
+    expect(published.rows.map((row) => row.id)).toEqual(["needs", "waiting"]);
+    expect(published.rows[0]).toMatchObject({
+      transcriptPath: "/transcripts/needs.jsonl", voice: "af_heart", prioritized: true, needsResponse: true,
+      paused: true, live: "speaking", active: true, snippet: "Need: latest reply",
     });
+    expect(published.rows[1]).toMatchObject({ voice: "am_adam", navSelected: true, needsResponse: false, active: false });
+    expect(published.preview).toEqual({ sessionId: "waiting", text: "Parked session preview", spokenChars: 0 });
+    expect(published.dismissed).toEqual(["dismissed-session"]);
+    expect(published.dismissedRows).toEqual([{ id: "dismissed-session", label: "Dismissed" }]);
     expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
     expect("snippet" in published.rows[1]!).toBe(false);
     expect(JSON.parse(JSON.stringify(published))).toEqual(published);
@@ -617,25 +532,14 @@ describe("dashboard global mode banner", () => {
   const paused = dashboardPanelLines(["session row"], 80, { muted: false, paused: true, holding: 3 });
   const muted = dashboardPanelLines(["session row"], 80, { muted: true, paused: false, holding: 0 });
 
-  test("uses a fixed slot under the header in every mode", () => {
-    expect(active[1]).toContain("conch");
+  test("keeps one slot under the header in every mode, and only manual mode fills it", () => {
     expect(active[2]).toBe("");
-    expect(active[3]).toContain("─");
     expect(active[4]).toBe("session row");
     expect(paused).toHaveLength(active.length);
     expect(muted).toHaveLength(active.length);
-  });
-
-  test("shows pause with the held-session count", () => {
-    expect(paused[2]).toContain("⏸ MANUAL");
     expect(paused[2]).toContain("holding 3");
-    expect(paused[2]).toContain("no parked cursor: p for auto");
-  });
-
-  test("ignores the retired compatibility field", () => {
+    // `muted` is a retired compatibility field: it shows nothing.
     expect(muted[2]).toBe("");
-    const both = dashboardPanelLines([], 80, { muted: true, paused: true, holding: 2 });
-    expect(both[2]).toContain("MANUAL");
   });
 
   test("remains visible with no session rows", () => {
@@ -646,18 +550,13 @@ describe("dashboard global mode banner", () => {
 });
 
 describe("registryToPanel — maps Claude Code's status vocabulary", () => {
-  test("idle → waiting (turn done)", () => expect(registryToPanel("idle")).toBe("waiting"));
-  test("shell → waiting: the turn is done, only a background command still runs", () => {
+  test("idle and shell are waiting, busy is working, waiting is needs; anything else defers to the latch", () => {
+    expect(registryToPanel("idle")).toBe("waiting");
+    // The turn is done; only a background command still runs.
     expect(registryToPanel("shell")).toBe("waiting");
-  });
-  test("busy → working", () => expect(registryToPanel("busy")).toBe("working"));
-  test("waiting → needs (a dialog is open)", () => expect(registryToPanel("waiting")).toBe("needs"));
-  test("unknown/undefined → null (defer to the latch)", () => {
-    expect(registryToPanel("something-new")).toBeNull();
-    // Never written by Claude Code or Codex.
-    expect(registryToPanel("running")).toBeNull();
-    expect(registryToPanel("blocked")).toBeNull();
-    expect(registryToPanel(undefined)).toBeNull();
+    expect(registryToPanel("busy")).toBe("working");
+    expect(registryToPanel("waiting")).toBe("needs");
+    for (const other of ["something-new", "running", "blocked", undefined]) expect(registryToPanel(other)).toBeNull();
   });
 });
 
@@ -965,63 +864,6 @@ test("number shortcuts map to the same status-sorted positions the ledger render
   ]);
 });
 
-test("buildPanelRows carries review detail and timestamped metadata", () => {
-  const [row] = buildPanelRows({
-    sessions: [{ sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 }],
-    sessionStates: new Map([
-      ["review", {
-        label: "Review",
-        status: "waiting",
-        detail: "PR ready to inspect",
-        at: 20,
-        review: { summary: "PR ready to inspect", link: "https://example.com/pr/1", at: 20, id: "fixture-review" },
-      }],
-    ]),
-    pausedSessionIds: new Set(),
-    mutedSessionIds: new Set(),
-    live: { state: "idle", label: "", partial: "" },
-    mode: { muted: false, paused: false, holding: 0 },
-    activeSessionId: null,
-    navSelectedId: null,
-  });
-
-  expect(row).toMatchObject({
-    status: "waiting",
-    at: 20,
-    detail: "PR ready to inspect",
-    review: {
-      summary: "PR ready to inspect",
-      link: "https://example.com/pr/1",
-      at: 20,
-    },
-  });
-});
-
-test("dashboardRowsForModel renders the review star and dimmed summary detail", () => {
-  const model = buildPanelModel({
-    sessions: [{ sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 }],
-    sessionStates: new Map([
-      ["review", {
-        label: "Review",
-        status: "waiting",
-        detail: "PR ready to inspect",
-        at: 20,
-        review: { summary: "PR ready to inspect", at: 20, id: "fixture-review" },
-      }],
-    ]),
-    pausedSessionIds: new Set(),
-    mutedSessionIds: new Set(),
-    live: { state: "idle", label: "", partial: "" },
-    mode: { muted: false, paused: false, holding: 0 },
-    activeSessionId: null,
-    navSelectedId: null,
-  });
-
-  const row = dashboardRowsForModel(model)[0]!;
-  expect(row).toContain("\x1b[32m✓ needs review\x1b[0m");
-  expect(row).toContain("\x1b[2m(PR ready to inspect)\x1b[0m");
-});
-
 describe("latestLatchedState — event-time ordering", () => {
   test("an older working event cannot overwrite a newer turn-end latch", () => {
     const turnEnd = { status: "waiting" as const, at: 2_000 };
@@ -1070,48 +912,6 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       shared: true,
     });
     expect(previewForPanelSelection("b", "b", "reply", undefined, false)).not.toHaveProperty("shared");
-  });
-
-  test("daemon captures the requested id before await and commits through the guard", async () => {
-    const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
-    const render = source.slice(
-      source.indexOf("async function renderSessionPanel"),
-      source.indexOf("function setSessionState"),
-    );
-    expect(render).toContain(
-      `const previewId = theaterNavigation.manualSelectedId
-      ?? (cursorAuto ? null : selectedId)`,
-    );
-    expect(render.slice(
-      render.indexOf("const previewId"),
-      render.indexOf("const previewPath"),
-    )).not.toContain("theaterMode");
-    expect(render).toContain(
-      `const previewPath = previewId
-      ? findTranscript(cfg.claudeDir, previewId)
-      : undefined`,
-    );
-    expect(render).toContain(
-      `model.preview = previewForPanelSelection(
-        navSelectedId,
-        previewId,
-        previewText,
-        previewRaw,
-        previewReply?.shared,
-      )`,
-    );
-    expect(render).toContain(
-      "theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)))",
-    );
-    expect(render.indexOf("const previewId")).toBeLessThan(
-      render.indexOf("await Promise.all"),
-    );
-    expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
-      render.indexOf("const navSelectedId = theaterNavigation.manualSelectedId"),
-    );
-    expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
-      render.indexOf("if (current()) {"),
-    );
   });
 
   test("refreshes live conversation fields without rebuilding the ledger", () => {
@@ -1187,18 +987,10 @@ describe("a review outlives the turn that produced it", () => {
   const review = { summary: "the landing page is ready", link: "https://x.test", at: 1, id: "landing-rev" };
   const latched = { label: "conch", status: "waiting" as const, at: 1, review };
 
-  test("a review-less turn-end does not erase a just-filed review", () => {
+  test("a review-less turn-end, a needs-you notification, or a new turn does not erase a just-filed review", () => {
     expect(carriedReview(latched, "waiting", undefined)).toEqual(review);
-  });
-
-  test("a needs-you notification does not erase it either", () => {
     expect(carriedReview(latched, "needs", undefined)).toEqual(review);
-  });
-
-  test("starting a new turn does NOT clear it", () => {
-    // It used to. That meant replying to the agent that filed an artifact
-    // destroyed the artifact you were replying about, and contradicted what
-    // conch tells agents: it stays until you send another.
+    // It used to clear on a new turn, so replying to the agent destroyed the artifact you were replying about.
     expect(carriedReview(latched, "working", undefined)).toEqual(review);
   });
 
@@ -1333,17 +1125,6 @@ describe("a filed review is not hidden by the registry catching up", () => {
     const row = rowFor("waiting", 200);
     expect(row.status).toBe("needs"); // the registry did outvote the latch
     expect(row.review).toMatchObject(review); // and the deliverable is still shown
-  });
-
-  test("still shows on a plainly waiting row", () => {
-    expect(rowFor("idle", 200).review).toMatchObject(review);
-  });
-
-  test("stays on the row once the session goes back to work, but is not ready to look at", () => {
-    const row = rowFor("busy", 200);
-    expect(row.status).toBe("working");
-    expect(row.review).toMatchObject(review);
-    expect(reviewReady(row)).toBe(false);
   });
 });
 

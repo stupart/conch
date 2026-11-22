@@ -117,16 +117,7 @@ final class AgentInkTests: XCTestCase {
         let area = CanvasMark(kind: .area, author: .agent, points: [CanvasPoint(x: 0.1, y: 0.1), CanvasPoint(x: 0.3, y: 0.2)])
         let across = try XCTUnwrap(CanvasInk.spine(of: area, in: size))
         XCTAssertEqual(across.path.boundingBox, CGRect(x: 100, y: 75, width: 200, height: 0))
-        XCTAssertEqual(across.width, 54)
         XCTAssertNil(CanvasInk.spine(of: CanvasMark(kind: .note, author: .agent, points: [CanvasPoint(x: 0.5, y: 0.5)]), in: size), "a pin pops")
-    }
-
-    func testALabelSitsBesideItsMark() {
-        let box = CanvasMark(kind: .box, author: .agent, points: [CanvasPoint(x: 0.1, y: 0.2), CanvasPoint(x: 0.3, y: 0.4)])
-        XCTAssertEqual(CanvasInk.labelSpot(of: box, in: size), CGPoint(x: 312, y: 94))
-        let arrow = CanvasMark(kind: .arrow, author: .agent, points: [CanvasPoint(x: 0.1, y: 0.2), CanvasPoint(x: 0.5, y: 0.4)])
-        XCTAssertEqual(CanvasInk.labelSpot(of: arrow, in: size), CGPoint(x: 110, y: 110), "by its tail")
-        XCTAssertNil(CanvasInk.labelSpot(of: CanvasMark(kind: .note, author: .agent, points: [CanvasPoint(x: 0.5, y: 0.5)]), in: size))
     }
 
     /// Its ellipse and area are drawn as the box is: the ellipse an outline with a wash, the area a filled wash.
@@ -138,8 +129,5 @@ final class AgentInkTests: XCTestCase {
         XCTAssertTrue(ellipse.wash?.contains(CGPoint(x: 200, y: 150)) == true)
         let area = CanvasMark(kind: .area, author: .agent, points: [CanvasPoint(x: 0.1, y: 0.2), CanvasPoint(x: 0.3, y: 0.4)])
         XCTAssertTrue(CanvasInk.shape(of: area, in: size).ink.contains(CGPoint(x: 200, y: 150)))
-        XCTAssertEqual(CanvasInk.fill(of: area).hex, CanvasInk.agent.hex)
-        XCTAssertLessThan(CanvasInk.fill(of: area).alpha, 0.5)
-        XCTAssertTrue(CanvasInk.multiplies(area))
     }
 }

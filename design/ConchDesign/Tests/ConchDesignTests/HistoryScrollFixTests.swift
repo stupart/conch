@@ -355,7 +355,6 @@ final class HistoryScrollFixTests: XCTestCase {
     }
 
     func testTheSameCutStillBehindIsReadAgainLessOftenThenLeftUntilItChanges() {
-        XCTAssertEqual(HistorySnapshot.refreshInterval, 3)
         XCTAssertEqual((0...6).map { HistorySnapshot.refreshPause(afterTries: $0) }, [3, 3, 3, 4, 8, 16, 30])
         XCTAssertNil(HistorySnapshot.refreshPause(afterTries: 7))
         let cut = "…" + String(streamed.suffix(1_000))

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registrySnapshot, withStartedBy, type SessionInfo } from "../src/sessions.ts";
@@ -226,62 +226,5 @@ describe("the panel row model nests a started session under its starter", () => 
     expect(painted[0]).toContain("conch");
     expect(painted[0]).not.toContain("↳");
     expect(painted[1]).toContain("↳ codex review");
-  });
-});
-
-describe("the theater, the Mac sidebar and the wire agree", () => {
-  const repo = join(import.meta.dir, "..");
-  const read = (path: string) => readFileSync(join(repo, path), "utf8");
-
-  test("the theater's row lead indents a nested row the same way the footer does", () => {
-    const status = read("src/status.ts");
-    const lead = status.indexOf("function rowLead(row: PanelRowModel): string {");
-    expect(lead).toBeGreaterThan(-1);
-    const body = status.slice(lead, status.indexOf("\n}\n", lead));
-    expect(body).toContain('return `${cursor} ${nestedUnder(row) ? "↳ " : ""}`;');
-  });
-
-  test("the Mac decodes startedBySessionId with a default of none and carries it through a rename", () => {
-    const models = read("mac-app/conch-mac/Models.swift");
-    expect(models).toContain("let startedBySessionId: String?");
-    expect(models).toContain("case startedBySessionId");
-    expect(models).toContain("startedBySessionId: String? = nil");
-    expect(models).toContain("startedBySessionId =\n            try? container.decodeIfPresent(String.self, forKey: .startedBySessionId)");
-    expect(models).toContain("parentSessionId: parentSessionId,\n            startedBySessionId: startedBySessionId");
-  });
-
-  test("the sidebar indents a started session under its starter, names the starter, and keeps the agent badge", () => {
-    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain(".padding(.leading, row.startedBySessionId == nil ? 0 : 30)");
-    // An agent is not a row of its own any more: it is a line in its parent's AgentGroup.
-    expect(dashboard).toContain("let agents = folderRows.filter { $0.parentSessionId == row.id }");
-    // Whitespace-normalised on purpose: this asserts the sidebar LOOKS UP the starter's
-    // CURRENT label, not which column the lookup sits in. The literal it replaces baked in
-    // 44 spaces of indentation and broke the moment the rows moved under a folder header —
-    // a test failing on a change that could not affect what it is testing.
-    expect(dashboard.replace(/\s+/g, " ")).toContain(
-      "startedByLabel: row.startedBySessionId.flatMap { id in state.rows.first(where: { $0.id == id })?.label",
-    );
-
-    const row = dashboard.indexOf("private struct DashboardRow: View {");
-    expect(row).toBeGreaterThan(-1);
-    const body = dashboard.slice(row, dashboard.indexOf("private func pulseForReview()", row));
-    expect(body).toContain("var startedByLabel: String? = nil");
-    // The starter is named on the row's second line, under its name, rather than beside it
-    // where it cost the name its room (SidebarRowText.subtitle; sidebar-names-source.test.ts).
-    // It is in the tooltip and VoiceOver's label too, and the agent badge is still drawn.
-    expect(body).toContain("startedBy: startedByLabel\n        )");
-    expect(body).toContain(".help(SidebarRowText.tooltip(name: row.label, snippet: detailLine, startedBy: startedByLabel))");
-    expect(body).toContain("AgentBadge(backend: row.backend)");
-    const rule = read("design/ConchDesign/Sources/ConchDesign/SidebarRow.swift");
-    expect(rule).toContain('return present(startedBy).map { SecondLine(text: "started by \\($0)", kind: .startedBy) }');
-    // A started session is a session: the composer, close and reveal checks
-    // key on parentSessionId alone and must not have grown a second condition.
-    // Matched without its indentation: the composer moved into a ZStack so it can float over
-  // the transcript, which reindented this line while leaving the rule untouched. What is
-  // pinned is the rule — `parentSessionId` alone decides, and the call it guards is the
-  // composer — not how deeply SwiftUI nests it today.
-  expect(dashboard).toMatch(/if let row = focusedRow, row\.parentSessionId == nil \{\s*floatingComposer\(for: row\)/);
-    expect(dashboard).not.toContain("row.startedBySessionId == nil {\n                        composer(for: row)");
   });
 });

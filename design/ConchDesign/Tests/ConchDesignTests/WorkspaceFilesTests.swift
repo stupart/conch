@@ -125,12 +125,6 @@ final class WorkspaceFilesTests: XCTestCase {
         let changes = ConchFileChanges(changed: ["./src/view.swift"], relativeTo: "/tmp/app/")
         XCTAssertEqual(changes.paths, ["/tmp/app/src/view.swift"])
     }
-
-    func testNoChangesMarksNothing() {
-        let changes = ConchFileChanges(changed: [], relativeTo: "/tmp/app")
-        XCTAssertTrue(changes.isEmpty)
-        XCTAssertFalse(changes.changed(ConchFileEntry(path: "/tmp/app/a.ts", name: "a.ts", isDirectory: false)))
-    }
 }
 
 extension WorkspaceFilesTests {

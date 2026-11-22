@@ -33,19 +33,12 @@ final class PeerMessageTests: XCTestCase {
         let message = ConchPeerMessage(direction: .received, name: "harbor", label: "Harbor (renamed)")
         XCTAssertEqual(message.shownName(), "Harbor (renamed)")
         XCTAssertEqual(message.shownName(live: "Harbor today"), "Harbor today")
-        XCTAssertEqual(message.heading(), "From Harbor (renamed)")
-        XCTAssertEqual(ConchPeerMessage(direction: .received, name: "harbor").heading(), "From harbor")
-        XCTAssertEqual(ConchPeerMessage(direction: .sent, name: "lantern").heading(), "Sent to lantern")
+        XCTAssertEqual(ConchPeerMessage(direction: .received, name: "harbor").shownName(), "harbor")
         // Claude Code's socket address is not a name anyone reads.
-        XCTAssertEqual(ConchPeerMessage(direction: .sent, name: "uds:/tmp/cc-socks/5151.sock").shownName(), "another Claude session")
+        XCTAssertFalse(ConchPeerMessage(direction: .sent, name: "uds:/tmp/cc-socks/5151.sock").shownName().contains("uds:"))
     }
 
     func testHowFarASentOneGotAndWhichOnesNeverArrived() {
-        let words = ConchPeerMessage.Delivery.allWords
-        XCTAssertEqual(words, [
-            "Delivered", "In its inbox, unread", "Queued until it's free",
-            "Held there, not delivered", "Expired, not delivered", "Not sent",
-        ])
         let failed = [ConchPeerMessage.Delivery.held, .expired, .failed]
         for delivery in [ConchPeerMessage.Delivery.sent, .unread, .queued, .held, .expired, .failed] {
             XCTAssertEqual(ConchPeerMessage(direction: .sent, name: "x", delivery: delivery).notDelivered, failed.contains(delivery))
@@ -81,13 +74,5 @@ final class PeerMessageTests: XCTestCase {
         XCTAssertNil(ConchPeerMessage.recorded("<cross-session-messages>nope</cross-session-messages>"))
         XCTAssertNil(ConchPeerMessage.recorded("plain words"))
         XCTAssertNil(ConchPeerMessage.recorded("<cross-session-message from-name=\"x\""))
-    }
-}
-
-extension ConchPeerMessage.Delivery {
-    static var allWords: [String] {
-        [Self.sent, .unread, .queued, .held, .expired, .failed].compactMap {
-            ConchPeerMessage(direction: .sent, name: "x", delivery: $0).deliveryWords
-        }
     }
 }

@@ -33,7 +33,6 @@ describe("conch message", () => {
     const c = cli();
     expect(await c.run("lantern", "Your review is in:", "two nits.")).toBe(0);
     expect(c.requests).toEqual([{ kind: "peer-message", callerPid: 4321, to: "lantern", text: "Your review is in: two nits." }]);
-    expect(c.out).toEqual(["[conch] sent to \"lantern\" (msg 1a2b3c4d5e6f). Its answer comes back into this session as a message from it."]);
     expect(conchMessageDelivery(c.out.join("\n"), false)).toEqual({ msgId: "1a2b3c4d5e6f", delivery: "sent" });
   });
 

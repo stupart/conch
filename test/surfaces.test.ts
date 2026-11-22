@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   isMacAppPing,
   isReviewSurfaces,
@@ -23,8 +21,6 @@ describe("the Mac app, by what the daemon last heard from it", () => {
     expect(presence.surface(10_000, undefined)).toBe("running");
     expect(presence.surface(10_000 + MAC_APP_SEEN_MS, "app")).toBe("running");
     expect(presence.surface(10_000 + MAC_APP_SEEN_MS + 1, "app")).toBe("not-running");
-    // Six of its 5 s health checks: room for a hidden app's stretched timers, short enough to notice it quit.
-    expect(MAC_APP_SEEN_MS).toBe(30_000);
   });
 
   test("showing only while it runs and conch's own window was the last thing seen in front", () => {
@@ -45,16 +41,6 @@ describe("the Mac app, by what the daemon last heard from it", () => {
     expect(isMacAppPing({ kind: "ping", from: "probe" })).toBe(false);
     expect(isMacAppPing({ kind: "ping", from: 1 })).toBe(false);
     expect(isMacAppPing({ kind: "pong" })).toBe(false);
-  });
-
-  test("the app's health check says it is the app, and the daemon hears it from the ping and from screen reports", () => {
-    const health = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "DaemonHealth.swift"), "utf8");
-    expect(health).toContain('"{\\"kind\\":\\"ping\\",\\"from\\":\\"mac-app\\"}\\n"');
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    expect(daemon).toContain("onMacApp: () => macApp.seen(Date.now())");
-    // …and the surfaces it files a publication with are made from it, the phone's live clients, and the voice's gate.
-    expect(daemon).toContain("mac: macApp.surface(now, screen.showing()?.surface.kind)");
-    expect(daemon).toContain("clients: phoneApplication?.clientCount() ?? 0");
   });
 });
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPublishThrottle } from "../src/publish-throttle.ts";
@@ -260,12 +260,4 @@ test("a transcript appended to steadily keeps rendering instead of starving", as
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("the daemon watches live transcripts and releases them on shutdown", () => {
-  const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  expect(daemon).toContain("transcriptWatch.update(");
-  expect(daemon).toContain("transcriptWatch.stop();");
-  // Throttled, never a bare debounce — see the starvation test above.
-  expect(daemon).toContain("createPublishThrottle(() => void renderSessionPanel()");
 });

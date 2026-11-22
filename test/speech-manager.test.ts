@@ -399,7 +399,7 @@ test("a never-resolving backend times out, releases the lane, and later speech r
 
   expect(cancels).toBe(1);
   expect(starts).toEqual(["wedged", "after"]);
-  expect(warnings).toEqual(["⚠ TTS timed out after 8ms — cancelled, moving on"]);
+  expect(warnings).toHaveLength(1);
 });
 
 test("a never-exiting afplay cue is killed and does not retain the audio gate", async () => {

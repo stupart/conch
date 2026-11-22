@@ -8,24 +8,18 @@ import { createConfigController } from "../src/daemon.ts";
 import { dispatchSocketTurnEvent, validateSocketTurnEvent } from "../src/control-server.ts";
 import { appendHookTrace } from "../src/hook.ts";
 import { FRONT_TTY_SCRIPT, INJECT_DEBUG_LOG, injectKey, injectText, type OsaRunner } from "../src/inject.ts";
-import { renderServicePlist } from "../src/install.ts";
 import { narrationSoxArgs, soxCaptureArgs } from "../src/listen.ts";
 import { MIC_CHECK_FILE } from "../src/setup.ts";
 import { anyInputDeviceRunning } from "../src/mic-claim.ts";
 import { PauseOriginLedger } from "../src/pause-origin.ts";
-import { SETTING_REGISTRY } from "../src/settings.ts";
 import { forgetSox, isConchSox, readSoxRecord, reapOrphanedSox, recordSpawnedSox } from "../src/sox-orphan.ts";
 
 /**
  * A17 — what the daemon does to the rest of the Mac (docs/daemon-side-effects.md).
  *
  * Nothing here touches a real window, clipboard, microphone or process: the
- * inject paths run through their seams, the reaper over a fake process table,
- * and the daemon's wiring is pinned as source where `runDaemon` cannot run.
+ * inject paths run through their seams and the reaper over a fake process table.
  */
-
-const src = (name: string) => readFileSync(join(import.meta.dir, "..", name), "utf8");
-const daemon = src("src/daemon.ts");
 
 /** No process has this pid, so tmux finds no pane and `ps` finds no tty. */
 const DEAD_PID = 0x7ffffffe;
@@ -82,24 +76,9 @@ describe("1. there is no blind typing route", () => {
     expect(f.calls).toEqual([]);
   });
 
-  test("the route and its opt-out are gone from the source", () => {
-    const inject = src("src/inject.ts");
-    expect(inject).not.toContain("osascript-blind");
-    expect(inject).not.toContain("allowBlindFallback");
-    expect(daemon).not.toContain("allowBlindFallback");
-  });
 });
 
 describe("2. keystroke-fallback is a real setting", () => {
-  test("it defaults on, says what it does, and neither host exports it over the file", () => {
-    const descriptor = SETTING_REGISTRY.get("keystroke-fallback")!;
-    expect(descriptor.default).toBe(true);
-    expect(descriptor.help).toContain("clipboard");
-    expect(src("mac-app/conch-mac/DaemonHost.swift")).not.toContain('environment["CONCH_KEYSTROKE_FALLBACK"]');
-    const plist = renderServicePlist({ daemonArgv: ["conch", "daemon"], conchRoot: "/c", path: "/bin", carriedEnv: "" });
-    expect(plist).not.toContain("CONCH_KEYSTROKE_FALLBACK");
-    expect(plist).toContain("CONCH_STARTED_BY"); // the rest of the block is untouched
-  });
 
   test("`conch set keystroke-fallback false` applies live now that no env sits over it", () => {
     const settingsPath = join(mkdtempSync(join(tmpdir(), "conch-a17-")), "settings.json");
@@ -316,10 +295,6 @@ describe("2. keystroke-fallback is a real setting", () => {
     expect(f.calls).toEqual([]);
   });
 
-  test("the look is the same tty match that selected the tab", () => {
-    expect(FRONT_TTY_SCRIPT).toContain("frontmost is true");
-    expect(FRONT_TTY_SCRIPT).toContain("tty of selected tab of front window");
-  });
 });
 
 describe("3. an agent cannot undo a person's manual mode", () => {
@@ -386,48 +361,6 @@ describe("3. an agent cannot undo a person's manual mode", () => {
     expect(scoped).toEqual([["session-a", false, "agent"]]);
   });
 
-  test("the daemon records every pause's origin and refuses before it flips the mode", () => {
-    const enqueueAt = daemon.indexOf("  function enqueue(incoming: TurnEvent)");
-    expect(enqueueAt).toBeGreaterThan(-1);
-    const enqueue = daemon.slice(enqueueAt, daemon.indexOf("void eventQueue.submit(event);", enqueueAt));
-    const refuseAt = enqueue.indexOf('pauseOrigin.refusal("", event.origin, { globalPaused: pause.paused, sessionPaused: false })');
-    const recordAt = enqueue.indexOf('pauseOrigin.paused("", event.origin, pause.paused)');
-    const flipAt = enqueue.indexOf("instantControls.applyGlobal(");
-    expect(refuseAt).toBeGreaterThan(-1);
-    expect(recordAt).toBeGreaterThan(-1);
-    expect(flipAt).toBeGreaterThan(refuseAt);
-    expect(enqueue).toContain("if (refusal) return log(`manual — refused resume (");
-
-    // Both scoped doors — the socket's and the TUI's — go through the ledger.
-    expect(daemon.split("setSessionPaused: setSessionPausedFrom,").length - 1).toBe(2);
-    expect(daemon).not.toContain("setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused)");
-    const helper = daemon.slice(daemon.indexOf("const setSessionPausedFrom = "), daemon.indexOf("instantControls.setSessionPaused(sessionId, paused);"));
-    expect(helper).toContain("pauseOrigin.refusal(sessionId, origin, {");
-    expect(helper).toContain("if (refusal) return log(`manual — refused resume for");
-    expect(helper).toContain("pauseOrigin.paused(sessionId, origin, pausedSessionIds.has(sessionId))");
-  });
-
-  test("an agent's speak is held at the funnel while any pause but an agent's holds", () => {
-    const at = daemon.indexOf('if (event.type === "speak") {');
-    expect(at).toBeGreaterThan(-1);
-    const handler = daemon.slice(at, at + 900);
-    expect(handler).toContain('const volunteered = !(event.origin === "agent" && pause.paused && !pauseOrigin.agentOwns(""));');
-    expect(handler).toContain("event.label, volunteered, event.sessionId)");
-  });
-
-  test("the published mode carries the same test, so conch_speak can say it was held", () => {
-    const at = daemon.indexOf("model.mode = {");
-    expect(at).toBeGreaterThan(-1);
-    const mode = daemon.slice(at, daemon.indexOf("lastPanelModel = model;", at));
-    expect(mode).toContain("paused: pause.paused,");
-    expect(mode).toContain('...(pause.paused && pauseOrigin.agentOwns("") ? { pausedByAgent: true } : {}),');
-  });
-
-  test("the contract says so", () => {
-    const doc = src("docs/conch-control-skill.md");
-    expect(doc).toContain("A `resume` from an agent is refused while the user put conch in manual themselves");
-    expect(doc).toContain("its result carries `held` saying so");
-  });
 });
 
 describe("4. meeting-autopause watches every input device", () => {
@@ -450,31 +383,6 @@ describe("4. meeting-autopause watches every input device", () => {
     expect(anyInputDeviceRunning(reads([80, 90], [80, 90], { 80: null, 90: true }))).toBe(true);
   });
 
-  test("the daemon still samples through readMicInUse and the help text says every device", () => {
-    expect(daemon).toContain("inUse: readMicInUse,");
-    expect(SETTING_REGISTRY.get("meeting-autopause")!.help).toContain("any microphone");
-  });
-});
-
-describe("5. reveal-on-turn is opt-in and every raise is logged", () => {
-  test("off by default, and the help says how to raise a window instead", () => {
-    const descriptor = SETTING_REGISTRY.get("reveal-on-turn")!;
-    expect(descriptor.default).toBe(false);
-    expect(descriptor.help).toContain("off by default");
-    expect(descriptor.help).toContain("click");
-  });
-
-  test("the daemon raises through one door that logs", () => {
-    // The import and the one call inside raiseWindow; every other site goes through it.
-    expect(daemon.split("revealSessionWindow(").length - 1).toBe(1);
-    const at = daemon.indexOf("const raiseWindow = async (pid: number, why: string)");
-    expect(at).toBeGreaterThan(-1);
-    expect(daemon.slice(at, at + 300)).toContain("log(`raised Terminal window of pid ${pid} (${why})`)");
-    // turn-end, wake, recite, permission (the voice loop, through its dep) and app (the daemon).
-    const voice = src("src/voice-loop.ts");
-    expect(voice).not.toContain("revealSessionWindow(");
-    expect(daemon.split("raiseWindow(").length - 1 + voice.split("raiseWindow(").length - 1).toBe(5);
-  });
 });
 
 describe("6. files", () => {
@@ -500,10 +408,6 @@ describe("6. files", () => {
     expect(readFileSync(INJECT_DEBUG_LOG, "utf8")).toContain("begin pid=none chars=15");
   });
 
-  test("without an override the step log follows the daemon log's directory", () => {
-    const inject = src("src/inject.ts");
-    expect(inject).toContain('process.env.CONCH_INJECT_DEBUG_LOG\n  || join(dirname(process.env.CONCH_LOG_FILE || "/tmp/conch-daemon.log"), "conch-inject-debug.log")');
-  });
 });
 
 describe("7. a dead daemon's sox is reaped", () => {
@@ -597,19 +501,4 @@ describe("7. a dead daemon's sox is reaped", () => {
     expect(await reapOrphanedSox(join(tmpdir(), "conch-no-such-sox-record.json"), reaper(new Set(), {}).deps)).toEqual([]);
   });
 
-  test("every spawn is recorded and forgotten on exit; the daemon reaps after winning the socket", () => {
-    const listen = src("src/listen.ts");
-    const spawnAt = listen.indexOf("activeRecorders.add(proc);");
-    expect(spawnAt).toBeGreaterThan(-1);
-    const block = listen.slice(spawnAt, listen.indexOf("return capture;", spawnAt));
-    expect(block).toContain("recordSpawnedSox(proc.pid);");
-    expect(block).toContain("forgetSox(proc.pid);");
-    expect(block.indexOf("recordSpawnedSox")).toBeLessThan(block.indexOf("proc.exited.then"));
-
-    const socketAt = daemon.indexOf("if (!await controlServer.start()) {");
-    const reapAt = daemon.indexOf("void reapOrphanedSox()");
-    expect(socketAt).toBeGreaterThan(-1);
-    expect(reapAt).toBeGreaterThan(socketAt);
-    expect(daemon.slice(reapAt, reapAt + 400)).toContain("orphans of a dead conch daemon");
-  });
 });

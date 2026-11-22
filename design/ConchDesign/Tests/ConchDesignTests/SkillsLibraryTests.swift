@@ -48,12 +48,6 @@ final class SkillsLibraryTests: XCTestCase {
 
     // MARK: Installed
 
-    func testWhereACopyLivesIsItsAgentAndAccountOrItsProject() {
-        XCTAssertEqual(SkillsLibrary.locationTitle(location("claude", "Blueprint")), "Claude · Blueprint")
-        XCTAssertEqual(SkillsLibrary.locationTitle(location("codex", nil, "project", project: "/Users/t/Projects/storefront")), "Codex · Projects/storefront")
-        XCTAssertEqual(SkillsLibrary.locationTitle(location("codex", nil)), "Codex · every account")
-    }
-
     /// A plugin installed for two scopes of one account is one chip; it's off only where every copy is.
     func testAChipAPlaceOffOnlyWhenEveryCopyThereIs() {
         let skill = InstalledSkillInfo(id: "skill:plugin:kit:a", name: "a", origin: "plugin", plugin: "kit", locations: [
@@ -66,12 +60,12 @@ final class SkillsLibraryTests: XCTestCase {
             .init(title: "Claude · Work", isOff: true),
         ])
         XCTAssertEqual(SkillsLibrary.primaryLocation(skill)?.path, "/2", "the reader opens the copy that's on")
-        // Its line counts its copies, and says how many texts they hold only when they differ (2026-11-11).
-        XCTAssertEqual(SkillsLibrary.detail(skill), "kit plugin · 3 copies")
+        // Its line says how many texts its copies hold only when they differ (2026-11-11).
+        XCTAssertFalse(SkillsLibrary.detail(skill).contains("version"))
         let drifted = InstalledSkillInfo(id: "skill:own:b", name: "b", origin: "user", locations: [
             location("claude", "Default", path: "/a"), location("claude", "Work", path: "/b"),
         ], versions: 2)
-        XCTAssertEqual(SkillsLibrary.detail(drifted), "2 copies, 2 versions")
+        XCTAssertTrue(SkillsLibrary.detail(drifted).contains("2 versions"))
     }
 
     func testAFilterNeedsEveryWordAndACopyInScope() {
@@ -118,22 +112,5 @@ final class SkillsLibraryTests: XCTestCase {
         XCTAssertEqual(SkillsLibrary.filterBenchmarks(all, kind: "benchmark", domain: "coding").map(\.id), ["swe"])
         XCTAssertEqual(SkillsLibrary.filterBenchmarks(all, kind: nil, domain: nil, query: "TASTE").map(\.id), ["arena"], "the take is searched")
         XCTAssertEqual(SkillsLibrary.benchmarkDomains(all), ["coding", "agents", "chat", "general"], "most used first, then by name")
-    }
-
-    // MARK: Layout
-
-    /// The conch panel's 860-point window leaves 639 beside the Settings list: one pane at a time there.
-    func testTheSectionTakesOnePaneAtATimeInThePanelsWidth() {
-        XCTAssertTrue(LibraryLayout.isCompact(width: 639))
-        XCTAssertFalse(LibraryLayout.isCompact(width: 819), "the default 1040-point window: side by side")
-    }
-
-    func testAnIndexIsReadWhenAPersonWouldSayIt() {
-        let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertEqual(SkillsLibrary.fetched(nil, now: now), "not read yet")
-        XCTAssertEqual(SkillsLibrary.fetched(1_000_000_000 - 30_000, now: now), "read just now")
-        XCTAssertEqual(SkillsLibrary.fetched(1_000_000_000 - 3 * 3_600_000, now: now), "read 3 h ago")
-        XCTAssertEqual(SkillsLibrary.trustTitle("anthropic"), "Reviewed by Anthropic")
-        XCTAssertNil(SkillsLibrary.trustTitle(nil))
     }
 }

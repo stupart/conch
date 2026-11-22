@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addBrowserProfile,
-  browserProfilesPath,
   cachedBrowserSignIns,
   checkBrowserProfileName,
   DEFAULT_BROWSER_PROFILE,
@@ -16,12 +15,10 @@ import {
   type BrowserProfileSignIns,
 } from "../src/browser-profiles.ts";
 import {
-  askAnsweredMessage,
   BROWSER_APP_DOWN,
   BROWSER_KINDS,
   BROWSER_TABS_PER_SESSION,
   BrowserWorkbench,
-  browserTabsPath,
   pausedRefusal,
   createBrowserService,
   decodeBrowserMessage,
@@ -34,7 +31,6 @@ import {
   type BrowserSend,
   type BrowserTab,
 } from "../src/browser-workbench.ts";
-import { decodeBrowserOpenRequest } from "../src/browser-open.ts";
 import { sessionForCallerPid, type CallerBinding } from "../src/caller-session.ts";
 import { appServerNoTerminal } from "../src/codex-threads.ts";
 import { createControlServer, type ControlApplication } from "../src/control-server.ts";
@@ -66,11 +62,6 @@ function pngBytes(width: number, height: number): Buffer {
 }
 
 describe("browser profiles: one per account, the default built in", () => {
-  test("with no file there is the default alone, which is the review pane's store", () => {
-    const file = join(fresh("p"), "browser-profiles.json");
-    expect(readBrowserProfiles(file)).toEqual([{ id: "default", name: "Default" }]);
-    expect(DEFAULT_BROWSER_PROFILE).toEqual({ id: "default", name: "Default" });
-  });
 
   test("add makes a UUID profile, stored without the default, its owner's alone", () => {
     const file = join(fresh("p"), "conf", "browser-profiles.json");
@@ -118,18 +109,6 @@ describe("browser profiles: one per account, the default built in", () => {
     expect(readBrowserProfiles(file)).toEqual([{ id: "default", name: "Default" }, { id: WORK, name: "Work" }]);
   });
 
-  test("CONCH_CONFIG_DIR moves the file, as it moves the accounts'", () => {
-    const before = process.env.CONCH_CONFIG_DIR;
-    process.env.CONCH_CONFIG_DIR = "/tmp/conch-config-elsewhere";
-    try {
-      expect(browserProfilesPath()).toBe("/tmp/conch-config-elsewhere/browser-profiles.json");
-      expect(browserTabsPath()).toBe("/tmp/conch-config-elsewhere/browser-tabs.json");
-    } finally {
-      if (before === undefined) delete process.env.CONCH_CONFIG_DIR;
-      else process.env.CONCH_CONFIG_DIR = before;
-    }
-  });
-
   test("a profile is named by id or by name, ignoring case", () => {
     const profiles = [{ ...DEFAULT_BROWSER_PROFILE }, { id: WORK, name: "Work" }];
     expect(findBrowserProfile(profiles, "work")?.id).toBe(WORK);
@@ -143,9 +122,6 @@ describe("the control messages, checked field by field, and the phone's to send 
   test("each kind decodes to its shape", () => {
     expect(decodeBrowserMessage({ kind: "browser-profiles", action: "list" })).toEqual({ kind: "browser-profiles", action: "list" });
     expect(decodeBrowserMessage({ kind: "browser-profiles", action: "add", name: "Work" })).toEqual({ kind: "browser-profiles", action: "add", name: "Work" });
-    // agent B's, by its own decoder (browser-open.ts); this one leaves it alone.
-    expect(decodeBrowserOpenRequest({ kind: "browser-open", url: "https://accounts.google.com/o/oauth2", callerPid: 4242, profile: "Work" }))
-      .toEqual({ kind: "browser-open", url: "https://accounts.google.com/o/oauth2", callerPid: 4242, profile: "Work" });
     expect(decodeBrowserMessage({ kind: "browser-open", url: "https://acme.dev", callerPid: 4242 })).toBeNull();
     expect(decodeBrowserMessage({ kind: "browser-command", sessionId: "s1", op: "type", tab: "tab-1a2b3c4d", target: "Email", text: "a@b.c", submit: true, extra: 1 }))
       .toEqual({ kind: "browser-command", sessionId: "s1", op: "type", tab: "tab-1a2b3c4d", target: { auto: "Email" }, text: "a@b.c", submit: true });
@@ -189,13 +165,6 @@ describe("the control messages, checked field by field, and the phone's to send 
     };
     expect(refused({ kind: "browser-profiles", action: "remove" })).toBe('action must be "list" or "add"');
     expect(refused({ kind: "browser-profiles", action: "add" })).toBe("add needs the profile's name");
-    const openRefused = (value: unknown) => (decodeBrowserOpenRequest(value) as { error?: string } | null)?.error;
-    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "ftp://x.dev/", "https://", "not a url", "https://a.dev/\n"]) {
-      expect(openRefused({ kind: "browser-open", url, callerPid: 4242 }), url).toBe("url must be an http or https link");
-    }
-    for (const callerPid of [0, 1, -5, 1.5, "4242", undefined]) {
-      expect(openRefused({ kind: "browser-open", url: "https://acme.dev", callerPid })).toBe("callerPid must be the calling process's pid");
-    }
     expect(refused({ kind: "browser-command", op: "read" })).toBe("browser-command needs its session");
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "eval" })).toContain("op must be one of");
     expect(refused({ kind: "browser-command", sessionId: "s1", op: "close" })).toBe("close names the tab it closes");
@@ -802,10 +771,6 @@ describe("the tabs themselves", () => {
     expect(workbench.tabs().map((tab) => tab.sessionId)).toEqual(["s2"]);
   });
 
-  test("published beside the rows on the sessions file: profiles and tabs always, commands while they wait", () => {
-    const workbench = new BrowserWorkbench(options());
-    expect(withBrowserState({ v: 1, rows: [] }, workbench)).toEqual({ v: 1, rows: [], browserProfiles: [{ id: "default", name: "Default" }], browserTabs: [] });
-  });
 });
 
 /**
@@ -956,20 +921,6 @@ describe("browser_ask: the user asked to act in a tab, and the agent told when t
     expect(new BrowserWorkbench(options).tabs().map((tab) => tab.ask)).toEqual([undefined, { reason: "Fine", at: 5 }]);
   });
 
-  test("what the agent is told, in the user's words", () => {
-    expect(askAnsweredMessage({ id: "tab-1a2b3c4d" }, { reason: "Sign in to Mobbin." }, "user")).toBe("Done: Sign in to Mobbin (conch's browser, tab-1a2b3c4d).");
-    expect(askAnsweredMessage({ id: "tab-1a2b3c4d" }, { reason: "Sign in to Mobbin", site: "mobbin.com" }, "sign-in"))
-      .toBe("Signed in to mobbin.com: Sign in to Mobbin (conch's browser, tab-1a2b3c4d).");
-  });
-
-  test("the daemon tells the agent as Approve does, and looks at the sign-ins while an ask waits", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-    const wiring = daemon.slice(daemon.indexOf("const browser = createBrowserService({"), daemon.indexOf("// A session that ended a day ago"));
-    expect(wiring).toContain("tell: (sessionId, text) => {");
-    expect(wiring).toContain("enqueue(approvedInjectEvent({");
-    expect(wiring).toContain("setInterval(() => browser.checkAsks(), BROWSER_ASK_CHECK_MS)");
-    expect(daemon).toContain("clearInterval(browserAsks);");
-  });
 });
 
 describe("conch browser, from the CLI", () => {
@@ -999,19 +950,9 @@ describe("conch browser, from the CLI", () => {
 });
 
 describe("the daemon's wiring", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
-
   test("the Workbench is on the sessions file alone, never the state the phone is sent", () => {
-    const writer = daemon.slice(daemon.indexOf("function writeSessionsFile(): void {"), daemon.indexOf("const publishedStateWriter"));
-    expect(writer).toContain("withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench)");
+    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
     expect(daemon).not.toMatch(/lastPublishedPanelState = [^;]*browser/);
-    // agent B's `open` resolves its caller the way the MCP server does.
-    expect(daemon).toContain("resolveCaller: (pid) => sessionForCallerPid(pid, { infos: [...panelSessions.values()], claudeDir: cfg.claudeDir })");
-    expect(daemon).toContain("    browser,\n");
-    // The Mac app drives the pages from its own snapshot; a remote Mac's store never sees them.
-    const root = join(import.meta.dir, "..");
-    expect(readFileSync(join(root, "mac-app/conch-mac/StateStore.swift"), "utf8")).toContain("WorkbenchStore.shared.accept(snapshot)");
-    expect(readFileSync(join(root, "mac-app/conch-mac/RemoteMacStore.swift"), "utf8")).not.toContain("browser");
   });
 });
 

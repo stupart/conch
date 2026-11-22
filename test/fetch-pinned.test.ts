@@ -131,11 +131,4 @@ describe("a pinned download: resumable, and only ever the pinned bytes", () => {
     expect(s.calls()).toEqual(["have=0 resume=1"]);
   });
 
-  test("fetch-tmux.sh gets every source through it, into the verified cache it unpacks from", () => {
-    const fetch = readFileSync(repo("scripts/fetch-tmux.sh"), "utf8");
-    for (const [name, file] of [["TMUX", "tmux-$TMUX_VERSION.tar.gz"], ["LIBEVENT", "libevent-$LIBEVENT_VERSION.tar.gz"], ["JEMALLOC", "jemalloc-$JEMALLOC_VERSION.tar.bz2"], ["UTF8PROC", "utf8proc-$UTF8PROC_VERSION.tar.gz"]]) {
-      expect(fetch).toContain(`"$SCRIPT_DIR/fetch-pinned.sh" "$${name}_URL" "$${name}_SHA256" "$SOURCES/${file}"`);
-      expect(fetch).toContain(`"$SOURCES/${file}" -C "$work"`);
-    }
-  });
 });

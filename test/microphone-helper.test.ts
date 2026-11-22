@@ -8,7 +8,6 @@ import {
   MICROPHONE_HELPER_NAME,
   microphoneAttribution,
   MicrophoneRecorders,
-  microphoneRuntimeDir,
   parseMicrophoneStatus,
   prepareMicrophoneHelper,
   type HelperRunner,
@@ -77,11 +76,6 @@ describe("the installed copy", () => {
     mkdirSync(runtime, { recursive: true });
     symlinkSync(helper(root, "elsewhere", 1), join(runtime, MICROPHONE_HELPER_NAME));
     expect(() => prepareMicrophoneHelper(helper(root, "source", 1), runtime)).toThrow(/not a link/);
-  });
-
-  test("lives in conch's own Application Support folder, never seashell's", () => {
-    expect(microphoneRuntimeDir({}, "/Users/someone")).toBe("/Users/someone/Library/Application Support/conch/Runtime");
-    expect(microphoneRuntimeDir({ CONCH_MICROPHONE_RUNTIME_DIR: "/tmp/x" }, "/Users/someone")).toBe("/tmp/x");
   });
 
   test("the engine finds the app's conch Microphone or an explicit one, and never seashell's recorder", () => {

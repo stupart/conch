@@ -381,13 +381,3 @@ describe("served only through /file's rule, and published with the review", () =
     expect(after.sessionStates.get("s")?.reviews?.map((one) => one.preview)).toEqual([preview, undefined]);
   });
 });
-
-test("the daemon hands the bridge the requester, which files the snapshot on the held review and republishes", () => {
-  const daemon = require("node:fs").readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8") as string;
-  const wiring = daemon.slice(daemon.indexOf("requestPreview: createPreviewRequester({"), daemon.indexOf("limiter: new PreviewLimiter(),"));
-  expect(wiring).toContain("const next = attachReviewPreview(state?.reviews ?? (state?.review ? [state.review] : undefined), reviewId, preview);");
-  expect(wiring).toContain("ledger.saveReviews();");
-  expect(wiring).toContain("void renderSessionPanel();");
-  // The row's folders, and those its deliverables were filed under (review-roots.ts).
-  expect(wiring).toContain("roots: [row?.cwd, ...(row?.workDirs ?? []), ...reviews.flatMap((one) => one.roots ?? [])]");
-});

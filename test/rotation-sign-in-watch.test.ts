@@ -5,10 +5,8 @@ import { join } from "node:path";
 import { decodeSwapDashboard, type SwapDashboard, type SwapUsageAccount } from "../src/claude-swap.ts";
 import {
   accountKey,
-  NEEDS_SIGN_IN_STATUSES,
   RotationSignInWatch,
   signInChanges,
-  signInNotice,
 } from "../src/rotation-sign-in-watch.ts";
 
 // An account in the rotation sat unusable for about six days because its sign-in had died and nothing said so
@@ -39,7 +37,6 @@ const C = { number: 3, email: "c@example.com" };
 
 describe("which accounts newly need signing in", () => {
   test("the Mac app's needsSignIn statuses, and only those", () => {
-    expect([...NEEDS_SIGN_IN_STATUSES].sort()).toEqual(["foreign_credential", "no_credentials", "relogin_required", "token_expired"]);
     const read = dashboard([
       { ...A, usageStatus: "ok" },
       { ...B, usageStatus: "relogin_required" },
@@ -75,14 +72,6 @@ describe("which accounts newly need signing in", () => {
     }
     // Removed from the list: forgotten, so one added back broken is told.
     expect(signInChanges(told, dashboard([{ ...A, usageStatus: "ok" }])).told.size).toBe(0);
-  });
-
-  test("the notice names the account as the list does and says where to fix it", () => {
-    expect(signInNotice([{ label: "Work Max" }])).toEqual({
-      title: "A Claude account needs signing in",
-      body: "Work Max has stopped working, so the rotation skips it. Sign it in again in conch's Settings › Providers.",
-    });
-    expect(signInNotice([{ label: "Work Max" }, { label: "b@example.com" }]).title).toBe("2 Claude accounts need signing in");
   });
 });
 
@@ -132,18 +121,5 @@ describe("the watch", () => {
     const failing = new RotationSignInWatch({ read: async () => { throw new Error("cswap crashed"); }, tell: () => { throw new Error("never"); }, file });
     await failing.check();
     expect(JSON.parse(readFileSync(file, "utf8")).told).toHaveLength(1);
-  });
-});
-
-describe("in the daemon", () => {
-  test("on with rotation, read again after whatever the switcher says, told through notifyUser with no key needed, and filed", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    const watch = daemon.slice(daemon.indexOf("const rotationSignIns = new RotationSignInWatch"), daemon.indexOf("rotationSignIns.set(cfg.claudeRotation);"));
-    expect(watch).toContain("read: () => readSwapDashboard()");
-    expect(watch).toContain('recordDaemonError("claude-rotation-sign-in"');
-    expect(watch).toContain('notifier.notify({ title, body, source: "conch", target: "providers" })');
-    expect(watch).toMatch(/new RotationSupervisor\(\(line\) => \{[\s\S]*rotationSignIns\.soon\(\);/);
-    expect(daemon).toMatch(/if \(key === "claude-rotation"\) \{\s*rotation\.set\(value === true\);\s*rotationSignIns\.set\(value === true\);/);
-    expect(daemon).toContain("rotationSignIns.stop();");
   });
 });

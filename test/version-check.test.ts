@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -93,23 +93,4 @@ test("a hostile or broken response is never believed", async () => {
   // A throwing fetch (no network, DNS, rate limit) is silence, not a crash.
   const throws = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
   expect(await fetchLatestVersion(50, throws)).toBeNull();
-});
-
-test("the daemon checks once at startup, without blocking or failing", () => {
-  const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  const fn = daemon.slice(daemon.indexOf("function checkForUpdate(): void {"));
-  const body = fn.slice(0, fn.indexOf("\n  }"));
-
-  // A checkout upgrades with git pull, so it is never told to brew upgrade.
-  expect(body).toContain("if (runningFromSource()) return;");
-  // Fire and forget: a version notice must never delay the daemon coming up.
-  expect(body).toContain("void fetchLatestVersion()");
-  expect(body).not.toContain("await fetchLatestVersion()");
-  // The attempt is recorded whether or not it succeeded, so an outage cannot
-  // become a request on every single start.
-  expect(body).toContain("writeVersionCheck(path, { checkedAt: Date.now()");
-  // ...and a known-stale version is still reported between checks.
-  expect(body).toContain("const known = updateNotice(CONCH_VERSION, state?.latest, false)");
-
-  expect(daemon).toContain("checkForUpdate(); // fire and forget");
 });

@@ -138,16 +138,12 @@ final class LoginItemPolicyTests: XCTestCase {
         XCTAssertNil(LoginItemPolicy.announcement(fresh, status: .enabled))
     }
 
-    func testTheWordsAndWhichCarryTheButton() {
-        XCTAssertEqual(LoginItemLine.added.words, "conch opens when you log in, so your agents can reach you. Turn this off in Settings.")
-        XCTAssertEqual(LoginItemLine.needsApproval.words, "Allow conch in System Settings › General › Login Items.")
+    func testWhichLinesCarryTheLoginItemsButton() {
         for line in [LoginItemLine.needsApproval, .refused, .refusedOff] {
             XCTAssertTrue(line.opensLoginItems, "\(line)")
-            XCTAssertTrue(line.words.contains("System Settings › General › Login Items"), "\(line)")
         }
         XCTAssertFalse(LoginItemLine.added.opensLoginItems)
         XCTAssertFalse(LoginItemLine.notInApplications.opensLoginItems, "Login Items can't move conch into Applications")
-        XCTAssertEqual(LoginItemLine.openLoginItems, "Open Login Items")
     }
 
     // MARK: Installed

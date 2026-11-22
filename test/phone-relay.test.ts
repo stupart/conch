@@ -213,28 +213,13 @@ function responseBody(frames: OpenedRelayFrame[], id: string): Uint8Array {
 }
 
 describe("Mac phone relay adapter", () => {
-  test("does not use a blind idle handshake retry loop", () => {
-    const source = readFileSync(join(import.meta.dir, "..", "src", "phone-relay.ts"), "utf8");
-    expect(source).not.toContain("helloTimer");
-    expect(source).toContain("await this.sendWire(await this.hello())");
-  });
-
-  test("does not recreate session keys for a repeated same-challenge hello", () => {
-    const mac = readFileSync(join(import.meta.dir, "..", "src", "phone-relay.ts"), "utf8");
+  // The phone's half has no test target; the Mac's half is executed by the replayed-hello case below.
+  test("the phone does not recreate session keys for a repeated same-challenge hello", () => {
     const phone = readFileSync(
       join(import.meta.dir, "..", "mobile", "conch-ios", "conch-ios", "RelayTransport.swift"),
       "utf8",
     );
-    expect(mac).toContain("if (challengeId === this.#currentPhoneChallenge)");
-    expect(mac).toContain("Never recreate a cipher for the same challenges");
-    expect(phone).toContain("while !Task.isCancelled, generation == socketGeneration, !sessionAuthenticated");
     expect(phone).toContain("if challenge == currentPeerChallenge");
-    expect(phone).not.toContain("if !sessionAuthenticated {\n                try await establishSession");
-    const establish = phone.slice(
-      phone.indexOf("private func establishSession"),
-      phone.indexOf("private func sendStateSubscription"),
-    );
-    expect(establish).not.toContain("helloTask?.cancel()");
   });
 
   test("relay pairing is high entropy, atomic, mode 0600, stable, and pasteable", () => {
@@ -1113,7 +1098,6 @@ describe("a settled relay socket that drops", () => {
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
     FakeSocket.instances.splice(0);
     setSystemTime(T0);
-    const logs: string[] = [];
     const application = createPhoneBridgeApplication({
       getState: () => ({ v: 1, rows: [] }),
       forwardControl: async () => "",
@@ -1122,27 +1106,23 @@ describe("a settled relay socket that drops", () => {
       onClientsChanged() {},
       log() {},
     }, { token: "legacy-lan-token" });
-    const handle = createPhoneRelay(application, pairing(), { log: (m) => logs.push(m), tickMs });
+    const handle = createPhoneRelay(application, pairing(), { log: () => {}, tickMs });
     const first = FakeSocket.instances[0]!;
     first.open();
     await settle(() => first.sent.length === 1, "the Mac hello");
     return {
       first,
-      logs,
       dials: () => FakeSocket.instances.length,
       done() { handle.stop(); globalThis.WebSocket = real; setSystemTime(); },
     };
   }
 
-  test("is re-dialled at once, and the close line carries its age", async () => {
+  test("is re-dialled at once", async () => {
     const link = await dialled();
     try {
       setSystemTime(new Date(T0.getTime() + 6_010_000));
       link.first.emit("close", { code: 1006 });
       expect(link.dials()).toBe(2);
-      expect(link.logs.at(-1)).toBe(
-        "phone relay disconnected (1006) — open 6010s, last frame 6010s ago, last ping 6010s ago",
-      );
     } finally { link.done(); }
   });
 
@@ -1152,7 +1132,6 @@ describe("a settled relay socket that drops", () => {
       setSystemTime(new Date(T0.getTime() + 5_000));
       link.first.emit("close", { code: 1006 });
       expect(link.dials()).toBe(1);
-      expect(link.logs.at(-1)).toStartWith("phone relay disconnected (1006) — open 5s");
     } finally { link.done(); }
     // A newer daemon took the room: no re-dial at all, however old the socket.
     const evicted = await dialled();

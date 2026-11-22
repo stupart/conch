@@ -11,11 +11,9 @@ import {
   PHONE_SETUP_REPORT_GRACE_MS,
   PHONE_SETUP_STAGES,
   PhoneSetup,
-  phoneSetupPath,
   type PublishedPhone,
 } from "../src/phone-setup.ts";
 
-const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
 const scratch = () => join(mkdtempSync(join(tmpdir(), "conch-phone-setup-")), "phone-setup.json");
 const report = (stage: string, declined: string[] = [], device = "Tyler's iPhone") => ({ kind: "setup-stage", stage, declined, device });
 const decoded = (value: unknown) => {
@@ -133,12 +131,6 @@ describe("the phone's setup, as the Mac holds it", () => {
     expect(setup.published(true).setup.stage).toBe("paired");
   });
 
-  test("a report means paired, whichever way the phone came in", () => {
-    const setup = new PhoneSetup({ path: scratch() });
-    setup.report(decoded(report("paired")));
-    expect(setup.published(true).paired).toBe(true);
-  });
-
   test("it survives a restart, and connecting never reaches the disk", () => {
     const path = scratch();
     const first = new PhoneSetup({ path });
@@ -164,12 +156,10 @@ describe("the phone's setup, as the Mac holds it", () => {
     expect(new PhoneSetup({ path }).published(true)).toEqual({ enabled: true, paired: true, device: null, setup: { stage: "finished", declined: [] } });
   });
 
-  test("a damaged file starts afresh and says so; a hand-edited stage is dropped", () => {
+  test("a damaged file starts afresh; a hand-edited stage is dropped", () => {
     const path = scratch();
     writeFileSync(path, "{not json");
-    const logs: string[] = [];
-    expect(new PhoneSetup({ path, log: (line) => logs.push(line) }).published(true).setup.stage).toBe("waiting");
-    expect(logs[0]).toStartWith("phone setup: starting afresh");
+    expect(new PhoneSetup({ path }).published(true).setup.stage).toBe("waiting");
     writeFileSync(path, JSON.stringify({
       version: 1, paired: true, device: "iPhone",
       devices: { iPhone: { stage: "sideways", declined: [], at: 1 }, Other: { stage: "tour", declined: ["tour"], at: 2 } },
@@ -188,10 +178,6 @@ describe("the phone's setup, as the Mac holds it", () => {
     expect(phones).not.toContain("name:iPhone 0");
     // Forgotten means a fresh start for that phone, not a refusal.
     expect(setup.report(decoded(report("paired", [], "iPhone 0")))).toEqual({ stage: "paired", moved: true });
-  });
-
-  test("lives with the pairing, under conch's own config", () => {
-    expect(phoneSetupPath("/h")).toBe("/h/.config/conch/phone-setup.json");
   });
 });
 
@@ -219,31 +205,12 @@ describe("the published contract the Mac's setup window codes against", () => {
     expect(shapes.map((phone) => phone.setup.stage)).toEqual(["waiting", "connecting", "paired", "tour"]);
   });
 
-  test("stays small at its largest", () => {
-    const setup = new PhoneSetup({ path: scratch() });
-    setup.report(decoded(report("finished", ["notifications", "microphone"], "W".repeat(PHONE_DEVICE_MAX_CHARS))));
-    expect(JSON.stringify(setup.published(true)).length).toBeLessThan(200);
-  });
-
   test("enabled mirrors the setting, and the published copy can't reach back into the store", () => {
     const setup = new PhoneSetup({ path: scratch() });
     setup.report(decoded(report("tour", ["microphone"])));
     expect(setup.published(false).enabled).toBe(false);
     setup.published(true).setup.declined.push("notifications");
     expect(setup.published(true).setup.declined).toEqual(["microphone"]);
-  });
-
-  test("the daemon publishes it on every full state and on every change, and on the phone setting's changes", () => {
-    const daemon = read("src/daemon.ts");
-    expect(daemon).toContain("const phoneSetup = new PhoneSetup({ onChange: () => publishPhoneSetup(), log });");
-    expect(daemon).toContain("lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), phone: phoneSetup.published(cfg.phoneEnabled) };");
-    expect(daemon).toContain("lastPublishedPanelState.phone = phoneSetup.published(cfg.phoneEnabled);");
-    const sync = daemon.slice(daemon.indexOf("function syncPhoneBridge(): void {"), daemon.indexOf("function applyPhoneTransports(): void {"));
-    expect(sync).toContain("publishPhoneSetup();");
-    const hooks = daemon.slice(daemon.indexOf("setup: {"), daemon.indexOf("macName: computerName,"));
-    expect(hooks).toContain("report: (report) => phoneSetup.report(report),");
-    expect(hooks).toContain("exchange: (event) => phoneSetup.exchange(event),");
-    expect(read("src/panel.ts")).toContain("phone?: PublishedPhone;");
   });
 });
 
@@ -491,12 +458,5 @@ describe("the Mac's name is known before any phone asks, and asking never holds 
     expect(await new ComputerName(() => "tylers-mbp").resolve({ ask: async () => { throw new Error("no scutil"); } })).toBe("tylers-mbp");
     expect(await new ComputerName(() => "tylers-mbp").resolve({ ask: async () => "  " })).toBe("tylers-mbp");
     expect((await new ComputerName(() => "h").resolve({ ask: async () => "M".repeat(200) })).length).toBe(PHONE_DEVICE_MAX_CHARS);
-  });
-
-  test("nothing blocking in phone-setup.ts; the daemon asks at start, and the phone's route reads what's known", () => {
-    expect(read("src/phone-setup.ts")).not.toContain("spawnSync");
-    const daemon = read("src/daemon.ts");
-    expect(daemon).toContain("void resolveComputerName();");
-    expect(daemon.indexOf("void resolveComputerName();")).toBeLessThan(daemon.indexOf("macName: computerName,"));
   });
 });

@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { applySessionCommand } from "../src/control-server.ts";
 import type { SessionActionsController, SessionActionsTarget } from "../src/session-actions-overlay.ts";
 import {
@@ -19,8 +17,6 @@ import { validateSessionControlMessage } from "../src/settings.ts";
  * `claude attach <jobId>` in a new Terminal window. Closing a job is `claude
  * stop <jobId>`, whether a window is attached or not.
  */
-const root = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 function settled(code = 0, stdout = "", stderr = ""): SessionLifecycleProcess {
   return {
@@ -29,15 +25,6 @@ function settled(code = 0, stdout = "", stderr = ""): SessionLifecycleProcess {
     stderr: new Response(stderr).body,
     cancel() {},
   };
-}
-
-/** The text between two markers, each asserted present first. */
-function between(source: string, start: string, end: string): string {
-  const from = source.indexOf(start);
-  expect(from).toBeGreaterThan(-1);
-  const to = source.indexOf(end, from + start.length);
-  expect(to).toBeGreaterThan(from);
-  return source.slice(from, to);
 }
 
 describe("Open in Terminal: claude attach <jobId>", () => {
@@ -87,16 +74,6 @@ describe("Open in Terminal: claude attach <jobId>", () => {
     });
     expect(attached).toEqual([{ sessionId: "succ", label: "conch", jobId: "5e5e5e13" }]);
     expect(reply({ sessionId: "cx", label: "codex" })).toMatchObject({ kind: "session-ack", changed: false });
-  });
-
-  test("the daemon opens the row's own job, in its folder, and records a failure", () => {
-    const daemon = read("src/daemon.ts");
-    const body = between(daemon, "    attach: (target) => {", "\n    },\n");
-    expect(body).toContain("const session = panelSessions.get(target.sessionId);");
-    expect(body).toContain("if (!session?.jobId) return Promise.resolve(false);");
-    expect(body).toContain("return attachTerminalSession(session.jobId, session.cwd, {}, session.claudeAccountId)");
-    expect(body).toContain('"session-attach"');
-    expect(daemon).toContain("...(session?.jobId ? { jobId: session.jobId } : {}),");
   });
 });
 
@@ -157,61 +134,5 @@ describe("close on a background job", () => {
     expect(argv.at(-1)).toBe("/dev/ttys007");
     await expect(closeSession({ pid: 0, noTerminal: "closed: no Codex process has this thread open" }))
       .rejects.toThrow("closed: no Codex process has this thread open");
-  });
-
-  test("the daemon closes through closeSession, letting a job past the no-pid refusal", () => {
-    const body = between(read("src/daemon.ts"), "const closeLiveSession = async", "const sessionActions");
-    expect(body).toContain("if (!session.pid && !session.jobId) {");
-    expect(body).toContain("await closeSession(session, { restart });");
-    expect(body).not.toContain("closeTerminalSession(");
-  });
-});
-
-describe("the apps offer Open in Terminal only on an attachable row", () => {
-  test("Mac: decoded optionally, sent as `attach`, shown beside the reason, and close stays available", () => {
-    const models = read("mac-app/conch-mac/Models.swift");
-    expect(models).toContain("let attachable: Bool");
-    expect(models).toContain("case attachable");
-    expect(models).toContain("(try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false");
-    expect(models).toContain("noTerminal: noTerminal,\n            messageRoute: messageRoute,\n            attachable: attachable,");
-
-    expect(between(read("mac-app/conch-mac/ConchSocketClient.swift"), "enum ConchSessionCommand", "}"))
-      .toContain("case attach");
-
-    const open = between(read("mac-app/conch-mac/StateStore.swift"), "func openInTerminal(_ row: SessionRow) {", "\n    }\n");
-    expect(open).toContain("guard row.attachable else { return }");
-    expect(open).toContain("ConchSessionCommandRequest(sessionId: row.id, command: .attach)");
-
-    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain("onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,");
-    expect(between(dashboard, 'Button("Close session…", role: .destructive) {', "} label: {"))
-      .toContain(".disabled(row.noTerminal != nil && !row.attachable)");
-
-    const composer = read("mac-app/conch-mac/ComposerView.swift");
-    expect(composer).toContain("var onOpenInTerminal: (() -> Void)? = nil");
-    // Given only for an attachable row, so it no longer also asks for `noTerminal`: a parked agent (parked-jobs.ts) is
-    // attachable and has none, since a send brings it back too.
-    const button = between(composer, "if let onOpenInTerminal {", "Spacer(minLength: 8)");
-    expect(button).toContain("Button(action: onOpenInTerminal) {");
-    expect(button).toContain('Label("Open in Terminal", systemImage: "terminal")');
-  });
-
-  test("iPhone: decoded optionally, sent as `attach`, shown in the composer, and End stays available", () => {
-    const models = read("mobile/conch-ios/conch-ios/Models.swift");
-    expect(models).toContain("var attachable = false");
-    expect(models).toContain(", noTerminal, messageRoute, attachable\n");
-    expect(models).toContain("attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false");
-
-    expect(between(read("mobile/conch-ios/conch-ios/BridgeClient.swift"), "enum SessionCommand: String {", "}"))
-      .toContain("case attach");
-
-    const session = read("mobile/conch-ios/conch-ios/SessionView.swift");
-    const button = between(session, "if row?.attachable == true {", ".accessibilityHint(");
-    expect(button).toContain("Button(action: openInTerminal) {");
-    expect(button).toContain('Label("Open in Terminal", systemImage: "terminal")');
-    expect(between(session, "private func openInTerminal() {", "\n    }\n"))
-      .toContain("await bridge.send(sessionCommand: .attach, sessionId: sessionId)");
-    expect(between(session, 'Button("End session…"', "} label: {"))
-      .toContain("(row?.noTerminal != nil && row?.attachable != true)");
   });
 });

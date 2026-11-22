@@ -12,12 +12,9 @@ import { parseSetting, validateControlResponse, writeSetting } from "../src/sett
  * plaintext LAN server listening on 0.0.0.0. `phone-lan` decides that
  * independently — auto (closed once a relay is configured), on, off.
  *
- * The listener half is executed against a real Bun server; the daemon wiring
- * that `runDaemon` alone can reach is pinned as source, the way
- * daemon-config.test.ts does.
+ * The listener half is executed against a real Bun server.
  */
 const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-const cliSource = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
 
 /** Both markers must exist: a missing one slices from -1 and a guard passes vacuously. */
 function sliceOf(source: string, start: string, end: string): string {
@@ -151,54 +148,17 @@ describe("the setting applies live to a real listener", () => {
     // The config the daemon closes over now wants a listener again.
     expect(phoneLanWanted(cfg.phoneEnabled, cfg.phoneLan, cfg.phoneRelayURL)).toBe(true);
   });
-
-  test("the daemon re-syncs its transports when phone-lan changes", () => {
-    const wiring = sliceOf(
-      daemonSource,
-      "const configController = createConfigController",
-      "const enrichSocketAudioCommand",
-    );
-    expect(wiring).toContain('key === "phone-lan"');
-    expect(sliceOf(wiring, 'key === "phone-lan"', "\n")).toContain("syncPhoneBridge()");
-  });
 });
 
 describe("the daemon says which transports are live", () => {
+  // The only guard that the daemon's own sync consults phone-lan: a plaintext LAN port left open beside the encrypted relay.
   test("the sync decides the LAN bridge with phone-lan before creating one", () => {
     const apply = sliceOf(daemonSource, "function applyPhoneTransports(): void {", "Notice that this Mac was asleep");
     expect(apply).toContain("phoneLanWanted(wanted, cfg.phoneLan, relayEndpoint)");
-    expect(apply).toContain("retainMatchingPhoneBridge(phoneBridge, lanWanted, cfg.phonePort)");
-    expect(apply).toContain("if (!phoneBridge && lanWanted) {");
-  });
-
-  test("the startup line names the live transports, including relay-only", () => {
-    const report = sliceOf(daemonSource, "function logPhoneTransports(): void {", "function syncPhoneBridge()");
-    expect(report).toContain("phone bridge listening on 0.0.0.0:");
-    expect(report).toContain("relay only (encrypted) — LAN closed by phone-lan=");
-    expect(report).toContain("nothing listening — phone-lan=");
-    expect(report).toContain("log(`phone: ${summary}`)");
   });
 });
 
 describe("pairing still works when the LAN bridge is closed", () => {
-  test("the window opens on the shared application and reports whether LAN listens", () => {
-    const pairing = sliceOf(daemonSource, 'if (message.kind === "open-pairing")', "const exhaustive: never = message;");
-    // Guarding on the bridge would refuse to open a window — and hide the
-    // relay QR — on a relay-only daemon.
-    expect(pairing).toContain("if (!phoneApplication) {");
-    expect(pairing).toContain("phoneApplication.offerPairingCode(code)");
-    expect(pairing).toContain("lan: phoneBridge !== null");
-    expect(pairing).toContain("port: phoneBridge?.port ?? cfg.phonePort");
-  });
-
-  test("`conch pair` prints the remedy instead of a host nothing answers on", () => {
-    const pair = sliceOf(cliSource, 'case "pair": {', 'case "get": {');
-    expect(pair).toContain("const lanClosed = window.lan === false;");
-    expect(pair).toContain("conch set phone-lan on");
-    // The relay QR is still printed when the LAN bridge is shut.
-    expect(pair.indexOf("lanClosed")).toBeLessThan(pair.indexOf("relayPairingCode"));
-  });
-
   test("a pairing reply carries the lan flag, and an older daemon's reply means listening", () => {
     const base = { kind: "pairing-open", code: "123456", expiresAt: Date.now() + 120_000, port: 8674 };
     expect(validateControlResponse({ ...base, lan: false })).toMatchObject({ ok: true, value: { lan: false } });

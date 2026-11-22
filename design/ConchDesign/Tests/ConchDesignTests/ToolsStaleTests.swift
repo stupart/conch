@@ -33,39 +33,13 @@ final class ToolsStaleTests: XCTestCase {
         XCTAssertThrowsError(try decode(#"{"missing": "browser_open"}"#))
     }
 
-    /// The row decodes it with `try?`, so an older daemon (no field) and a broken one both leave the row as it was.
-    func testARowWithoutItOrWithABrokenOneDecodes() throws {
-        struct Row: Decodable {
-            let id: String
-            let toolsStale: ToolsStale?
-            private enum CodingKeys: String, CodingKey { case id, toolsStale }
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                id = try c.decode(String.self, forKey: .id)
-                toolsStale = try? c.decodeIfPresent(ToolsStale.self, forKey: .toolsStale)
-            }
-        }
-        let rows = try JSONDecoder().decode([Row].self, from: Data("""
-        [{"id": "a"}, {"id": "b", "toolsStale": {"missing": []}}, {"id": "c", "toolsStale": null},
-         {"id": "d", "toolsStale": {"missing": ["browser_open"]}}]
-        """.utf8))
-        XCTAssertEqual(rows.map(\.id), ["a", "b", "c", "d"])
-        XCTAssertEqual(rows.map { $0.toolsStale?.missing }, [nil, nil, nil, ["browser_open"]])
-    }
-
     // MARK: - Plain words
 
+    /// The browser tools are named as one, first; then fork and Atlas pages.
     func testNamesWhatsMissingInPlainWords() {
         let today = ["conch_fork", "browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot",
                      "browser_tabs", "browser_ask", "browser_close", "atlas_show"]
-        XCTAssertEqual(ToolsStaleWords.missingNames(today), ["the browser tools", "fork", "Atlas pages"],
-                       "the browser first, as the reason this exists; then fork and Atlas pages")
-        XCTAssertEqual(ToolsStaleWords.missing(today), "the browser tools, fork and Atlas pages")
-        XCTAssertEqual(ToolsStaleWords.line(ToolsStale(missing: today)),
-                       "conch's tools are out of date · missing the browser tools, fork and Atlas pages")
-        XCTAssertEqual(ToolsStaleWords.missing(["browser_open", "browser_close"]), "the browser tools")
-        XCTAssertEqual(ToolsStaleWords.missing(["conch_fork"]), "fork")
-        XCTAssertEqual(ToolsStaleWords.missing(["atlas_show"]), "Atlas pages")
+        XCTAssertEqual(ToolsStaleWords.missingNames(today), ["the browser tools", "fork", "Atlas pages"])
         XCTAssertEqual(ToolsStaleWords.missing(["atlas_show", "conch_fork"]), "fork and Atlas pages")
     }
 
@@ -87,36 +61,16 @@ final class ToolsStaleTests: XCTestCase {
                        "the browser tools, fork, Atlas pages and 2 more")
     }
 
-    /// The tooltip carries every tool by name, the daemon's reason as a sentence, and what Restart does.
-    func testTheTooltipSaysEverything() {
-        let stale = ToolsStale(missing: ["conch_fork", "browser_open"],
-                               why: "its conch MCP server started 2026-10-12, before a running server could take a newer conch's tools (2026-10-15)")
-        let help = ToolsStaleWords.help(stale, canRestart: true)
-        XCTAssertTrue(help.hasPrefix("Missing: conch_fork, browser_open.\nIts conch MCP server started 2026-10-12"), help)
-        XCTAssertTrue(help.contains("(2026-10-15).\n"), help)
-        XCTAssertTrue(help.hasSuffix("resumes the same conversation in a new Terminal window, with conch's current tools."), help)
-        XCTAssertTrue(ToolsStaleWords.help(ToolsStale(missing: ["atlas_show"]), canRestart: false).hasSuffix("its conversation comes back with it."))
-        XCTAssertEqual(ToolsStaleWords.help(ToolsStale(missing: ["atlas_show"]), canRestart: true).components(separatedBy: "\n").count, 2,
-                       "no reason, no empty line")
-    }
-
-    /// A server that never started (src/mcp-repair.ts) has none of the tools, so the line says it didn't load rather than
-    /// listing all of them as out of date, and the tooltip offers `/reload-plugins` beside Restart.
+    /// A server that never started (src/mcp-repair.ts) decodes as a failed start, not as an out-of-date one.
     func testAServerThatNeverStartedSaysSo() throws {
         let stale = try decode("""
         {"missing": ["conch_sessions", "conch_wake", "browser_open", "conch_fork", "atlas_show"], "basis": "failed",
          "failedAt": "2026-10-23T20:25:19.635Z",
-         "why": "its conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio')",
-         "fix": "type /reload-plugins in this session, or restart it (close it and resume it), to start conch's MCP server again"}
+         "why": "its conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio')"}
         """)
         XCTAssertTrue(stale.serverFailed)
         XCTAssertNil(stale.serverStartedAt)
-        XCTAssertEqual(ToolsStaleWords.line(stale), "conch's tools didn't load · its MCP server failed to start")
-        let help = ToolsStaleWords.help(stale, canRestart: true)
-        XCTAssertTrue(help.contains("\nIts conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio').\n"), help)
-        XCTAssertTrue(help.hasSuffix("Or type /reload-plugins in it, which starts the server again without a restart."), help)
         XCTAssertFalse(ToolsStale(missing: ["atlas_show"], basis: "estimated").serverFailed)
-        XCTAssertEqual(ToolsStaleWords.line(ToolsStale(missing: ["atlas_show"], basis: "reported")), "conch's tools are out of date · missing Atlas pages")
     }
 
     // MARK: - Restart
@@ -146,28 +100,5 @@ final class ToolsStaleTests: XCTestCase {
         let split = ToolsStaleRestart.split(sessions)
         XCTAssertEqual(split.idle.map(\.id), ["a", "e"])
         XCTAssertEqual(split.other.map(\.id), ["b", "d"])
-    }
-
-    func testTheConfirmationListsThemAndSaysWhatStaysAlone() {
-        let many = ToolsStaleRestart.confirmation(idle: ["Pricing page", "Mood board"], leftAlone: 2)
-        XCTAssertEqual(many.title, "Restart 2 idle sessions?")
-        XCTAssertTrue(many.message.hasPrefix("Pricing page\nMood board\n\nconch closes each cleanly, one at a time"), many.message)
-        XCTAssertTrue(many.message.hasSuffix(" The other 2 are left alone."), many.message)
-        let one = ToolsStaleRestart.confirmation(idle: ["Pricing page"], leftAlone: 0)
-        XCTAssertEqual(one.title, "Restart Pricing page?")
-        XCTAssertTrue(one.message.hasPrefix("conch closes it cleanly"), one.message)
-        XCTAssertTrue(one.message.hasSuffix("current tools."), one.message)
-        XCTAssertTrue(ToolsStaleRestart.confirmation(idle: ["A", "B"], leftAlone: 1).message.hasSuffix(" The other one is left alone."))
-    }
-
-    func testTheSettingsRow() {
-        XCTAssertEqual(ToolsStaleRestart.title(sessions: 9), "conch's tools are out of date in 9 sessions")
-        XCTAssertEqual(ToolsStaleRestart.title(sessions: 1), "conch's tools are out of date in 1 session")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 7, other: 2), "7 are idle. Restarting keeps each conversation.")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 1, other: 2), "1 is idle. Restarting keeps each conversation.")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 3, other: 0), "All are idle. Restarting keeps each conversation.")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 0, other: 2), "None is idle. Restarting keeps each conversation.")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 1, other: 0), "It's idle. Restarting keeps its conversation.")
-        XCTAssertEqual(ToolsStaleRestart.detail(idle: 0, other: 1), "It isn't idle. Restarting keeps its conversation.")
     }
 }

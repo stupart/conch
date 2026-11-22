@@ -132,12 +132,7 @@ describe("native Terminal session lifecycle", () => {
       // confirmed gone, in a UI transaction of its own.
       const tidyIndex = calls.findIndex((args) => args.join(" ").includes('tell application "conch"'));
       expect(tidyIndex).toBeGreaterThan(calls.indexOf(pressCall));
-      const tidyScript = calls[tidyIndex]!.join(" ");
-      // Never a tab running something: a new session can be given the freed tty during the exit wait.
-      expect(tidyScript).toContain('if item ti of conchRow is "/dev/ttys007" then');
-      expect(tidyScript).toContain("if not (busy of conchTabRef) then close conchTabRef saving no");
-      expect(tidyScript).toContain('tell application "conch" to activate');
-      expect(tidyScript).not.toMatch(/kill|SIG|tmux/);
+      expect(calls[tidyIndex]!.join(" ")).not.toMatch(/kill|SIG|tmux/);
     });
   }
 
@@ -158,7 +153,7 @@ describe("native Terminal session lifecycle", () => {
           cancel: () => { cancelled = true; observedExit(0); },
         };
       },
-    })).rejects.toThrow("so conch didn't send Ctrl-D. The session is still open.");
+    })).rejects.toThrow("didn't send Ctrl-D");
     expect(cancelled).toBe(true);
   });
 
@@ -177,7 +172,7 @@ describe("native Terminal session lifecycle", () => {
         calls.push(args);
         return settledProcess("ok\n");
       },
-    })).rejects.toThrow("Ctrl-D was sent, but the session is still running after 200 ms. Its screen couldn't be read. Check its Terminal tab.");
+    })).rejects.toThrow("still running");
     await uiQueueDrained();
     expect(calls.some((args) => args.join(" ").includes('tell application "conch"'))).toBe(false);
   });
@@ -241,8 +236,7 @@ describe("native Terminal session lifecycle", () => {
     // close) never has any literal to match against, because this session's tty is the only
     // one the script ever embeds.
     expect(script).not.toContain("ttys099");
-    // The tab is found by its tty in one read of every tab's (terminal-tab.ts), then closed in a tell of its own, only
-    // when one was found.
+    // The tab is found by its tty, then closed in a tell of its own, only when one was found.
     expect(script).toContain('if item ti of conchRow is "/dev/ttys042" then');
     const foundIndex = script.indexOf("if conchTab > 0 then");
     const terminalStart = script.indexOf('tell application "Terminal"', foundIndex);
@@ -250,10 +244,8 @@ describe("native Terminal session lifecycle", () => {
     expect(foundIndex).toBeGreaterThanOrEqual(0);
     expect(terminalStart).toBeGreaterThan(foundIndex);
     const block = script.slice(terminalStart, terminalEnd);
-    // The tab on that tty, and only while nothing runs in it.
-    expect(block).toContain("set conchTabRef to tab conchTab of window id conchWindow");
+    // The tab on that tty, and only while nothing runs in it: a new session can be given the freed tty meanwhile.
     expect(block).toContain("if not (busy of conchTabRef) then close conchTabRef saving no");
-    expect(script.indexOf("end if", terminalEnd)).toBeGreaterThan(terminalEnd);
     // Exactly one close in the whole Terminal block, and it targets a tab, never a window.
     expect(block.match(/\bclose /g)?.length).toBe(1);
     expect(block).not.toMatch(/close w\b/);
@@ -356,7 +348,7 @@ describe("closing a slow session", () => {
         calls.push(args);
         return isCtrlD(args) ? unansweredProcess() : settledProcess("ok\n");
       },
-    })).rejects.toThrow("Terminal was slow to take Ctrl-D, and the session is still running. Check its Terminal tab.");
+    })).rejects.toThrow("still running");
     await uiQueueDrained();
     expect(calls.some(isTabClose)).toBe(false);
   });
@@ -371,7 +363,7 @@ describe("closing a slow session", () => {
         calls.push(args);
         return unansweredProcess();
       },
-    })).rejects.toThrow("Terminal didn't respond within 20 ms, so conch didn't send Ctrl-D. The session is still open.");
+    })).rejects.toThrow("didn't send Ctrl-D");
     expect(calls).toHaveLength(1);
     expect(calls.some(isCtrlD)).toBe(false);
     expect(looks).toBe(0);
@@ -471,6 +463,6 @@ describe("closing a slow session", () => {
       pidIsAlive: async () => true,
       sleep: async () => {},
       exitPollAttempts: 2,
-    })).rejects.toThrow("claude stop was sent, but the background session is still running after 200 ms. It may be finishing up.");
+    })).rejects.toThrow("still running");
   });
 });

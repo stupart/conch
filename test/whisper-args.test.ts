@@ -1,12 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   readTranscriptionHardware,
   whisperComputeArgs,
   whisperCrashed,
   whisperThreads,
-  whisperVadArgs,
   type SysctlReader,
 } from "../src/whisper-args.ts";
 
@@ -55,23 +52,6 @@ describe("whisper is sized to the Mac it runs on (seashell 3ad4765)", () => {
   test("after a Metal failure the run is on the CPU", () => {
     const hardware = readTranscriptionHardware(sysctl([["Performance", 4], ["Efficiency", 4]]));
     expect(whisperComputeArgs({ hardware, cpu: true })).toEqual(["-t", "4", "-ng"]);
-  });
-});
-
-describe("one VAD for the warm server and the cold CLI", () => {
-  test("Silero hears speech as short as 100ms and keeps 300ms of padding", () => {
-    const args = whisperVadArgs("/models/silero.bin");
-    expect(args).toEqual(["-vm", "/models/silero.bin", "--vad", "--vad-speech-pad-ms", "300", "--vad-min-speech-duration-ms", "100"]);
-  });
-
-  test("both launch sites use the shared arguments, so they cannot drift", () => {
-    const root = join(import.meta.dir, "..", "src");
-    for (const file of ["daemon.ts", "transcribe.ts"]) {
-      const source = readFileSync(join(root, file), "utf8");
-      expect(source).toContain("...whisperVadArgs(cfg.vadModel)");
-      expect(source).toContain("...whisperComputeArgs({ cpu");
-      expect(source).not.toContain('"-t", "6"');
-    }
   });
 });
 

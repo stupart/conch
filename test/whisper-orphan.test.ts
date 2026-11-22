@@ -75,30 +75,3 @@ describe("reaping a dead daemon's whisper-server", () => {
     expect(isWhisperServerOn("/usr/bin/tail -f whisper-server.log --port 8642", 8642)).toBeFalse();
   });
 });
-
-/**
- * `runDaemon` runs in no test, so its two lines of wiring are pinned as text.
- * Presence first: `indexOf` returns -1 for a missing marker, and -1 sorts
- * before everything.
- */
-test("the daemon records the whisper-server it spawns and reaps a dead daemon's orphan before adopting", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-
-  const spawnAt = daemon.indexOf("cfg.whisperServerBin,\n");
-  expect(spawnAt).toBeGreaterThan(-1);
-  const closureEnd = daemon.indexOf("resetReadiness: () => whisperServerClient.resetHealth(),", spawnAt);
-  expect(closureEnd).toBeGreaterThan(spawnAt);
-  expect(daemon.slice(spawnAt, closureEnd)).toContain("recordSpawnedWhisper(child.pid, cfg.whisperPort);");
-
-  // The reap runs after the socket race is won (a loser exits, and must not
-  // touch the winner's server) and before the supervisor's first inspection.
-  const socketAt = daemon.indexOf("if (!await controlServer.start()) {");
-  expect(socketAt).toBeGreaterThan(-1);
-  const reapAt = daemon.indexOf("void reapOrphanedWhisper(cfg.whisperPort)");
-  expect(reapAt).toBeGreaterThan(socketAt);
-  // …and, on a first run, after the model it loads has landed (speech-engine.ts).
-  const readyAt = daemon.indexOf(".then(() => speechEngine.modelReady())", reapAt);
-  expect(readyAt).toBeGreaterThan(reapAt);
-  const startAt = daemon.indexOf(".then((ready) => (ready ? supervisor.start() : false))", readyAt);
-  expect(startAt).toBeGreaterThan(readyAt);
-});

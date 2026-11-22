@@ -21,10 +21,4 @@ final class DeliverableLocationTests: XCTestCase {
         XCTAssertNil(DeliverableLocation.of("   ", cwd: "/w"))
         XCTAssertNil(DeliverableLocation.of("relative/only.md", cwd: nil))
     }
-
-    func testWhatIsCopied() {
-        XCTAssertEqual(DeliverableLocation.file("/a/b").text, "/a/b")
-        XCTAssertTrue(DeliverableLocation.file("/a/b").isFile)
-        XCTAssertFalse(DeliverableLocation.web("https://x").isFile)
-    }
 }

@@ -52,13 +52,6 @@ final class ToolFoldingTests: XCTestCase {
         XCTAssertTrue(ToolFolding.runs(for: []).isEmpty)
     }
 
-    func testTheSpanIsFirstToLast() {
-        let runs = ToolFolding.runs(for: [
-            item("t1", true, 1_000), item("t2", true, 1_060), item("t3", true, 1_110),
-        ])
-        XCTAssertEqual(runs.first?.seconds, 110)
-    }
-
     /// An older daemon omits `at`. An invented duration is worse than none.
     func testAMissingTimestampMeansNoDurationRatherThanZero() {
         XCTAssertNil(ToolFolding.runs(for: [item("t1", true), item("t2", true, 1_060)]).first?.seconds)

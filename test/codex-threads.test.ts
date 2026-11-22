@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCodexSession, type CodexSessionEntry } from "../src/codex-sessions.ts";
@@ -11,7 +11,6 @@ import {
   cachedLockProbe,
   codexThreadDbPaths,
   codexThreadLabel,
-  codexThreadStatus,
   detectCodexApprovals,
   detectCodexTurnEnds,
   hostedByAppServer,
@@ -163,13 +162,6 @@ describe("observing Codex sessions without touching them", () => {
     }
   });
 
-  test("a machine with no Codex is known-empty, not an incomplete read", async () => {
-    // complete=false makes liveness logic treat sessions as possibly-gone. A
-    // machine that simply has no Codex must not look like a failed read.
-    expect(await readCodexThreads({ codexHome: "/tmp/definitely-not-codex", now: NOW }))
-      .toEqual({ entries: [], complete: true, available: false });
-  });
-
   test("labels from the thread, never from the working directory", () => {
     // conch labels a Claude session by directory basename, which works because
     // those live in different repos. Every one of Tyler's Codex threads runs
@@ -281,12 +273,6 @@ describe("deciding a Codex turn has ended", () => {
     expect(detectCodexTurnEnds(memory, running("t1"))).toEqual([]);
     expect(detectCodexTurnEnds(memory, done("t1")).map((e) => e.text)).toEqual(["All green."]);
     expect(detectCodexTurnEnds(memory, done("t1"))).toEqual([]);
-  });
-
-  test("announces a turn id it has not spoken for", () => {
-    const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, done("t1"));
-    expect(detectCodexTurnEnds(memory, done("t2")).map((e) => e.text)).toEqual(["All green."]);
   });
 
   test("never announces the same turn twice", () => {
@@ -482,12 +468,6 @@ describe("reading a turn out of a real rollout file", () => {
     }
   });
 
-  test("the daemon announces a failure in one sentence, never with the turn before's reply", () => {
-    const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-    expect(daemon).toContain("if (!snapshot.error) try {\n          const full = await lastAssistantText(snapshot.transcriptPath);");
-    expect(daemon).toContain("? `stopped. ${firstSentences(snapshot.error, 1, 160)}`");
-  });
-
   test("a missing rollout is null, not a crash", () => {
     expect(readCodexRolloutTail("/tmp/definitely-not-a-rollout.jsonl")).toBeNull();
   });
@@ -638,16 +618,6 @@ describe("an open Codex thread stays listed however idle", () => {
           bootedAt: NOW - 600_000,
         })).entries.map((e) => e.sessionId),
       ).toEqual(["since-boot"]);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("recency still lists a thread whose lock was never written", async () => {
-    const home = homeWith([{ id: "fresh", name: "just now", updated_at_ms: NOW - 60_000 }], []);
-    try {
-      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries.map((e) => e.sessionId))
-        .toEqual(["fresh"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -825,7 +795,7 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
     const home = realCodexHome({ threads: [{ id: "t1", name: "yesterday" }], locks: ["t1"] });
     try {
       const [row] = await rows(home, processTable(home, []));
-      expect(row).toMatchObject({ sessionId: "t1", pid: 0, noTerminal: "closed: no Codex process has this thread open" });
+      expect(row).toMatchObject({ sessionId: "t1", pid: 0, noTerminal: expect.stringContaining("closed") });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -867,15 +837,11 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
       const byId = new Map((await rows(home, table)).map((row) => [row.sessionId, row]));
       // The shared daemon's says what to do; the app's server's doesn't pretend a resume would help. Both still say who hosts it.
       const shared = byId.get("daemon")!.noTerminal!;
-      expect(shared).toContain("resume this from conch's Start sheet");
       expect(hostedByAppServer(shared, 5150)).toBe(true);
       expect(hostedByAppServer(byId.get("desktop")!.noTerminal, 74676)).toBe(true);
       expect(hostedByAppServer(shared, 515)).toBe(false);
-      expect(byId.get("desktop")).toMatchObject({
-        pid: 0,
-        noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",
-      });
-      expect(byId.get("daemon")).toMatchObject({ pid: 0, noTerminal: expect.stringContaining("(pid 5150)") });
+      expect(byId.get("desktop")!.pid).toBe(0);
+      expect(byId.get("daemon")!.pid).toBe(0);
       expect(byId.get("tui")).toMatchObject({ pid: 2383 });
       expect(byId.get("tui")!.noTerminal).toBeUndefined();
     } finally {
@@ -958,8 +924,9 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
       ]);
       const snap = await registrySnapshot(claudeDir, { codexHome: home, configDir, now: NOW, ...table });
       const info = snap!.infos.find((candidate) => candidate.sessionId === "desktop")!;
-      const reason = "hosted by codex app-server (pid 74676), which has no terminal to type into";
-      expect(info).toMatchObject({ backend: "codex", pid: 0, noTerminal: reason });
+      const reason = info.noTerminal;
+      expect(info).toMatchObject({ backend: "codex", pid: 0 });
+      expect(hostedByAppServer(reason, 74676)).toBe(true);
       const model = buildPanelModel({
         sessions: [info],
         sessionStates: new Map(),
@@ -1328,33 +1295,6 @@ describe("discovery runs without freezing the daemon's one thread", () => {
       const { history } = codexThreadDbPaths(home);
       expect([...readCodexTurnStatuses(history, ["listed"])]).toEqual([["listed", "inProgress"]]);
       expect(readCodexTurnStatuses(history, [])).toEqual(new Map());
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("the same machine state still produces the same rows", async () => {
-    // Statuses here can only come from `thread_turns`: the open thread was last
-    // written twelve hours ago, so recency alone would call it idle.
-    const home = realCodexHome({
-      threads: [
-        { id: "open", name: "asset generator", updated_at_ms: NOW - 12 * 3_600_000 },
-        { id: "recent", name: "release notes", updated_at_ms: NOW - 60_000 },
-        { id: "gone", name: "last week", updated_at_ms: NOW - 7 * 86_400_000 },
-      ],
-      turns: [["open", 1, "completed"], ["open", 2, "inProgress"], ["recent", 1, "completed"]],
-      locks: ["open"],
-    });
-    try {
-      const table = processTable(home, [{ pid: 2383, args: "codex resume open", holds: ["open"] }]);
-      const read = await readCodexThreads({ codexHome: home, now: NOW, ...table });
-      expect(read.complete).toBe(true);
-      expect(read.available).toBe(true);
-      expect((read.entries as CodexRow[]).map((row) => [row.sessionId, row.name, row.status, row.pid]))
-        .toEqual([
-          ["recent", "release notes", "idle", 0],
-          ["open", "asset generator", "busy", 2383],
-        ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

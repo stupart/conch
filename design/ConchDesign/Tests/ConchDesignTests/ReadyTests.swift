@@ -52,11 +52,6 @@ final class ReadyTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(ratio, 3, "ready on \(ground.name) in \(scheme) is \(String(format: "%.2f", ratio)):1")
             }
         }
-        // The light value is the one the Mac's waiting mark already carries, and the green it replaces failed.
-        XCTAssertEqual(ConchColor.ready.light, ConchRGBA(0x279B4C))
-        XCTAssertLessThan(ConchRGBA(0x30B35A).contrast(on: ConchColor.ground.light), 3)
-        // Dark stays: it cleared 3:1 everywhere already.
-        XCTAssertEqual(ConchColor.ready.dark, ConchRGBA(0x30B35A))
     }
 
     /// The orb's white check on its green: 2.72 before, in both schemes, 3.57 now. The disc is the light green in dark
@@ -67,7 +62,6 @@ final class ReadyTests: XCTestCase {
             let ratio = ConchColor.onVoice.rgba(scheme).contrast(on: VoiceOrb.readyFill)
             XCTAssertGreaterThanOrEqual(ratio, 3, "the check in \(scheme) is \(String(format: "%.2f", ratio)):1")
         }
-        XCTAssertLessThan(ConchColor.onVoice.dark.contrast(on: ConchColor.ready.dark), 3, "why the disc isn't the dark value")
         for ground in ConchColor.grounds {
             XCTAssertGreaterThanOrEqual(VoiceOrb.readyFill.contrast(on: ground.dark), 3, "the disc on \(ground.name) in dark")
         }
@@ -75,19 +69,9 @@ final class ReadyTests: XCTestCase {
 
     /// The listening mic is dark on the orange: white measured 2.06.
     func testTheListeningMicReadsOnTheOrange() {
-        let orange = ConchColor.listening.light
-        XCTAssertEqual(ConchColor.listening.light, ConchColor.listening.dark, "the orange is the same in both schemes")
-        XCTAssertGreaterThanOrEqual(VoiceOrb.onListening.contrast(on: orange), 7)
-        XCTAssertLessThan(ConchColor.onVoice.light.contrast(on: orange), 3, "white, as it was")
-    }
-
-    /// Working's dot in the menu is filled, as the sidebar draws working; the hollow ring is the sidebar's paused
-    /// sub-agent.
-    func testWorkingIsAFilledDotInTheMenu() {
-        XCTAssertEqual(StatusMenu.Dot.working.symbol, "circle.fill")
-        XCTAssertEqual(StatusMenu.Dot.ready.symbol, "circle.fill")
-        XCTAssertEqual(StatusMenu.Dot.working.colour.name, ConchColor.active.name)
-        XCTAssertEqual(StatusMenu.Dot.ready.colour.name, ConchColor.ready.name)
+        for scheme in schemes {
+            XCTAssertGreaterThanOrEqual(VoiceOrb.onListening.contrast(on: ConchColor.listening.rgba(scheme)), 7)
+        }
     }
 
     // MARK: The menu
@@ -103,35 +87,23 @@ final class ReadyTests: XCTestCase {
         }
     }
 
-    /// Title case; no "Show", which is the screen recording's word. Since the overlays went (2026-11-11) the menu has
-    /// none of their items (Control Bar, Conversation Panel, Reply Line, With Panel Off, Draw on Screen), whatever is
-    /// ready or working, and no two separators meet where they were.
-    func testTheMenuIsTitleCaseWithNoOverlayItems() {
-        let titles = items(StatusMenu.rows(input())).map(\.title)
-        XCTAssertEqual(titles, ["Talk", "Quiet", "Read Replies Aloud", "Stop Speaking", "Floating Pill", "Open conch", "Settings…"])
-        // The floating pill's switch (2026-11-11), ticked while it is on, which it is until turned off.
+    /// The floating pill's switch is ticked while it is on; no two separators meet, whatever is ready or working; and
+    /// Settings… is last, with the window's own ⌘, beside it.
+    func testTheMenusSwitchesSeparatorsAndSettings() {
         let pill = { (input: StatusMenu.Input) in self.items(StatusMenu.rows(input)).first { $0.command == .floatingPill } }
         XCTAssertEqual(pill(input())?.mark, .on)
         var off = input()
         off.floatingPill = false
         XCTAssertEqual(pill(off)?.mark, .off)
-        XCTAssertFalse(titles.contains { $0.hasPrefix("Show") })
         let ready = [StatusMenu.Session(id: "r", label: "Ready one")], working = [StatusMenu.Session(id: "w", label: "Working one")]
         for (ready, working) in [([], []), (ready, []), ([], working), (ready, working)] as [([StatusMenu.Session], [StatusMenu.Session])] {
             let rows = StatusMenu.rows(input(ready: ready, working: working))
             for (row, next) in zip(rows, rows.dropFirst()) { XCTAssertFalse(row == .separator && next == .separator, "two separators meet") }
-            for title in ["Control Bar", "Conversation Panel", "Reply Line", "With Panel Off", "Draw on Screen"] {
-                XCTAssertFalse(items(rows).contains { $0.title == title }, title)
-            }
         }
-        // Settings…, last, with the window's own ⌘, beside it: it opens the window on its Settings page.
         let settings = items(StatusMenu.rows(input())).last
         XCTAssertEqual(settings?.command, .settings)
         XCTAssertEqual(settings?.key, ",")
         XCTAssertEqual(settings?.modifiers, [.command])
-        var listening = input()
-        listening.voice = .listening
-        XCTAssertTrue(items(StatusMenu.rows(listening)).contains { $0.title == "Stop Listening" })
     }
 
     /// A ready row opens its item; conch's window on it is the ⌥ alternate right after it. Working

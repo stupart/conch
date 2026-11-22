@@ -4,7 +4,7 @@ import SwiftUI
 /// the field, with a hairline between. Not a popup of its own: the card that holds the words grows to hold the list, the
 /// way it holds attachments, so it reads as part of the message box. Each row is the line as typed, what it does, and on
 /// the right the argument it takes. A command that opens a picker says "in the terminal" in its words; the row keeps
-/// them whole at the composer's width (`SlashTypeaheadRenderTests`).
+/// them whole at the composer's width.
 ///
 /// On the Mac, rows are set as ⌘K's are (12.5 and 11), their text on the field's own column, the highlighted one in the
 /// selection's fill with corners concentric to the card's, and the keys it answers to at its foot. On the phone, the

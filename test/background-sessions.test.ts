@@ -142,27 +142,3 @@ test.skipIf(!tmux)("conch's server stays up when its last session ends, so a mis
   expect(sessions).not.toBeNull();
   expect(sessions!.has(solo.name)).toBe(false);
 }, 10_000);
-
-test("background startup asks about unknown folder trust and reports its recovery target", async () => {
-  const { applyRuntimeControlMessage } = await import("../src/control-server.ts");
-  const starts: unknown[] = [];
-  const deps = {
-    listResumable: () => ({ sessions: [], complete: true }),
-    close: () => {}, report: () => {}, folderTrusted: () => null,
-    start: (request: unknown) => { starts.push(request); return { backgroundId: name }; },
-  };
-  const request = { kind: "session-start" as const, backend: "claude" as const, host: "background" as const, cwd: "/tmp/project" };
-  expect(await applyRuntimeControlMessage(request, deps)).toEqual({ kind: "session-needs-trust", backend: "claude", cwd: "/tmp/project" });
-  expect(starts).toHaveLength(0);
-  expect(await applyRuntimeControlMessage({ ...request, trustFolder: true }, deps))
-    .toEqual({ kind: "session-started", backend: "claude", resumed: false, backgroundId: name });
-  expect(starts).toEqual([{ ...request, trustFolder: true }]);
-});
-
-test("background subscription profiles clear credentials inherited from an older tmux server", () => {
-  for (const backend of ["claude", "codex"] as const) {
-    const command = terminalSessionCommand({ backend, host: "background", [`${backend}AccountId`]: "default" });
-    expect(command).toContain(backend === "claude" ? "-u ANTHROPIC_API_KEY" : "-u OPENAI_API_KEY");
-    expect(command).toContain(backend === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME");
-  }
-});

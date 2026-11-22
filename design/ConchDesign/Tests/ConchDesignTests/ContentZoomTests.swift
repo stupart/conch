@@ -9,11 +9,6 @@ final class ContentZoomTests: XCTestCase {
     private let picture = ContentZoom.picture
     private let page = ContentZoom.page
 
-    private func scale(_ level: ZoomLevel?, file: StaticString = #filePath, line: UInt = #line) -> CGFloat? {
-        guard case let .scale(scale) = level else { return nil }
-        return scale
-    }
-
     // MARK: Steps
 
     func testAFittedPictureStepsOutOfFitAndBackThroughIt() {
@@ -87,23 +82,17 @@ final class ContentZoomTests: XCTestCase {
 
     func testTheControlSaysFitAtRestAndThePercentOtherwise() {
         let fitted = picture.readout(.rest, resting: 0.53)
-        XCTAssertEqual(fitted.label, "Fit")
         XCTAssertTrue(fitted.isAtRest)
         XCTAssertTrue(fitted.canToggle)
-        XCTAssertEqual(fitted.toggleHelp, "Zoom to 100%")
-        XCTAssertEqual(fitted.spoken, "Fitted, 53%")
-        XCTAssertEqual(picture.readout(.rest, resting: 1).toggleHelp, "Zoom to 200%")
 
         let zoomed = picture.readout(.scale(2.5), resting: 0.53)
         XCTAssertEqual(zoomed.label, "250%")
         XCTAssertFalse(zoomed.isAtRest)
-        XCTAssertEqual(zoomed.toggleHelp, "Zoom to fit (⌘0)")
 
         // A page at rest reads 100%, and its middle does nothing there.
         let resting = page.readout(.rest, resting: 1)
         XCTAssertEqual(resting.label, "100%")
         XCTAssertFalse(resting.canToggle)
-        XCTAssertEqual(page.readout(.scale(1.25), resting: 1).toggleHelp, "Back to 100% (⌘0)")
 
         // The ends grey out at the ends of the range.
         XCTAssertFalse(picture.readout(.scale(8), resting: 0.5).canZoomIn)

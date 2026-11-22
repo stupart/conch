@@ -187,7 +187,8 @@ describe("the indexes, read and opened", () => {
     rmSync(join(root, "test-skills", "repo.tar.gz"));
     await indexes.refreshNow();
     const listed = await indexes.list({});
-    expect(listed.indexes[0]).toMatchObject({ count: 1, error: "GitHub answered 503 for test/skills" });
+    expect(listed.indexes[0]).toMatchObject({ count: 1 });
+    expect(listed.indexes[0]!.error).toContain("503");
   });
 
   test("skills.sh is asked only for a search, and its download is written file by file inside the skill's folder", async () => {

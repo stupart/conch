@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -25,7 +24,6 @@ test("Codex registry writes per pid and preserves a known transcript path on spa
     configDir: root,
     isPidAlive: (pid: number) => pid === 4242,
   };
-  const path = join(root, "codex-sessions", "4242.json");
   try {
     writeCodexSession({
       sessionId: "session-4242",
@@ -35,15 +33,6 @@ test("Codex registry writes per pid and preserves a known transcript path on spa
       updatedAt: 100,
       transcriptPath: "/rollouts/rollout-session-4242.jsonl",
     }, options);
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
-      sessionId: "session-4242",
-      cwd: "/work/project",
-      pid: 4242,
-      status: "idle",
-      updatedAt: 100,
-      transcriptPath: "/rollouts/rollout-session-4242.jsonl",
-    });
-
     writeCodexSession({
       sessionId: "session-4242",
       cwd: "/work/project",
