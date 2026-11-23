@@ -12,6 +12,29 @@ import SwiftUI
 // group's sessions all closing (the group stays, a place to drop into), a session that comes back tomorrow (it keeps
 // its place, by its id), a subagent or a started session (it goes wherever the session above it goes), and a drop on a
 // folder that isn't the session's own (refused: it would say the session runs somewhere it doesn't).
+//
+// 2026-11-23, Tyler: "Maybe we call them "focus groups" … i can have certain ones have different priorities like "top"
+// "working" "shelf" and in that case it would always return me to any top ones first and then working if all top is
+// busy?" His groups are focus groups where they are named, and each has a priority (`FocusPriority`), which the daemon
+// hands sessions off by (src/event-queue.ts). The list keeps his order: a priority never moves a section.
+
+/// A focus group's priority, in the order the daemon hands its sessions off: a waiting Top session is taken first, then
+/// Working, then Shelf (src/sidebar-groups.ts `FOCUS_RANK`). Working is the default, and a session in no group's.
+public enum FocusPriority: String, Codable, CaseIterable, Sendable {
+    case top, working, shelf
+
+    /// Its name in the header's Priority menu.
+    public var title: String {
+        switch self {
+        case .top: return "Top"
+        case .working: return "Working"
+        case .shelf: return "Shelf"
+        }
+    }
+
+    /// What a group's header says of it, quietly: nothing for Working, which is every group's until he picks.
+    public var headerLabel: String? { self == .working ? nil : title }
+}
 
 /// The sidebar's arrangement, as `PublishedState.sidebarGroups` carries it and the daemon saves it.
 public struct SidebarLayout: Codable, Equatable, Sendable {
@@ -19,10 +42,32 @@ public struct SidebarLayout: Codable, Equatable, Sendable {
         /// `group:` and an id of its own, never a path: a section's id is a group's or a folder's, and the two can't meet.
         public let id: String
         public var name: String
+        public var priority: FocusPriority
 
-        public init(id: String, name: String) {
+        public init(id: String, name: String, priority: FocusPriority = .working) {
             self.id = id
             self.name = name
+            self.priority = priority
+        }
+
+        private enum CodingKeys: String, CodingKey { case id, name, priority }
+
+        /// A priority this build doesn't know, or none (a daemon from before focus groups' priorities), is Working: the
+        /// group still draws.
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            let raw: String? = (try? container.decodeIfPresent(String.self, forKey: .priority)) ?? nil
+            priority = raw.flatMap(FocusPriority.init(rawValue:)) ?? .working
+        }
+
+        /// Working is left out, as the daemon saves it (src/sidebar-groups.ts): absent is the default.
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(name, forKey: .name)
+            if priority != .working { try container.encode(priority, forKey: .priority) }
         }
     }
 
@@ -62,17 +107,22 @@ public struct SidebarLayout: Codable, Equatable, Sendable {
         groups.first { $0.id == id }
     }
 
+    /// A section's priority: its focus group's, or nil for a folder or a team, which have none of their own.
+    public func priority(of sectionID: String) -> FocusPriority? {
+        group(sectionID)?.priority
+    }
+
     /// What is wrong with a name for a group, or nil: something to call it, short enough, and no other group's
     /// (`renaming` passes its own id, so a group can keep its name).
     public func nameProblem(_ name: String, renaming id: String? = nil) -> String? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "Give the group a name." }
-        if trimmed.count > Self.maxNameLength { return "A group's name is at most \(Self.maxNameLength) characters." }
-        if trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) { return "A group's name is one line of text." }
+        if trimmed.isEmpty { return "Give the focus group a name." }
+        if trimmed.count > Self.maxNameLength { return "A focus group's name is at most \(Self.maxNameLength) characters." }
+        if trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) { return "A focus group's name is one line of text." }
         if groups.contains(where: { $0.id != id && $0.name.lowercased() == trimmed.lowercased() }) {
-            return "There's already a group called \(trimmed)."
+            return "There's already a focus group called \(trimmed)."
         }
-        if id == nil, groups.count >= Self.maxGroups { return "That's as many groups as conch keeps." }
+        if id == nil, groups.count >= Self.maxGroups { return "That's as many focus groups as conch keeps." }
         return nil
     }
 
@@ -102,6 +152,14 @@ public struct SidebarLayout: Codable, Equatable, Sendable {
         guard let index = groups.firstIndex(where: { $0.id == id }), nameProblem(name, renaming: id) == nil else { return self }
         var next = self
         next.groups[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return next
+    }
+
+    /// The group's priority (the header's Priority menu). Where it sits in the list stays his: a Top group isn't moved up.
+    public func settingPriority(_ priority: FocusPriority, of id: String) -> SidebarLayout {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return self }
+        var next = self
+        next.groups[index].priority = priority
         return next
     }
 
@@ -229,7 +287,7 @@ public struct SidebarMove: Equatable, Sendable, Identifiable {
     public var accessibilityName: String {
         switch kind {
         case .group: return "Move to \(title)"
-        case .newGroup: return "Move to a New Group"
+        case .newGroup: return "Move to a New Focus Group"
         case .folder, .up, .down: return title
         }
     }
@@ -262,7 +320,7 @@ public struct SidebarMove: Equatable, Sendable, Identifiable {
         if let current, SidebarLayout.isGroup(current), let folder, !folder.id.isEmpty {
             moves.append(SidebarMove(kind: .folder(folder.id), title: "Back to \(folder.name)"))
         }
-        if layout.groups.count < SidebarLayout.maxGroups { moves.append(SidebarMove(kind: .newGroup, title: "New Group…")) }
+        if layout.groups.count < SidebarLayout.maxGroups { moves.append(SidebarMove(kind: .newGroup, title: "New Focus Group…")) }
         let siblings = shown.first { $0.id == current }?.sessionIDs.filter(topLevel.contains) ?? []
         if let index = siblings.firstIndex(of: session) {
             if index > 0 { moves.append(SidebarMove(kind: .up, title: "Move Up")) }
@@ -388,5 +446,31 @@ public struct SidebarDropLine: View {
         .frame(height: 6)
         .padding(.leading, 4)
         .accessibilityHidden(true)
+    }
+}
+
+/// A focus group's priority on its header, quietly: "Top" or "Shelf" in a hairline capsule, and nothing for Working,
+/// the default, so a list he never prioritized looks as it did. The Mac's sidebar and the phone's list draw the same.
+public struct FocusPriorityLabel: View {
+    let priority: FocusPriority
+    let font: Font
+
+    public init(_ priority: FocusPriority, font: Font = .system(size: 10, weight: .medium)) {
+        self.priority = priority
+        self.font = font
+    }
+
+    public var body: some View {
+        if let label = priority.headerLabel {
+            Text(label)
+                .font(font)
+                .lineLimit(1)
+                .fixedSize()
+                .foregroundStyle(ConchColor.textTertiary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .overlay(Capsule(style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 1))
+                .accessibilityLabel("\(label) priority")
+        }
     }
 }

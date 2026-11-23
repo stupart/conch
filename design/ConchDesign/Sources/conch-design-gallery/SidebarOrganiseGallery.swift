@@ -32,6 +32,8 @@ func renderSidebarOrganise() throws {
                            shown: SessionGrouping.sidebar(sessions, home: home, order: [], layout: layout))
     layout = layout.creatingGroup(named: "Later", id: "group:later",
                                   shown: SessionGrouping.sidebar(sessions, home: home, order: [], layout: layout))
+    // Focus groups' priorities (2026-11-23): Harbor first in the hand-off, Later last; the list keeps his order.
+    layout = layout.settingPriority(.top, of: "group:harbor").settingPriority(.shelf, of: "group:later")
     let sections = SessionGrouping.sidebar(sessions, home: home, order: [], layout: layout)
     let rows: [String: (SidebarMark, String)] = [
         "brand": (.waiting, "Conch brand pass"),
@@ -54,7 +56,8 @@ func renderSidebarOrganise() throws {
     func list(dropOn: String? = nil, ringOn: String? = nil, elsewhereOpen: Bool, message: [String: String] = [:]) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(sections) { section in
-                GalleryFolderHeader(name: section.name, count: section.sessionIDs.count, isGroup: section.isGroup, isDropTarget: ringOn == section.id)
+                GalleryFolderHeader(name: section.name, count: section.sessionIDs.count, isGroup: section.isGroup, isDropTarget: ringOn == section.id,
+                                    priority: layout.priority(of: section.id))
                 if section.sessionIDs.isEmpty, section.isGroup {
                     Text("Drag a session here").font(.system(size: 11)).foregroundStyle(ConchColor.textTertiary)
                         .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading).padding(.leading, 20)
@@ -92,8 +95,10 @@ func renderSidebarOrganise() throws {
                 ], submenu: SidebarMove.moves(for: "sidebar", layout: layout, shown: sections, topLevel: SessionGrouping.topLevel(sessions),
                                               folder: SessionGrouping.homeFolders(sessions, home: home)["sidebar"]).filter { $0.kind != .up && $0.kind != .down }.map(\.title))
             }
-            SidebarColumn(title: "A group's header menu") {
-                GalleryMenu(items: [("Rename Group…", false), ("Delete Group", false), ("—", false), ("New Group…", false)], submenu: [])
+            SidebarColumn(title: "A focus group's header menu: Priority") {
+                GalleryMenu(items: [("Priority ▸", true), ("Rename Focus Group…", false), ("Delete Focus Group", false), ("—", false), ("New Focus Group…", false)],
+                            submenu: FocusPriority.allCases.map { layout.priority(of: "group:harbor") == $0 ? "✓ \($0.title)" : "    \($0.title)" },
+                            submenuTop: 0)
             }
             VStack(alignment: .leading, spacing: 10) {
                 Caption("What each agent outside conch says, and its one thing (tooltip)")
@@ -114,7 +119,11 @@ func renderSidebarOrganise() throws {
         Heading(title: "The phone's list", note: "the same groups (an empty one is the Mac's to drop into), and Not in conch to read")
         VStack(alignment: .leading, spacing: 0) {
             ForEach(sections.filter { !($0.isGroup && $0.sessionIDs.isEmpty) }) { section in
-                Text(section.name).font(.caption).foregroundStyle(ConchColor.textTertiary).padding(.top, 14).padding(.bottom, 4)
+                HStack(spacing: 6) {
+                    Text(section.name)
+                    if let priority = layout.priority(of: section.id) { FocusPriorityLabel(priority, font: .caption2) }
+                }
+                .font(.caption).foregroundStyle(ConchColor.textTertiary).padding(.top, 14).padding(.bottom, 4)
                 ForEach(section.sessionIDs, id: \.self) { id in
                     if let (mark, label) = rows[id] {
                         HStack(spacing: 12) {
@@ -152,6 +161,8 @@ struct GalleryFolderHeader: View {
     var isCollapsed = false
     var alwaysCounts = false
     var isDropTarget = false
+    /// A focus group's Top or Shelf, after its name (`FocusPriorityLabel`).
+    var priority: FocusPriority? = nil
 
     var body: some View {
         HStack(spacing: 4) {
@@ -161,6 +172,7 @@ struct GalleryFolderHeader: View {
                 .opacity(isCollapsed ? 1 : 0.35)
                 .frame(width: 10)
             Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            if let priority { FocusPriorityLabel(priority) }
             Spacer(minLength: 4)
             if isCollapsed || alwaysCounts { Text("\(count)").font(.system(size: 10, weight: .medium)).monospacedDigit() }
         }
@@ -176,6 +188,8 @@ struct GalleryFolderHeader: View {
 struct GalleryMenu: View {
     let items: [(String, Bool)]
     let submenu: [String]
+    /// How far down the submenu opens: beside its item (Move To is the fourth, Priority the first).
+    var submenuTop: CGFloat = 70
 
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
@@ -187,7 +201,7 @@ struct GalleryMenu: View {
                         Text(item.0).font(.system(size: 13))
                             .foregroundStyle(item.1 ? Color.white : ConchColor.textPrimary.light.color)
                             .padding(.horizontal, 10).padding(.vertical, 3)
-                            .frame(width: 150, alignment: .leading)
+                            .frame(width: 172, alignment: .leading)
                             .background(RoundedRectangle(cornerRadius: 4).fill(item.1 ? ConchColor.active.light.color : .clear))
                     }
                 }
@@ -198,15 +212,15 @@ struct GalleryMenu: View {
             if !submenu.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(submenu.enumerated()), id: \.offset) { index, title in
-                        if title == "New Group…", index > 0 { Rectangle().fill(Color.black.opacity(0.1)).frame(height: 1).padding(.vertical, 4) }
+                        if title == "New Focus Group…", index > 0 { Rectangle().fill(Color.black.opacity(0.1)).frame(height: 1).padding(.vertical, 4) }
                         Text(title).font(.system(size: 13)).foregroundStyle(ConchColor.textPrimary.light.color)
-                            .padding(.horizontal, 10).padding(.vertical, 3).frame(width: 150, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.vertical, 3).frame(width: 172, alignment: .leading)
                     }
                 }
                 .padding(5)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color(white: 0.96)))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.black.opacity(0.12)))
-                .padding(.top, 70)
+                .padding(.top, submenuTop)
             }
         }
         .environment(\.colorScheme, .light)

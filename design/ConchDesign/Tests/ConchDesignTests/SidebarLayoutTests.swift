@@ -155,9 +155,9 @@ final class SidebarLayoutTests: XCTestCase {
         layout = layout.creatingGroup(named: "Site", id: "group:s", shown: shown(layout))
         let folders = SessionGrouping.homeFolders(sessions, home: home)
         let placed = SidebarMove.moves(for: "a", layout: layout, shown: shown(layout), topLevel: top, folder: folders["a"])
-        XCTAssertEqual(placed.map(\.title), ["Site", "Back to conch", "New Group…"])
+        XCTAssertEqual(placed.map(\.title), ["Site", "Back to conch", "New Focus Group…"])
         let unplaced = SidebarMove.moves(for: "c", layout: layout, shown: shown(layout), topLevel: top, folder: folders["c"])
-        XCTAssertEqual(unplaced.map(\.title), ["Harbor", "Site", "New Group…"])
+        XCTAssertEqual(unplaced.map(\.title), ["Harbor", "Site", "New Focus Group…"])
         let first = SidebarMove.moves(for: "b", layout: layout, shown: shown(layout), topLevel: top, folder: folders["b"])
         XCTAssertEqual(first.map(\.kind).suffix(1), [.down])
         // A subagent moves with its session and has no menu of its own.
@@ -171,6 +171,36 @@ final class SidebarLayoutTests: XCTestCase {
         XCTAssertEqual(layout.rows, [:])
         XCTAssertEqual(layout.sections, [])
         XCTAssertEqual(shown(layout).first?.sessionIDs, ["a", "a-agent"])
+    }
+
+    /// 2026-11-23, Tyler: "i can have certain ones have different priorities like "top" "working" "shelf"". A group's
+    /// priority is set from its header and kept through a rename; the list keeps his order whatever it is.
+    func testAFocusGroupsPriorityIsSetFromItsHeaderAndNeverMovesItInTheList() {
+        var layout = SidebarLayout.empty.creatingGroup(named: "Harbor", id: "group:h", placing: "a", shown: shown(.empty))
+        layout = layout.creatingGroup(named: "Later", id: "group:l", placing: "b", shown: shown(layout))
+        XCTAssertEqual(layout.priority(of: "group:h"), .working, "every group starts at Working")
+        XCTAssertNil(layout.priority(of: conch), "a folder has no priority of its own")
+        let before = shown(layout).map(\.id)
+        let prioritized = layout.settingPriority(.shelf, of: "group:h").settingPriority(.top, of: "group:l")
+        XCTAssertEqual(prioritized.priority(of: "group:h"), .shelf)
+        XCTAssertEqual(prioritized.priority(of: "group:l"), .top)
+        XCTAssertEqual(shown(prioritized).map(\.id), before)
+        XCTAssertEqual(prioritized.renamingGroup("group:l", to: "Now").group("group:l"), SidebarLayout.Group(id: "group:l", name: "Now", priority: .top))
+        XCTAssertEqual(prioritized.settingPriority(.top, of: "group:gone"), prioritized)
+        // Its header says Top or Shelf, and nothing for Working, the default.
+        XCTAssertEqual(FocusPriority.allCases.map { $0.headerLabel != nil }, [true, false, true])
+    }
+
+    /// The daemon saves Working by leaving it out (src/sidebar-groups.ts); a priority a newer daemon has and this build
+    /// doesn't is Working here, and the group still draws.
+    func testWorkingIsLeftOutOfTheSavedLayoutAndAnUnknownPriorityReadsAsWorking() throws {
+        let layout = SidebarLayout(groups: [SidebarLayout.Group(id: "group:h", name: "Harbor", priority: .top), SidebarLayout.Group(id: "group:s", name: "Site")])
+        let saved = try JSONSerialization.jsonObject(with: JSONEncoder().encode(layout)) as? [String: Any]
+        let groups = saved?["groups"] as? [[String: String]]
+        XCTAssertEqual(groups, [["id": "group:h", "name": "Harbor", "priority": "top"], ["id": "group:s", "name": "Site"]])
+        let json = #"{"v":1,"groups":[{"id":"group:h","name":"Harbor","priority":"urgent"},{"id":"group:s","name":"Site","priority":"shelf"}]}"#
+        let read = try JSONDecoder().decode(SidebarLayout.self, from: Data(json.utf8))
+        XCTAssertEqual(read.groups.map(\.priority), [.working, .shelf])
     }
 
     func testPlacementsAreCappedKeepingTheOnesOnScreen() {
