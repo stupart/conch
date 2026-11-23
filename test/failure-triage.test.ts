@@ -17,6 +17,7 @@ describe("whose failure it is", () => {
     for (const message of [
       "failed: nothing on the page matches \"Sign up\"",
       "failed: nothing you can click says \"Continue\"",
+      "failed: nothing on the page is \"Continue\": not a ref from browser_read, a selector that matches, or words on the page",
       "failed: \"div>>a\" isn't a valid CSS selector",
       "failed: li \"Plans\" isn't a field you can type in",
       "failed: there's no e12 on this page; read it again (browser_read) for fresh refs",

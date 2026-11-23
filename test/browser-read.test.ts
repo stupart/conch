@@ -142,6 +142,10 @@ describe("browser read, compact", () => {
     expect(none.note).toBe('nothing on the page says "kubernetes"');
     const field = compactRead(docsRead(), { find: "search" });
     expect(field.fields).toEqual([docsRead().fields[0]]);
+    // Words typed plainly find the page's typography: an ellipsis as three dots, a curly quote as a straight one.
+    const typeset = compactRead({ ...docsRead(), text: "Save as…\nDon’t save", buttons: [{ ref: "e9", text: "Save as…" }] }, { find: "save as..." });
+    expect([typeset.text, typeset.buttons]).toEqual(["Save as…", [{ ref: "e9", text: "Save as…" }]]);
+    expect(compactRead({ ...docsRead(), text: "Don’t save" }, { find: "don't" }).lines).toBe(1);
   });
 
   test("a section runs from its heading to the next heading of its level or above, with the elements in it", () => {
