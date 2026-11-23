@@ -316,8 +316,9 @@ straight to controllers.
 
 `EventQueue` (`event-queue.ts`) is the second cut: it owns pending events,
 selection, command barriers and cancellation marks, and the exclusion shared
-by queued handlers and voice auditions. Selection reads live handoff settings
-and the ledger's priority set at every dequeue. Intake stays in `daemon.ts`:
+by queued handlers and voice auditions. Selection reads live handoff settings,
+each session's focus-group tier (Top, Working, Shelf: `sidebar-groups.ts`) and
+the ledger's ★ set at every dequeue, in that order. Intake stays in `daemon.ts`:
 shutdown gating, transcript warming, event ordering, immediate inject/interrupt
 dispatch, latest-turn latching, and synchronous mode transitions all precede
 submission. The daemon also keeps audio, pause state, and shutdown cleanup.

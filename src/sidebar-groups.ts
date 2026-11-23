@@ -228,9 +228,10 @@ function noSuchGroup(layout: SidebarGroups, ref: string): { ok: false; error: st
  * One change from `conch agent groups`, applied to the layout the daemon holds; what it did, in a line, or why not.
  * The result is checked again as a save is (`validateSidebarGroups`) before it is kept.
  *
- * - **new**: at the top of the list, as the Mac's New focus group puts one, when the list has an order of its own;
- *   when it has none yet (`sections` empty: Tyler never arranged anything) it follows the folders, so the Mac's own
- *   folder order, which only it keeps until then, isn't replaced by one the daemon can't see.
+ * - **new**: at the top of the list, as the Mac's New focus group puts one, when the list has an order of its own.
+ *   When it has none yet (`sections` empty: Tyler never arranged anything) the order is left alone, so the Mac's own
+ *   folder order, which only it keeps until then, isn't replaced by one the daemon can't see; the Mac draws the group
+ *   after the folders that order names.
  * - **add**: only a session at the top of its family, as the Mac moves only those; a subagent or a started session
  *   goes wherever the session above it goes (`headOf` names it). A session not running now may be placed, for when it
  *   is back, as the Mac keeps one's place.
