@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, renderAgentCommandHelp, renderAgentHelp, type AgentCommandText } from "./agent-instructions.ts";
 import { moreHint } from "./browser-read.ts";
+import { isFocusPriority } from "./sidebar-groups.ts";
 
 /**
  * `conch agent …`'s words, to the arguments of the handler it runs, and its answer back to words.
@@ -352,6 +353,41 @@ export const AGENT_COMMAND_PARSERS: Readonly<Record<string, CommandParser>> = {
       return { session: parsed.words[0], label: parsed.words.slice(1).join(" ") };
     },
   },
+  groups: {
+    flags: { priority: "value" },
+    build(parsed, _context, command) {
+      const [action = "list", ...rest] = parsed.words;
+      const priority = parsed.values.get("priority");
+      if (priority !== undefined && action !== "new") fail(command, "--priority goes with new; for a group there already: groups priority <group> top|working|shelf");
+      const tier = (value: string | undefined): string => {
+        if (!isFocusPriority(value)) fail(command, `a priority is top, working or shelf, not ${JSON.stringify(value ?? "")}`);
+        return value;
+      };
+      switch (action) {
+        case "list":
+          if (rest.length) fail(command, `unexpected ${JSON.stringify(rest[0])}: groups list takes nothing`);
+          return { action };
+        case "new":
+          if (!rest.length) fail(command, "the new group's name is missing");
+          return defined({ action, name: rest.join(" "), priority: priority === undefined ? undefined : tier(priority) });
+        case "rename":
+          if (rest.length < 2) fail(command, "the group and its new name are missing (quote a group's name that has spaces in it)");
+          return { action, group: rest[0], name: rest.slice(1).join(" ") };
+        case "priority":
+          // The priority is the last word, so a group's name with spaces in it needs no quotes here.
+          if (rest.length < 2) fail(command, "the group and its priority (top, working or shelf) are missing");
+          return { action, group: rest.slice(0, -1).join(" "), priority: tier(rest[rest.length - 1]) };
+        case "add":
+          if (rest.length < 2) fail(command, "the group and the sessions to put in it are missing (quote a group's name that has spaces in it)");
+          return { action, group: rest[0], sessions: rest.slice(1) };
+        case "remove":
+          if (!rest.length) fail(command, "the sessions to take out of their groups are missing");
+          return { action, sessions: rest };
+        default:
+          return fail(command, `groups is list, new, rename, priority, add or remove, not ${JSON.stringify(action)}`);
+      }
+    },
+  },
   notify: {
     flags: { title: "value", session: "value", link: "value" },
     build: (parsed, _context, command) => defined({
@@ -418,6 +454,9 @@ export const AGENT_COMMAND_ALIASES: Readonly<Record<string, string>> = {
   remove: "unpublish",
   pause: "mode pause",
   resume: "mode resume",
+  group: "groups",
+  focus: "groups",
+  "focus-groups": "groups",
 };
 
 /** The command the first words name: the longest name that fits, an alias's, or none. */
@@ -722,6 +761,20 @@ function renderPage(value: Record<string, unknown>): string[] {
   return [...lines, ...renderLines(extra), ...(more ? [`more: ${more}`] : [])];
 }
 
+/** `groups`: what was done, then a group a line in the user's order, then how many sessions are in none. */
+function renderFocusGroups(value: Record<string, unknown>): string[] {
+  const lines = typeof value.done === "string" ? [`done: ${value.done}`] : [];
+  const groups = Array.isArray(value.groups) ? value.groups.filter(isRecord) : [];
+  for (const group of groups) {
+    const running = (Array.isArray(group.sessions) ? group.sessions.filter(isRecord) : []).map((session) => `${String(session.id)} "${String(session.label ?? "")}"`);
+    const others = typeof group.notRunning === "number" && group.notRunning ? `${group.notRunning} not running` : "";
+    lines.push(`${String(group.name)} (${String(group.priority)}) ${String(group.id)}: ${[running.join(", ") || "none running", others].filter(Boolean).join("; ")}`);
+  }
+  if (!groups.length) lines.push("no focus groups yet: groups new <name> makes one");
+  if (typeof value.ungrouped === "number") lines.push(`in no focus group, handed off as working: ${value.ungrouped} running`);
+  return lines;
+}
+
 /** An answer as `conch agent` prints it: JSON with --json, else short lines, both in the CLI's words. */
 export function renderAgentAnswer(command: AgentCommandText, value: unknown, json: boolean, now = Date.now()): string {
   const worded = cliWorded(value);
@@ -736,5 +789,6 @@ export function renderAgentAnswer(command: AgentCommandText, value: unknown, jso
   if (typeof worded === "string") return worded;
   if (isRecord(worded) && command.name === "sessions" && Array.isArray(worded.sessions)) return renderSessions(worded, now).join("\n");
   if (isRecord(worded) && command.name === "browser read") return renderPage(worded).join("\n");
+  if (isRecord(worded) && command.name === "groups" && Array.isArray(worded.groups)) return renderFocusGroups(worded).join("\n");
   return renderLines(worded).join("\n");
 }

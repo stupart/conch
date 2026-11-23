@@ -41,6 +41,7 @@ that one rule is what keeps the loop from hearing itself.
 | saved settings | `{{CONFIG_DIR}}/settings.json` — never edit by hand; `conch settings` lists every key with its effective value and where it came from, `conch get`/`conch set`/`conch unset` change one |
 | errors the apps reported | `{{CONFIG_DIR}}/errors.jsonl` — one JSON object per line, newest last |
 | display labels and voice pins | `{{CONFIG_DIR}}/labels.json`, `{{CONFIG_DIR}}/voices.json` |
+| the sidebar's focus groups, their priority and order | `{{CONFIG_DIR}}/sidebar-groups.json` — the daemon's; change it from the Mac app's sidebar or `conch agent groups`, never by hand |
 | the daemon's play-by-play | `/tmp/conch-daemon.log` — every announce, mic open, transcription, inject and error, with timestamps |
 | what the apps are showing | `/tmp/conch-sessions.json` (the ledger; `state: "paused"` means manual mode) and `/tmp/conch-state.json` |
 | the control socket | `/tmp/conch.sock` — the CLI and the apps talk to the daemon here |
@@ -85,6 +86,10 @@ that one rule is what keeps the loop from hearing itself.
   auto), then whether the hook fired at all (no line in the log: a session
   that was already open during `conch setup` needs `/hooks` typed once), then
   `conch doctor` for the TTS path.
+- **conch hands over sessions in an unexpected order** — a session in a focus
+  group set to Top is heard first and one on the Shelf last (a session in no
+  group counts as Working); within that, a ★ prioritized session, then
+  `handoff-order`. `conch agent groups` lists each group's priority.
 - **Settings → Phone app shows an error** — the `phone` setting is off on a
   fresh machine: `conch set phone true`.
 - **No QR code on the Phone app tab** — the QR needs a relay and

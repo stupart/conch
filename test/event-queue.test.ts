@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { EventQueue, type EventQueueOptions } from "../src/event-queue.ts";
+import { EventQueue, handoffRank, takeNextQueuedEvent, type EventQueueOptions } from "../src/event-queue.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import type { HandoffOrder } from "../src/settings.ts";
 
@@ -33,6 +33,7 @@ function harness(overrides: Partial<EventQueueOptions> = {}) {
     handle: overrides.handle ?? (async () => {}),
     handoffOrder: overrides.handoffOrder ?? (() => state.order),
     prioritized: overrides.prioritized ?? state.prioritized,
+    tier: overrides.tier,
     shuttingDown: overrides.shuttingDown ?? (() => state.shuttingDown),
     consumeStopKey: overrides.consumeStopKey ?? (() => {
       state.stopCalls += 1;
@@ -400,6 +401,60 @@ describe("EventQueue", () => {
     gate.resolve();
     await drain;
     expect(handled).toEqual([first, recentTurn, recentWorking, recite, middle, wake, oldUrgent, oldWorking]);
+  });
+
+  // 2026-11-23, Tyler: "it would always return me to any top ones first and then working if all top is busy". A
+  // session's focus group's tier (top 0, working 1, shelf 2) comes before its ★ and the handoff order.
+  test("a top session is taken before a working one, and a working one before a shelf one, read live", async () => {
+    const gate = deferred();
+    const first = event("first");
+    const shelved = event("shelved");
+    const ungrouped = event("ungrouped");
+    const top = event("top");
+    const working = event("working");
+    const tiers = new Map([["shelved", 2], ["top", 0], ["working", 1]]);
+    const handled: TurnEvent[] = [];
+    const { queue } = harness({
+      // A session in no focus group has no tier of its own, and is working.
+      tier: (sessionId) => tiers.get(sessionId) ?? 1,
+      async handle(current) {
+        handled.push(current);
+        if (current === first) await gate.promise;
+        // Its group made Top while it waits: the priority is read again on every take.
+        if (current === top) tiers.set("shelved", 0);
+      },
+    });
+    const drain = queue.submit(first);
+    for (const current of [shelved, ungrouped, top, working]) await queue.submit(current);
+    gate.resolve();
+    await drain;
+    expect(handled).toEqual([first, top, shelved, ungrouped, working]);
+  });
+
+  test("within a tier the ★ comes first, then the handoff order; a ★ never lifts a session out of its tier", () => {
+    const queued = () => [event("w-old"), event("s-star"), event("w-star"), event("w-new"), event("s-plain")];
+    const tier = (sessionId: string) => (sessionId.startsWith("s-") ? 2 : 1);
+    const prioritized = new Set(["s-star", "w-star"]);
+    const drained = (order: "oldest" | "newest") => {
+      const queue = queued();
+      const taken: string[] = [];
+      for (let next = takeNextQueuedEvent(queue, order, handoffRank(tier, prioritized)); next; next = takeNextQueuedEvent(queue, order, handoffRank(tier, prioritized))) {
+        taken.push(next.sessionId);
+      }
+      return taken;
+    };
+    expect(drained("oldest")).toEqual(["w-star", "w-old", "w-new", "s-star", "s-plain"]);
+    expect(drained("newest")).toEqual(["w-star", "w-new", "w-old", "s-star", "s-plain"]);
+  });
+
+  test("a top session behind a command waits for it: tiers order only the cohort newer than the latest command", () => {
+    const queue = [event("old-top"), event("wake", "wake"), event("recent-shelf"), event("recent-working")];
+    const tier = (sessionId: string) => (sessionId.endsWith("top") ? 0 : sessionId.endsWith("shelf") ? 2 : 1);
+    const taken: string[] = [];
+    for (let next = takeNextQueuedEvent(queue, "oldest", handoffRank(tier, new Set())); next; next = takeNextQueuedEvent(queue, "oldest", handoffRank(tier, new Set()))) {
+      taken.push(`${next.type}:${next.sessionId}`);
+    }
+    expect(taken).toEqual(["turn-end:recent-working", "turn-end:recent-shelf", "wake:wake", "turn-end:old-top"]);
   });
 
   test("instant commands and mode acknowledgements retain insertion barriers", async () => {

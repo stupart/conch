@@ -37,7 +37,8 @@ there is no app. It is safe to run again. Then:
 ## What it does
 
 **Every session in one place.** The sidebar lists every Claude Code and Codex session on your Mac, grouped by folder,
-including the ones you started yourself in a terminal. Each row says what that session needs from you (an answer, a
+including the ones you started yourself in a terminal. Drag sessions into focus groups of your own, by project say, and
+give each a priority (Top, Working or Shelf): conch hands you a Top session's turn first and a Shelf one's last. Each row says what that session needs from you (an answer, a
 permission, work to look at) or what it is doing right now, with its subagents underneath. Start a new session or
 resume an old one from the app, choose its model, effort and account, and restart or close it from there. Several
 Claude and OpenAI accounts can sit side by side, with their usage.

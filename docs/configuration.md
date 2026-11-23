@@ -59,7 +59,7 @@ The defaults below are read from `src/settings.ts`; `conch settings` prints the 
 | `meeting-autopause` | `CONCH_MEETING_AUTOPAUSE` | `false` | Pause while another app is using a microphone |
 | `working-mic` | `CONCH_WORKING_MIC` | `false` | Announce and open the mic even while a session's background work is still running |
 | `interrupt-on-manual-reply` | `CONCH_INTERRUPT_ON_MANUAL_REPLY` | `true` | Stop reading or listening when you reply to that session by typing |
-| `handoff-order` | `CONCH_HANDOFF_ORDER` | `oldest` | Which queued session is read next: `oldest`, `newest` or `urgency` |
+| `handoff-order` | `CONCH_HANDOFF_ORDER` | `oldest` | Which queued session is read next: `oldest`, `newest` or `urgency`, after its focus group's priority (Top, then Working, then Shelf) and its ★ |
 
 **Sessions**
 

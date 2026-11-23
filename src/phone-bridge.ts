@@ -6,7 +6,7 @@ import { decodePeerMessageRequest } from "./peer-message-send.ts";
 import { decodeResourceRequest } from "./resource-ledger.ts";
 import { decodeTeamRequest } from "./team-desk.ts";
 import { decodeElsewhereRequest } from "./elsewhere.ts";
-import { decodeSidebarGroupsRequest } from "./sidebar-groups.ts";
+import { decodeFocusGroupsRequest, decodeSidebarGroupsRequest } from "./sidebar-groups.ts";
 import { connect } from "node:net";
 import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import { validateHistoryRequest } from "./history.ts";
@@ -227,6 +227,8 @@ export const MAC_APP_ONLY_DECODERS: Readonly<Record<string, (value: unknown) => 
   // are arranged on the Mac and only shown on the phone (sidebar-groups.ts).
   decodeElsewhereRequest,
   decodeSidebarGroupsRequest,
+  // An agent's focus-group edit (`conch agent groups`) comes from a shell on this Mac; the phone shows the groups only.
+  decodeFocusGroupsRequest,
   // What sessions left running, with their commands and folders, and a Stop: the Mac's (resource-ledger.ts).
   decodeResourceRequest,
 };

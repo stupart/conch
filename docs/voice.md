@@ -26,11 +26,22 @@ With no daemon running, the hooks still ring the bell and speak announcements; t
 ## Which session hears you
 
 The announcement is the address. What you say next goes to the session that just spoke. If several finish while you
-are talking to one, they wait their turn and are read one at a time, oldest first (`handoff-order`).
+are talking to one, they wait their turn and are read one at a time, oldest first (`handoff-order`). A session in a
+focus group set to Top goes before the rest, and one on the Shelf after them (see below); a ★ prioritized session goes
+first within its group's priority.
 
 To talk to another session, start with its name: "hey acme-web, run the tests again". You can also reopen the mic
 yourself: the mic button in the app's composer, `conch wake [name]` (bind it to a global hotkey), or the space bar in
 the terminal dashboard.
+
+### Focus groups
+
+In the Mac app's sidebar you can make focus groups of your own (a section's menu: New Focus Group…) and drag sessions
+into them, by project say. They only organize the list: a session keeps running where it is. Each group has a
+priority, set from its header's menu (Priority ▸ Top, Working, Shelf): when several sessions are waiting to be heard,
+conch hands you a Top one first, then Working, then Shelf. Working is the default, and a session in no group counts as
+Working; any number of groups can share a priority, and the Shelf is heard last, never silenced. The phone shows the
+same groups. Agents can list and arrange them too, when you ask (`conch agent groups`).
 
 ## How your words reach a session
 
