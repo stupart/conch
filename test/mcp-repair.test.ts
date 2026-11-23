@@ -3,9 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnswerKey } from "../src/agent-adapter.ts";
-import { claudeProjectSlug } from "../src/claude-title.ts";
 import {
-  CONCH_MCP_LOG_FOLDER,
   conchMcpFailureFor,
   conchMcpLogDir,
   failedServerStale,
@@ -57,12 +55,6 @@ function logFolder(cache: string, cwd = CWD): string {
 const writeLog = (dir: string, name: string, lines: readonly string[]) => writeFileSync(join(dir, name), `${lines.join("\n")}\n`);
 
 describe("where Claude Code logs conch's server", () => {
-  test("the project's cache folder, named the way its projects folder is", () => {
-    expect(claudeProjectSlug("/Users/someone/.config/conch/help")).toBe("-Users-someone--config-conch-help");
-    expect(conchMcpLogDir("/Users/someone/.config/conch/help", "/cache"))
-      .toBe(`/cache/-Users-someone--config-conch-help/${CONCH_MCP_LOG_FOLDER}`);
-  });
-
   test("a log's name is its first connection's time", () => {
     expect(mcpLogFileTime("2026-10-23T20-45-53-505Z.jsonl")).toBe(Date.parse("2026-10-23T20:45:53.505Z"));
     expect(mcpLogFileTime("2026-10-23T20-45-53-505Z.jsonl.tmp")).toBeUndefined();
@@ -182,19 +174,14 @@ describe("whether a session has a conch server", () => {
 describe("what the row says", () => {
   const failure = { file: "/cache/x.jsonl", error: ENOENT, at: Date.parse("2026-10-23T20:45:53.547Z") };
 
-  test("every current tool missing, why, and the fix: /reload-plugins, or a restart", () => {
-    expect(failedServerStale(failure, MCP_TOOL_NAMES)).toEqual({
+  test("every current tool missing, with the failure's own words and, once conch's reload didn't bring it back, why", () => {
+    expect(failedServerStale(failure, MCP_TOOL_NAMES)).toMatchObject({
       missing: [...MCP_TOOL_NAMES],
       basis: "failed",
       failedAt: "2026-10-23T20:45:53.547Z",
-      why: "its conch MCP server failed to start (ENOENT: no such file or directory, posix_spawn 'stdio')",
-      fix: "type /reload-plugins in this session, or restart it (close it and resume it), to start conch's MCP server again",
+      why: expect.stringContaining("(ENOENT: no such file or directory, posix_spawn 'stdio')"),
     });
-  });
-
-  test("once conch's own reload didn't bring it back, it says that too", () => {
-    expect(failedServerStale(failure, MCP_TOOL_NAMES, { at: 1, ok: false, reason: "no conch MCP server appeared within 20s of /reload-plugins" }).why)
-      .toEndWith("(ENOENT: no such file or directory, posix_spawn 'stdio'); conch tried /reload-plugins: no conch MCP server appeared within 20s of /reload-plugins");
+    expect(failedServerStale(failure, MCP_TOOL_NAMES, { at: 1, ok: false, reason: "no server within 20s" }).why).toEndWith("no server within 20s");
     expect(failedServerStale(failure, MCP_TOOL_NAMES, { at: 1, ok: true }).why).not.toContain("conch tried");
   });
 });

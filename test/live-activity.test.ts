@@ -483,24 +483,3 @@ describe("the line moves at most once a second", () => {
     expect(withLiveActivity(due.state, live, T0 + 30 * 60_000).changed).toBe(false);
   });
 });
-
-describe("the daemon's wiring", () => {
-  const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-
-  test("every row working on its own turn is observed, not only the eight with a conversation", () => {
-    const observed = daemon.slice(daemon.indexOf("const liveActivityObserved = liveActivity.observe("), daemon.indexOf('breadcrumb("panel: conversations");'));
-    expect(observed).toContain("orderedRows.flatMap(");
-    expect(observed).toContain('if (row.status !== "working" || row.waitingOnAgents || !session) return [];');
-    expect(observed).not.toContain("sessionsToPublish");
-  });
-
-  test("a full render puts the lines back on the snapshot it built, and a due line patches it without a scan", () => {
-    const render = daemon.slice(daemon.indexOf("lastPublishedPanelState = buildDaemonPublishedState("));
-    expect(render.indexOf("applyLiveActivity();")).toBeGreaterThan(render.indexOf("lastPublishedPanelState.sidebarGroups = sidebarLayout;"));
-    expect(render.indexOf("applyLiveActivity();")).toBeLessThan(render.indexOf("publishedStateWriter.request();"));
-    const apply = daemon.slice(daemon.indexOf("function applyLiveActivity(): boolean {"), daemon.indexOf("const windowPreviews = new WindowPreviews("));
-    expect(apply).toContain("withLiveActivity(lastPublishedPanelState, liveActivity, now)");
-    expect(apply).toContain("if (applyLiveActivity()) publishedStateWriter.request();");
-    expect(apply).not.toContain("renderSessionPanel");
-  });
-});

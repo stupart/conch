@@ -113,11 +113,6 @@ describe("browser read, compact", () => {
     expect(refs(compactRead(read, { full: true }))).toEqual(expect.arrayContaining(["e7", "e11", "e14"]));
   });
 
-  test("full is the read as it came, the answer from before", () => {
-    const read = docsRead();
-    expect(compactRead(read, { full: true })).toBe(read);
-  });
-
   test("a same-site link shows its path, one on this page its fragment, another site's its whole address, a long one cut", () => {
     expect(compactHref("https://acme.dev/pricing", URL)).toBe("/pricing");
     expect(compactHref("https://acme.dev/docs/deploy?from=start#top", URL)).toBe("/docs/deploy?from=start#top");

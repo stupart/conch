@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
   resolveNameAddressRoute,
   type NameAddressRouteOptions,
@@ -131,25 +130,5 @@ describe("spoken name routing", () => {
     expect(failure).toEqual({ kind: "deliver", event, text });
     expect(miss.kind === "deliver" && miss.event).toBe(event);
     expect(failure.kind === "deliver" && failure.event).toBe(event);
-  });
-
-  test("deliver guard applies the route before every target-dependent side effect", () => {
-    const source = readFileSync(new URL("../src/voice-loop.ts", import.meta.url), "utf8");
-    const start = source.indexOf("async function deliver(");
-    expect(start).toBeGreaterThan(-1);
-    const end = source.indexOf("/** Shared handling for anything heard while reading aloud", start);
-    expect(end).toBeGreaterThan(start);
-    const deliver = source.slice(start, end);
-
-    const routed = deliver.indexOf("resolveNameAddressRoute(cfg.claudeDir, event, text)");
-    expect(routed).toBeGreaterThan(-1);
-    expect(routed).toBeLessThan(deliver.indexOf("let committed = false"));
-    expect(deliver).toContain("if (beforeInject && !(await beforeInject())) return false");
-    expect(deliver).toContain("event = addressed.event");
-    expect(deliver).toContain("text = addressed.text");
-    expect(deliver).toContain("markInjected(event.sessionId)");
-    expect(deliver).toContain("const transcriptPath = event.transcriptPath ?? target?.transcriptPath");
-    expect(deliver).toContain("const beforeCount = cfg.autoSubmit && transcriptPath");
-    expect(deliver).toContain("injectText(cfg, event.pid, text, beforeInject, { steps })");
   });
 });

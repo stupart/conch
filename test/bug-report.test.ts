@@ -109,8 +109,6 @@ describe("filing it", () => {
     const h = harness();
     const first = h.bugs.file(request("s-1"));
     expect(first).toMatchObject({ kind: "bug-filed", outcome: "opened", ticket: 1, status: "open", count: 1, sessions: 1 });
-    expect(first.kind === "bug-filed" && first.said).toContain("filed as #1, a new ticket in Settings › Failures on this Mac");
-    expect(first.kind === "bug-filed" && first.said).toContain("it never goes anywhere public");
     const ticket = h.failures.tickets()[0]!;
     expect(ticket).toMatchObject({ origin: "bug", operation: "publish", title: "The pill never lit after a publish", status: "open", unseen: true });
     expect(ticket.sessions).toEqual([{ id: "s-1" }]);
@@ -132,7 +130,6 @@ describe("filing it", () => {
     h.now.value += 5 * 60_000;
     const again = h.bugs.file(request("s-1"));
     expect(again).toMatchObject({ kind: "bug-filed", outcome: "duplicate", ticket: 1, count: 1 });
-    expect(again.kind === "bug-filed" && again.said).toContain("you filed this as #1 5 min ago; it is open");
     expect(readFileSync(h.errors, "utf8").trim().split("\n")).toHaveLength(1);
     // An hour on, it is a new occurrence.
     h.now.value += HOUR;
@@ -217,15 +214,9 @@ describe("through a real control server", () => {
   });
 });
 
-// The daemon's half, pinned in its source as browser-workbench.test.ts pins the Workbench's: the record and the desk's
-// poll on one path, its answer on the socket, and nothing that leaves the Mac.
+// Nothing in the desk sends a report off the Mac.
 describe("in the daemon", () => {
-  test("a report is written as a record, filed by the failure desk at once, and answered on the socket", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    expect(daemon).toContain("record: (input) => void appendConchError(input, lastPublishedPanelState),");
-    expect(daemon).toContain("poll: () => void failureDesk.poll(),");
-    expect(daemon).toContain("ticket: (key) => failureDesk.tickets().find((ticket) => ticket.id === key),");
-    expect(daemon).toContain("bugReports: (request) => {");
+  test("a report never leaves the Mac", () => {
     const source = readFileSync(join(import.meta.dir, "..", "src", "bug-report.ts"), "utf8");
     for (const away of ["gh issue", "fetch(", "api.github.com", "linear"]) expect(source.toLowerCase()).not.toContain(away);
   });

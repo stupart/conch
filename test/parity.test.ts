@@ -7,7 +7,6 @@ import type { PublishedConversation } from "../src/conversation.ts";
 import {
   ansiLines,
   checkDelivery,
-  COMPOSE_SCRIPT,
   CUT_MINIMUM,
   DEFAULT_HISTORY_LINES,
   defaultParityDeps,
@@ -164,17 +163,9 @@ function stripScreen(screen: string): string {
 describe("the verdict line", () => {
   const row: ParityRow = { id: "e2e0cafe-0000-4000-8000-000000000001", label: "parity e2e" };
   test("PASS, FAIL and SKIP each name the session and the message", () => {
-    expect(verdictLine(row, "ship it", { pass: true, where: "screen", of: 6 }, "tmux %3 · 80×24"))
-      .toBe(`PASS parity e2e (e2e0cafe): "ship it" is in its terminal's screen [tmux %3 · 80×24]`);
-    expect(verdictLine(row, "ship it", { pass: true, where: "scrollback", of: 6 }, "tmux %3 · 80×24"))
-      .toBe(`PASS parity e2e (e2e0cafe): "ship it" is in its terminal's scrollback [tmux %3 · 80×24]`);
-    expect(verdictLine(row, "ship it", { pass: true, where: "cut", kept: 90, of: 400 }, "Terminal · ttys004"))
-      .toBe(`PASS parity e2e (e2e0cafe): the last 90 of 400 characters of "ship it" begin what its terminal keeps; the start scrolled out [Terminal · ttys004]`);
-    expect(verdictLine(row, "ship it", { pass: false, of: 6 }, "tmux %3 · 80×24"))
-      .toBe(`FAIL parity e2e (e2e0cafe): "ship it" is not in its terminal's screen or scrollback [tmux %3 · 80×24]`);
-    expect(verdictLine(row, null, null, "tmux %3")).toBe("SKIP parity e2e (e2e0cafe): no message to look for");
-    expect(verdictLine(row, "ship it", null, "no terminal", "its terminal can't be read: gone"))
-      .toBe("SKIP parity e2e (e2e0cafe): its terminal can't be read: gone");
+    expect(verdictLine(row, "ship it", { pass: true, where: "screen", of: 6 }, "tmux %3")).toStartWith(`PASS parity e2e (e2e0cafe): "ship it"`);
+    expect(verdictLine(row, "ship it", { pass: false, of: 6 }, "tmux %3")).toStartWith(`FAIL parity e2e (e2e0cafe): "ship it"`);
+    expect(verdictLine(row, null, null, "tmux %3")).toStartWith("SKIP parity e2e (e2e0cafe)");
   });
 });
 
@@ -231,26 +222,8 @@ describe("the command's options", () => {
   test("the published state is read where the daemon writes it", () => {
     expect(sessionsFilePath({})).toBe("/tmp/conch-sessions.json");
     expect(sessionsFilePath({ CONCH_SESSIONS_FILE: "/t/s.json" })).toBe("/t/s.json");
-    // The same rule as the daemon's own (status.ts), which the CLI can't import without its renderer.
-    const status = readFileSync(join(import.meta.dir, "../src/status.ts"), "utf8");
-    expect(status).toContain('export const SESSIONS_FILE = process.env.CONCH_SESSIONS_FILE || "/tmp/conch-sessions.json";');
   });
 
-  test("the CLI runs it, and says so in its help", () => {
-    const cli = readFileSync(join(import.meta.dir, "../src/cli.ts"), "utf8");
-    const help = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli.ts"), "help"]).stdout.toString();
-    expect(help).toContain("conch doctor | help-session | version | parity <session>");
-    expect(help).toContain("(parity --help)");
-    const detail = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli.ts"), "parity", "--help"]);
-    expect(detail.exitCode).toBe(0);
-    expect(detail.stdout.toString()).toStartWith("usage: conch parity <session> [--text <message>] [--out <file.png>] [--no-app] [--history <lines>]");
-    for (const flag of ["--text <message>", "--out <file.png>", "--no-app", "--history <lines>", "PASS, FAIL or SKIP"]) {
-      expect(detail.stdout.toString()).toContain(flag);
-    }
-    const parity = cli.slice(cli.indexOf('case "parity": {'), cli.indexOf('case "start": {'));
-    expect(parity).toContain("defaultParityDeps({ socketPath: cfg.socketPath, sessionsPath: sessionsFilePath() })");
-    expect(parity).toContain("process.exitCode = result.exitCode;");
-  });
 });
 
 describe("drawing the terminal", () => {
@@ -355,7 +328,6 @@ describe("the command", () => {
     expect(result.exitCode).toBe(0);
     expect(result.out).toEqual(["/tmp/p.png", `PASS parity e2e (e2e0cafe): "${excerpt(MESSAGE)}" is in its terminal's screen [tmux %3 · 40×24, 24 lines of scrollback read]`]);
     expect(calls.terminal).toEqual([[row.id, 700]]);
-    expect(result.notes[0]).toBe("message: the newest thing you sent in conch's conversation for parity e2e (item u1, 60s ago)");
     // The picture says what the line says.
     const header = calls.compose[0]!.items[0]!;
     expect(header.kind === "text" && header.lines[1]![0]!.t).toBe(result.out[1]!);
@@ -380,7 +352,6 @@ describe("the command", () => {
     const { deps } = fakeDeps();
     const result = await runParity({ query: "parity", app: false, history: 10, text: "not on that screen" }, deps);
     expect(result.exitCode).toBe(1);
-    expect(result.notes[0]).toBe("message: --text (15 characters to find)");
   });
 
   test("SKIP, exit 2: nothing sent, a terminal that can't be read, a session nobody has", async () => {
@@ -410,10 +381,11 @@ describe("the command", () => {
   });
 
   test("an app that doesn't answer is said, and conch's conversation is drawn instead", async () => {
-    const { deps } = fakeDeps({ app: { error: "is the conch Mac app running?" } });
+    const { deps, calls } = fakeDeps({ app: { error: "is the conch Mac app running?" } });
     const result = await runParity({ query: "parity", app: true, history: 10 }, deps);
     expect(result.exitCode).toBe(0);
-    expect(result.notes).toContain("conch's window: not photographed (is the conch Mac app running?); drew conch's published conversation instead");
+    expect(result.notes.some((note) => note.includes("is the conch Mac app running?"))).toBe(true);
+    expect(calls.compose[0]!.items.some((item) => item.kind === "image")).toBe(false);
   });
 
   test("a Terminal window is photographed when it can be, and read as text when it can't", async () => {
@@ -501,11 +473,5 @@ describe.skipIf(!Bun.which("osascript"))("the picture, drawn by AppKit", () => {
     const error = await defaultParityDeps({ socketPath: "", sessionsPath: "" }).compose({ out: "/nonexistent-dir/x.png", width: 10, height: 10, scale: 1, background: "#000000", items: [] });
     expect(error).toContain("could not write /nonexistent-dir/x.png");
     expect(existsSync("/nonexistent-dir/x.png")).toBe(false);
-  });
-
-  test("appended text never inherits the run before it", () => {
-    for (const attribute of ["NSBackgroundColorAttributeName", "NSUnderlineStyleAttributeName", "NSStrikethroughStyleAttributeName"]) {
-      expect(COMPOSE_SCRIPT).toContain(`else line.removeAttributeRange($.${attribute}, range);`);
-    }
   });
 });

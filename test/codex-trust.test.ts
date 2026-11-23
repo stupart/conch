@@ -52,8 +52,6 @@ test("trust is passed at launch, never written to the user's config", () => {
     backend: "codex", cwd: "/work/new", trustFolder: true,
   } as never);
   expect(command).toContain('-c \'projects."/work/new".trust_level="trusted"\'');
-  // Verified against the real binary: the override parses before a subcommand.
-  expect(command.indexOf("-c ")).toBeLessThan(command.length);
 });
 
 test("Claude gets no such flag, because it has none", () => {

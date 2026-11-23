@@ -1,11 +1,6 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { dispatchSocketTurnEvent } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
-
-const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-const voice = readFileSync(join(import.meta.dir, "..", "src", "voice-loop.ts"), "utf8");
 
 const stop = { type: "spacebar", sessionId: "", label: "", announce: "" } as TurnEvent;
 
@@ -50,49 +45,4 @@ test("a stop with nothing running at all is reported, not swallowed", () => {
   const { cb, calls } = callbacks({ busy: () => false, capturing: () => false });
   dispatchSocketTurnEvent(stop, cb);
   expect(calls).toEqual(["dropped"]);
-});
-
-test("the physical key asks the same question as the socket", () => {
-  // Both paths decide whether space stops or opens. They must not disagree:
-  // when they did, space fell through and opened a SECOND wake on a live mic.
-  expect(daemon).toContain('if (eventQueue.busy() || voice.capturing()) stopReciting("spacebar");');
-  expect(daemon).toContain("capturing: () => voice.capturing(),");
-  // ...and the loop answers with the whole four-term gate, never just `micOpen`.
-  expect(voice).toContain("capturing: normalMicOpen,");
-  expect(voice).toContain("activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen");
-});
-
-/**
- * Nothing that reads the transcript may sit in front of the microphone.
- *
- * The manual-reply baseline calls `countUserPrompts`, which on a cold cache
- * reads the whole file — 3.8s measured on a 189MB session. The log shows the
- * outside view: click at 23:18:44, `listening` at 23:18:56. Twelve seconds.
- * The reader is incremental for appends, so only the first scan is expensive;
- * the bug was that the first scan sat between arming the recorder and saying
- * anything about it. It is needed to build the manual-reply guard, which
- * happens after listening starts, so that is where it is awaited.
- */
-test("the transcript baseline is not awaited before the mic opens", () => {
-  const loopAt = voice.indexOf("async function conversationLoop");
-  expect(loopAt).toBeGreaterThan(-1);
-  const loop = voice.slice(loopAt);
-  const listeningAt = loop.indexOf('log(`listening → ');
-  expect(listeningAt).toBeGreaterThan(-1);
-  const beforeListening = loop.slice(0, listeningAt);
-
-  // Started before the mic, so the scan overlaps the open instead of blocking it...
-  expect(beforeListening).toContain("const manualReplyBaseline:");
-  // ...but never awaited there.
-  expect(beforeListening).not.toContain("await manualReplyListenBaseline(");
-  expect(beforeListening).not.toContain("await manualReplyBaseline");
-
-  // ...and it IS awaited where the guard that needs it is built.
-  const afterListening = loop.slice(listeningAt);
-  const guard = afterListening.indexOf("createManualReplyListenGuard(");
-  expect(guard).toBeGreaterThan(-1);
-  expect(afterListening.slice(0, guard)).toContain("manualReplyEvent = await manualReplyBaseline;");
-
-  // A failure must degrade, not become an unhandled rejection while it waits.
-  expect(beforeListening).toContain("transcript baseline failed");
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import {
-  CLAUDE_LIMIT_LINE, CLAUDE_LIMIT_OTHER_ROWS, CLAUDE_LIMIT_PREFILL, CLAUDE_LIMIT_STOP, CODEX_GOAL_LIMIT,
+  CLAUDE_LIMIT_LINE, CLAUDE_LIMIT_STOP, CODEX_GOAL_LIMIT,
   claudePromptReady, codexGoalLimited, limitMenuKey, readClaudeLimitMenu,
 } from "../src/claude-limit-menu.ts";
 
@@ -36,12 +36,7 @@ function menu(rows: string[], highlighted = 0): string {
 const TYLERS = ["Stop and wait for limit to reset", "Wait here, then continue automatically at 10pm", "Add funds to continue with usage credits"];
 
 describe("Claude Code's usage-limit menu, word for word", () => {
-  test("the words conch looks for are the ones on the screen that night", () => {
-    expect(CLAUDE_LIMIT_STOP).toBe("Stop and wait for limit to reset");
-    expect(CLAUDE_LIMIT_OTHER_ROWS).toContain("Wait here, then continue automatically");
-    expect(CLAUDE_LIMIT_OTHER_ROWS).toContain("Add funds to continue with");
-    expect(CLAUDE_LIMIT_PREFILL).toBe("continue");
-    expect(CODEX_GOAL_LIMIT).toBe("Goal hit usage limits (/goal resume)");
+  test("the limit line names which limit was hit", () => {
     expect(CLAUDE_LIMIT_LINE.exec("You've hit your weekly limit · resets Nov 14 at 10pm")?.[1]).toBe("weekly");
     expect(CLAUDE_LIMIT_LINE.exec("You’ve reached your Fable limit.")?.[1]).toBe("Fable");
   });

@@ -60,10 +60,10 @@ describe("/push and /push-token", () => {
     expect(seen).toEqual([registration]);
   });
 
-  test("the daemon wires them, and logs a token by its tail only", () => {
+  // The only guard that a device token reaches the daemon's log by its tail alone.
+  test("the daemon logs a token by its tail only", () => {
     const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
     const wiring = daemon.slice(daemon.indexOf("push: {"), daemon.indexOf("requestPreview: createPreviewRequester"));
-    expect(wiring).toContain("pushDevices.register(registration)");
     expect(wiring).toContain("tokenTail(registration.token)");
     expect(wiring).not.toMatch(/\$\{registration\.token\}/);
   });

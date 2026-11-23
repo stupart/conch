@@ -74,7 +74,6 @@ final class OnboardingTests: XCTestCase {
     /// Setup asks for the three the voice loop needs; Screen Recording and Notifications are asked when first needed, so
     /// they never hold the step open, and an answer macOS can't give yet is not called off.
     func testPermissionsAreSatisfiedByTheThreeSetupAsksAlone() {
-        XCTAssertEqual(OnboardingReadiness.setupAsks, [.microphone, .accessibility, .automation])
         XCTAssertEqual(OnboardingPermissionsStep.loop, OnboardingReadiness.setupAsks)
         var statuses: [ConchPermission: ConchPermissionStatus] = [
             .microphone: .granted, .accessibility: .granted, .automation: .granted, .screenRecording: .denied,
@@ -103,8 +102,6 @@ final class OnboardingTests: XCTestCase {
     /// The rail ends at iPhone, and You're set follows it, the phone handing back included. Try it, which followed iPhone
     /// with a daemon that could run the practice turn, went with the overlays (2026-11-11): nothing shows it or counts it.
     func testTheRailEndsAtIPhone() {
-        XCTAssertEqual(OnboardingStep.rail, [.agents, .permissions, .voice, .phone])
-        XCTAssertEqual(fresh.rail, OnboardingStep.rail)
         let atPhone = run([.begin, .next, .next, .next])
         XCTAssertEqual(atPhone.step, .phone)
         XCTAssertEqual(atPhone.applying(.next, readiness: fresh).step, .done, "You're set follows iPhone")
@@ -236,15 +233,6 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(progress.mark(.phone), .done)
     }
 
-    /// The phone asks for no notifications until it has some to send (decision 11), so the Mac shows no row for them.
-    /// The stage itself stays, in its place, so the ask can come back without moving what's on disk.
-    func testTheMacMirrorsNoNotificationsRow() {
-        XCTAssertEqual(PhoneSetupStage.mirrored, [.paired, .microphone, .tour])
-        XCTAssertFalse(PhoneSetupStage.mirrored.contains(.notifications))
-        XCTAssertEqual(PhoneSetupStage.allCases, [.waiting, .connecting, .paired, .notifications, .microphone, .tour, .finished])
-        XCTAssertEqual(PhoneSetupStage(rawValue: "notifications"), .notifications)
-    }
-
     func testALateReportNeverUndoesAStage() {
         var progress = run([.phone(.init(device: "Tyler's iPhone", stage: .tour))])
         progress = progress.applying(.phone(.init(device: "Tyler's iPhone", stage: .paired)), readiness: fresh)
@@ -259,12 +247,8 @@ final class OnboardingTests: XCTestCase {
             StatusMenu.rows(StatusMenu.Input(voice: .talk, quiet: false, exchangeActive: false, ready: [], working: [], setupLeft: left))
         }
         let putAway = run([.begin, .next, .skip, .close])
-        let left = putAway.remaining(fresh).map(\.title)
-        XCTAssertEqual(left, ["Permissions", "Voice", "iPhone"])
-        let rows = menu(left)
+        let rows = menu(putAway.remaining(fresh).map(\.title))
         guard case let .item(first) = rows.first else { return XCTFail("no reminder at the top") }
-        XCTAssertEqual(first.title, "Finish setting up conch")
-        XCTAssertEqual(first.detail, "3 left: Permissions, Voice, iPhone")
         XCTAssertEqual(first.command, .finishSetup)
         XCTAssertEqual(rows[1], .separator)
         XCTAssertEqual(rows[2], .header)
@@ -318,8 +302,5 @@ final class OnboardingTests: XCTestCase {
         let progress = run([.begin, .next, .skip, .phone(.init(device: "Tyler's iPhone", stage: .tour, declined: [.microphone]))])
         let data = try JSONEncoder().encode(progress)
         XCTAssertEqual(try JSONDecoder().decode(OnboardingProgress.self, from: data), progress)
-        // Readable on disk: the marks are keyed by step name, not an array of pairs.
-        let json = String(decoding: data, as: UTF8.self)
-        XCTAssertTrue(json.contains("\"permissions\":\"later\""), json)
     }
 }

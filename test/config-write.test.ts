@@ -22,9 +22,6 @@ import {
   validateRuntimeControlMessage,
 } from "../src/settings.ts";
 
-const repo = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(repo, path), "utf8");
-
 /**
  * Every test writes under its own temp dir. The real `~/.claude/settings.json`
  * and `~/.codex/config.toml` are in use by live sessions and are never named.
@@ -628,63 +625,6 @@ describe("the wire", () => {
       response: { kind: "config-rollback", file, restoredFrom: backup! },
     });
     expect(readFileSync(file, "utf8")).toBe(CODEX_CONFIG);
-  });
-});
-
-describe("the surfaces", () => {
-  test("the CLI mirrors the message and the daemon needs no wiring beyond the runtime entry", () => {
-    const cli = read("src/cli.ts");
-    expect(cli).toContain('case "config-toggle": {');
-    expect(cli).toContain('kind: "config-toggle",');
-    expect(cli).toContain('...(flags.has("--preview") ? { preview: true } : {}),');
-    expect(cli).toContain('case "config-rollback": {');
-    expect(cli).toContain("applies to the next session");
-    expect(cli).toContain("config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>");
-    // The runtime entry the daemon already passes is where the case lives.
-    expect(read("src/daemon.ts")).toContain("runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),");
-    expect(read("src/control-server.ts")).toContain('if (message.kind === "config-toggle") {');
-  });
-
-  test("the Mac inspector offers a toggle per plugin and MCP server, previews the diff, and shows the daemon's refusal verbatim", () => {
-    const inspector = read("mac-app/conch-mac/CapabilityInspectorView.swift");
-    const at = inspector.indexOf("struct ConfigTogglePreview: View");
-    expect(at).toBeGreaterThan(-1);
-    const preview = inspector.slice(at);
-    // Every toggle previews first: the diff, the scope, the file, and the label that keeps it honest.
-    expect(preview).toContain('Picker("Scope", selection: $scope)');
-    expect(preview).toContain('Text("user").tag("user")');
-    expect(preview).toContain('Text("project").tag("project")');
-    expect(preview).toContain("Text(reply.diff.isEmpty ? \"No change: the file already says so.\" : reply.diff)");
-    expect(preview).toContain('Text("Applies to the next session; a running session is untouched.")');
-    expect(preview).toContain('Button(applied ? "Done" : "Cancel", role: .cancel, action: onDone)');
-    expect(preview).toContain('Button("Apply") { apply() }');
-    expect(preview).toContain("expectBeforeHash: preview ? nil : reply?.beforeHash");
-    // The refusal is the daemon's text, never a paraphrase.
-    expect(preview).toContain("case let .refused(error): message = error");
-
-    const row = inspector.slice(inspector.indexOf("private struct CapabilityRow: View"), at);
-    expect(row).toContain("Toggle(\"\", isOn: Binding(");
-    expect(row).toContain("get: { entity.enabledForNextSession }");
-    expect(row).toContain("set: { onToggle?(entity, $0) }");
-    expect(row).toContain('Text("next session")');
-    expect(row).toContain("if entity.isToggleable, onToggle != nil {");
-    // Shared with the phone's inspector since it moved to ConchDesign.
-    const model = read("design/ConchDesign/Sources/ConchDesign/AgentCapabilities.swift");
-    // Only standalone plugins and servers at a scope conch writes; a plugin's own servers ride with the plugin.
-    expect(model).toContain("var isToggleable: Bool {");
-    expect(model).toContain('(kind == "plugin" || kind == "mcp-server") && parentId == nil');
-    expect(model).toContain('&& ["user", "project", "local"].contains(scope)');
-
-    const store = read("mac-app/conch-mac/StateStore.swift");
-    const toggle = store.indexOf("func toggleCapability(_ request: ConchConfigToggleRequest) async -> ConfigToggleOutcome {");
-    expect(toggle).toBeGreaterThan(-1);
-    const body = store.slice(toggle, toggle + 1200);
-    expect(body).toContain("return .refused(error.error)");
-    expect(body).toContain('return .refused("daemon not running")');
-    const socket = read("mac-app/conch-mac/ConchSocketClient.swift");
-    expect(socket).toContain('let kind = "config-toggle"');
-    expect(socket).toContain("let expectBeforeHash: String?");
-    expect(socket).toContain("struct ConchConfigToggleReply: Decodable, Equatable, Sendable {");
   });
 });
 

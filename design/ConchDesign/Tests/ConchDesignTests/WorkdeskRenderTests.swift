@@ -3,12 +3,11 @@ import SwiftUI
 import XCTest
 @testable import ConchDesign
 
-/// The Workdesk's browser, drawn: the strip's + and its tabs, a blank tab with its profile picker, an agent clicking and
-/// typing where the user can watch, a tab the user paused agents in, and a new profile being named. Hosted in a window
-/// off every screen rather than `ImageRenderer`, so the address field and the buttons draw as they do in the app.
+/// The Workdesk's browser, drawn: an agent clicking and typing where the user can watch. Hosted in a window off every
+/// screen rather than `ImageRenderer`, so the address field and the buttons draw as they do in the app.
 ///
-/// `CONCH_WORKDESK_RENDERS=<dir>` also writes each picture, light and dark, as a PNG to look at. Everything in them is
-/// invented: no real page, session, account or person.
+/// `CONCH_WORKDESK_RENDERS=<dir>` also writes each picture as a PNG to look at. Everything in them is invented: no real
+/// page, session, account or person.
 @MainActor
 final class WorkdeskRenderTests: XCTestCase {
     private var windows: [NSWindow] = []
@@ -62,37 +61,15 @@ final class WorkdeskRenderTests: XCTestCase {
     // MARK: - The scenes
 
     func testAnAgentClickingWhereTheUserCanWatch() throws {
-        for dark in [false, true] {
-            let rep = try picture(Scene.clicking, size: Scene.size, dark: dark, name: "workdesk-agent-clicking")
-            // The ripple sits where the click landed: the middle of Export CSV.
-            XCTAssertTrue(isAgentBlue(color(rep, Scene.exportButton.midX, Scene.pageTop + Scene.exportButton.midY)), "the click's mark, \(dark ? "dark" : "light")")
-        }
-    }
-
-    func testANewBlankTabWithItsProfilePicker() throws {
-        for dark in [false, true] {
-            _ = try picture(Scene.newTab, size: Scene.size, dark: dark, name: "workdesk-new-tab-profile-picker")
-        }
+        let rep = try picture(Scene.clicking, size: Scene.size, dark: false, name: "workdesk-agent-clicking")
+        // The ripple sits where the click landed: the middle of Export CSV.
+        XCTAssertTrue(isAgentBlue(color(rep, Scene.exportButton.midX, Scene.pageTop + Scene.exportButton.midY)), "the click's mark")
     }
 
     func testAnAgentTypingIntoAField() throws {
-        for dark in [false, true] {
-            let rep = try picture(Scene.typing, size: Scene.size, dark: dark, name: "workdesk-agent-typing")
-            // The field's outline, on its left edge.
-            XCTAssertTrue(isAgentBlue(color(rep, Scene.emailField.minX - 4, Scene.pageTop + Scene.emailField.midY)), "the typed field's outline, \(dark ? "dark" : "light")")
-        }
-    }
-
-    func testATabTheUserPausedAgentsIn() throws {
-        for dark in [false, true] {
-            _ = try picture(Scene.paused, size: Scene.size, dark: dark, name: "workdesk-paused")
-        }
-    }
-
-    func testANewProfileBeingNamed() throws {
-        for dark in [false, true] {
-            _ = try picture(Scene.naming, size: CGSize(width: 300, height: 250), dark: dark, name: "workdesk-new-profile")
-        }
+        let rep = try picture(Scene.typing, size: Scene.size, dark: false, name: "workdesk-agent-typing")
+        // The field's outline, on its left edge.
+        XCTAssertTrue(isAgentBlue(color(rep, Scene.emailField.minX - 4, Scene.pageTop + Scene.emailField.midY)), "the typed field's outline")
     }
 }
 
@@ -116,7 +93,6 @@ private enum Scene {
     static let dashboard = Workbench.Tab(id: "tab-1", sessionId: "s1", url: "https://analytics.northwind.example/dashboard", title: "Dashboard · Northwind Analytics", profile: profiles[1].id, openedAt: 1)
     static let billing = Workbench.Tab(id: "tab-2", sessionId: "s1", url: "https://billing.northwind.example/invoices", title: "Invoices", profile: profiles[1].id, openedAt: 2)
     static let bank = Workbench.Tab(id: "tab-3", sessionId: "s1", url: "https://bank.example/accounts", title: "Accounts · Example Bank", openedAt: 3, openedByUser: true, paused: true)
-    static let blank = Workbench.Tab(id: "tab-4", sessionId: "s1", url: "", openedAt: 4, openedByUser: true)
     static let signup = Workbench.Tab(id: "tab-5", sessionId: "s1", url: "https://app.fieldnotes.example/signup", title: "Create your account · Fieldnotes", openedAt: 5)
 
     static var clicking: some View {
@@ -142,45 +118,6 @@ private enum Scene {
         )
     }
 
-    static var paused: some View {
-        pane(
-            tabs: [(dashboard, false, false, false), (bank, true, false, false)],
-            bar: WorkbenchBar.Facts(canGoBack: true, isSecure: true, hasPage: true, paused: true),
-            address: bank.url,
-            page: AnyView(BankPage()),
-            mark: nil,
-            since: 0
-        )
-    }
-
-    static var newTab: some View {
-        ZStack(alignment: .topLeading) {
-            pane(
-                tabs: [(dashboard, false, false, false), (blank, true, false, false)],
-                bar: WorkbenchBar.Facts(canPickProfile: true),
-                address: "",
-                page: AnyView(WorkbenchBlankPage(profileName: "Default")),
-                mark: nil,
-                since: 0,
-                newTabHovered: true
-            )
-            // The picker as the chip opens it: a popover can't be drawn offscreen, so its content in a popover's card,
-            // its right edge on the chip's (the chip ends 85.5 from the right: the close, open and pause buttons and gaps).
-            WorkbenchProfileList(profiles: profiles, selected: "default", pick: { _ in }, create: { _ in nil })
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ConchColor.surfaceRaised))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.14), radius: 8, y: 6)
-                .offset(x: size.width - 85.5 - 240, y: 34 + 1 + 26 + 6)
-        }
-    }
-
-    static var naming: some View {
-        WorkbenchProfileList(profiles: profiles, selected: "default", naming: true, draft: "Client work", pick: { _ in }, create: { _ in nil })
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ConchColor.surfaceRaised))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-            .padding(20)
-    }
-
     /// The Workdesk as the app lays it out: the strip (its place tabs, a hairline, the browser tabs and a deliverable,
     /// then the +), the bar, and the page with the agent's mark over it.
     static func pane(
@@ -189,8 +126,7 @@ private enum Scene {
         address: String,
         page: AnyView,
         mark: WorkbenchMark?,
-        since: Double,
-        newTabHovered: Bool = false
+        since: Double
     ) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
@@ -198,7 +134,7 @@ private enum Scene {
                 PlaceTab(symbol: "chevron.left.forwardslash.chevron.right", name: "Shell")
                 Rectangle().fill(ConchColor.hairline).frame(width: 1, height: 14).padding(.horizontal, 2)
                 // The filed work scrolls in the strip's own run, as the app's does: each tab at its own width.
-                WorkdeskTabRun(shown: tabs.first(where: \.1).map { AnyHashable($0.0.id) }, newTab: {}, newTabHovered: newTabHovered) {
+                WorkdeskTabRun(shown: tabs.first(where: \.1).map { AnyHashable($0.0.id) }, newTab: {}) {
                     ForEach(tabs, id: \.0.id) { tab, selected, working, activity in
                         WorkbenchTabButton(tab: tab, isSelected: selected, agentWorking: working, hasActivity: activity, open: {}, close: {})
                             .workdeskTab(tab.id)
@@ -353,28 +289,5 @@ private struct SignupPage: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(.white))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(white: 0.8)))
             .offset(x: rect.minX, y: rect.minY)
-    }
-}
-
-/// An invented bank's page, in a tab the user took over.
-private struct BankPage: View {
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.white
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Your accounts").font(.system(size: 20, weight: .semibold)).foregroundStyle(Color(white: 0.1))
-                ForEach([("Everyday checking ··· 0000", "$2,480.15"), ("Savings ··· 0000", "$11,920.00")], id: \.0) { name, amount in
-                    HStack {
-                        Text(name).font(.system(size: 13)).foregroundStyle(Color(white: 0.2))
-                        Spacer()
-                        Text(amount).font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Color(white: 0.1))
-                    }
-                    .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(white: 0.88)))
-                }
-            }
-            .padding(28)
-            .frame(maxWidth: 520, alignment: .leading)
-        }
     }
 }

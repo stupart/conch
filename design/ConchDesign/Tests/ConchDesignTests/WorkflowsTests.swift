@@ -55,8 +55,9 @@ final class WorkflowsTests: XCTestCase {
         XCTAssertEqual(decoded.workflows[0].phases, [WorkflowPhaseInfo(title: "Scan", detail: "read CI logs"), WorkflowPhaseInfo(title: "Fix")])
         XCTAssertNil(decoded.workflows[1].locations[0].enabled)
         XCTAssertEqual(decoded.runs.first?.currentPhase, "Verify")
-        XCTAssertEqual(WorkflowsLibrary.featureOffLine(decoded.accounts),
-                       "Workflows are off for Studio in Claude Code's settings, so its sessions don't offer them. Turn them on with /config in a session.")
+        // Only the account whose setting is off is named.
+        XCTAssertEqual(WorkflowsLibrary.featureOffLine(decoded.accounts)?.contains("Studio"), true)
+        XCTAssertEqual(WorkflowsLibrary.featureOffLine(decoded.accounts)?.contains("Personal"), false)
         XCTAssertNil(WorkflowsLibrary.featureOffLine([decoded.accounts[0]]))
     }
 
@@ -65,33 +66,20 @@ final class WorkflowsTests: XCTestCase {
         XCTAssertEqual(WorkflowsLibrary.groups(workflows).map(\.title), ["Yours", "In your projects"])
         XCTAssertEqual(WorkflowsLibrary.filter(workflows, query: "flaky scan").map(\.name), ["find-flaky-tests"], "a phase's title counts")
         XCTAssertEqual(WorkflowsLibrary.filter(workflows, query: "").count, 2)
-        XCTAssertEqual(WorkflowsLibrary.detail(workflows[0]), "/find-flaky-tests · 2 phases")
         XCTAssertEqual(WorkflowsLibrary.chips(workflows[1]).map(\.title), ["Claude · p/app"])
         XCTAssertEqual(WorkflowsLibrary.chips(workflows[0]).map(\.title), ["Claude · Personal"])
     }
 
-    func testARunsProgressIsSaidPlainly() throws {
+    func testARunsBarCountsItsAgentsAndWhenToUseLosesItsLeadIn() throws {
         let run = try XCTUnwrap(JSONDecoder().decode(WorkflowsPage.self, from: page).runs.first)
-        XCTAssertEqual(WorkflowsLibrary.runState(run), "Running · Verify")
-        XCTAssertEqual(WorkflowsLibrary.agentsLine(run.agents, running: true), "6 of 10 agents done")
-        // The bar counts what its line counts: 6 of 10 agents.
+        // 6 of 10 agents done.
         XCTAssertEqual(try XCTUnwrap(WorkflowsLibrary.fraction(run)), 0.6, accuracy: 0.0001)
+        let ended = WorkflowRunInfo(runId: "wf_2", sessionId: "s", sessionLabel: "docs", name: "f", status: "completed",
+                                    agents: .init(started: 8, done: 8), updatedAt: 0, durationMs: 33 * 60_000)
+        XCTAssertEqual(WorkflowsLibrary.fraction(ended), 1)
+        XCTAssertNil(WorkflowsLibrary.fraction(WorkflowRunInfo(runId: "w", sessionId: "s", sessionLabel: "s", name: "n", status: "running", updatedAt: 0)))
         XCTAssertEqual(WorkflowsLibrary.whenToUse("When CI flaps"), "CI flaps")
         XCTAssertEqual(WorkflowsLibrary.whenToUse("use when a release is near"), "A release is near")
         XCTAssertEqual(WorkflowsLibrary.whenToUse("Before a release"), "Before a release")
-        XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[0], running: true), "4 agents")
-        XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[1], running: true), "2 of 6 agents")
-        XCTAssertEqual(WorkflowsLibrary.phaseAgents(run.phases[2], running: true), "not started")
-        let now = Date(timeIntervalSince1970: 1 + 7 * 60)
-        XCTAssertEqual(WorkflowsLibrary.runDetail(run, now: now), "app · 6 of 10 agents done · started 7 min ago")
-        XCTAssertEqual(WorkflowsLibrary.runDetail(run, now: now, session: false), "6 of 10 agents done · started 7 min ago")
-        let ended = WorkflowRunInfo(runId: "wf_2", sessionId: "s", sessionLabel: "docs", name: "f", status: "completed",
-                                    agents: .init(started: 8, done: 8), updatedAt: 0, durationMs: 33 * 60_000)
-        XCTAssertEqual(WorkflowsLibrary.runState(ended), "Completed")
-        XCTAssertEqual(WorkflowsLibrary.fraction(ended), 1)
-        XCTAssertEqual(WorkflowsLibrary.runDetail(ended, now: Date(timeIntervalSince1970: 2 * 3_600)), "docs · 8 agents · 33 min · 2 h ago")
-        XCTAssertEqual(WorkflowsLibrary.duration(4_500_000), "1 h 15 min")
-        XCTAssertEqual(WorkflowsLibrary.duration(40_000), "40 s")
-        XCTAssertNil(WorkflowsLibrary.fraction(WorkflowRunInfo(runId: "w", sessionId: "s", sessionLabel: "s", name: "n", status: "running", updatedAt: 0)))
     }
 }

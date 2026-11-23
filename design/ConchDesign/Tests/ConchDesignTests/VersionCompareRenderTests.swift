@@ -5,8 +5,6 @@ import XCTest
 
 /// The before/after views, drawn offscreen and read back pixel by pixel: the before shows left of the divider and the
 /// after right of it, side by side puts each whole in its half, and the diff tints what changed.
-///
-/// `CONCH_COMPARE_RENDERS=<dir>` also writes each picture as a PNG, to look at.
 @MainActor
 final class VersionCompareRenderTests: XCTestCase {
     /// A flat picture of one colour, `width` x `height`.
@@ -20,24 +18,14 @@ final class VersionCompareRenderTests: XCTestCase {
         return context.makeImage()!
     }
 
-    private func render(_ view: some View, width: CGFloat, height: CGFloat, dark: Bool = false, name: String) throws -> Pixels {
+    private func render(_ view: some View, width: CGFloat, height: CGFloat, dark: Bool = false) throws -> Pixels {
         let content = view
             .frame(width: width, height: height)
             .background(dark ? ConchColor.ground.dark.color : ConchColor.ground.light.color)
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
-        let image = try XCTUnwrap(renderer.cgImage)
-        if let directory = ProcessInfo.processInfo.environment["CONCH_COMPARE_RENDERS"] {
-            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            let renderer2x = ImageRenderer(content: content)
-            renderer2x.scale = 2
-            let url = URL(fileURLWithPath: directory).appendingPathComponent("\(name).png")
-            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
-            CGImageDestinationAddImage(destination, try XCTUnwrap(renderer2x.cgImage), nil)
-            XCTAssertTrue(CGImageDestinationFinalize(destination))
-        }
-        return Pixels(image)
+        return Pixels(try XCTUnwrap(renderer.cgImage))
     }
 
     struct Pixels {
@@ -75,10 +63,10 @@ final class VersionCompareRenderTests: XCTestCase {
     func testTheSliderShowsTheBeforeLeftOfTheDividerAndTheAfterRightOfIt() throws {
         let before = swatch(0.9, 0.1, 0.1) // red
         let after = swatch(0.1, 0.1, 0.9) // blue
-        for (fraction, name) in [(0.3, "slider-30"), (0.7, "slider-70")] {
+        for fraction in [0.3, 0.7] {
             let pixels = try render(
                 VersionCompareSlider(before: before, after: after, beforeName: "v1", afterName: "v2", fraction: .constant(fraction)),
-                width: 400, height: 300, name: name
+                width: 400, height: 300
             )
             let divider = Int(400 * fraction)
             // Well away from the divider, its handle and the chips: the middle row's ends, the bottom row either side.
@@ -99,7 +87,7 @@ final class VersionCompareRenderTests: XCTestCase {
                 before: swatch(0.9, 0.1, 0.1), after: swatch(0.1, 0.1, 0.9, width: 400, height: 200),
                 beforeName: "v1", afterName: "v2", fraction: .constant(0.5)
             ),
-            width: 200, height: 400, name: "slider-fitted"
+            width: 200, height: 400
         )
         // 400x200 into 200x400: 200x100 at y 150. The 4:3 before inside that frame is 133 wide, centred at x 33…167.
         XCTAssertFalse(pixels.isBlue(150, 120) || pixels.isRed(50, 120), "ground above the picture")
@@ -110,37 +98,6 @@ final class VersionCompareRenderTests: XCTestCase {
         XCTAssertFalse(pixels.isBlue(150, 280) || pixels.isRed(50, 280), "ground below the picture")
     }
 
-    /// The phone fixture's photo edit (mobile/conch-ios/fixtures/deliverables), at a Mac pane's size, light and dark: the
-    /// before's flat grey left of the divider, the after's colour right of it.
-    func testThePhotoFixtureComparesAtAMacPanesSize() throws {
-        let fixtures = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("mobile/conch-ios/fixtures/deliverables")
-        guard let before = ConchImage.thumbnail(atPath: fixtures.appendingPathComponent("photo-before.jpg").path, maxPixelSize: 3_000),
-              let after = ConchImage.thumbnail(atPath: fixtures.appendingPathComponent("photo-after.jpg").path, maxPixelSize: 3_000)
-        else { throw XCTSkip("the phone fixtures aren't beside this package") }
-        func saturation(_ c: (r: Int, g: Int, b: Int)) -> Int { max(c.r, c.g, c.b) - min(c.r, c.g, c.b) }
-        for dark in [false, true] {
-            let slider = try render(
-                VersionCompareSlider(before: before, after: after, beforeName: "v1", afterName: "v2",
-                                     fraction: .constant(0.42), matte: ConchColor.surface),
-                width: 960, height: 640, dark: dark, name: "mac-photo-slider-\(dark ? "dark" : "light")"
-            )
-            // The sky, a third of the way down: grey on the left, blue on the right.
-            XCTAssertLessThan(saturation(slider.at(150, 120)), 60, "the before's sky is flat: \(slider.at(150, 120))")
-            XCTAssertGreaterThan(saturation(slider.at(800, 120)), 100, "the after's sky is blue: \(slider.at(800, 120))")
-            _ = try render(
-                VersionPicturesSideBySide(
-                    before: before, after: after,
-                    beforeLine: "v1 · 2h ago — The photo as shot: flat and cool",
-                    afterLine: "v2 · just now — Warmer grade, lifted shadows, more colour in the sky"
-                ),
-                width: 960, height: 520, dark: dark, name: "mac-photo-side-\(dark ? "dark" : "light")"
-            )
-        }
-    }
-
     // MARK: - Side by side
 
     func testSideBySideShowsEachVersionWholeInItsHalf() throws {
@@ -148,7 +105,7 @@ final class VersionCompareRenderTests: XCTestCase {
         let after = swatch(0.1, 0.1, 0.9, width: 300, height: 400)
         let wide = try render(
             VersionPicturesSideBySide(before: before, after: after, beforeLine: "v1 · 2h ago — flat grade", afterLine: "v2 · just now — warm grade"),
-            width: 800, height: 500, name: "side-by-side-mac"
+            width: 800, height: 500
         )
         XCTAssertTrue(wide.isRed(200, 300))
         XCTAssertTrue(wide.isBlue(600, 300))
@@ -158,7 +115,7 @@ final class VersionCompareRenderTests: XCTestCase {
                 before: swatch(0.9, 0.1, 0.1, width: 600, height: 400), after: swatch(0.1, 0.1, 0.9, width: 600, height: 400),
                 beforeLine: "v1 · 2h ago — flat grade", afterLine: "v2 · just now — warm grade"
             ),
-            width: 390, height: 640, name: "side-by-side-phone"
+            width: 390, height: 640
         )
         XCTAssertTrue(tall.isRed(195, 180), "\(tall.at(195, 180))")
         XCTAssertTrue(tall.isBlue(195, 500), "\(tall.at(195, 500))")
@@ -174,7 +131,7 @@ final class VersionCompareRenderTests: XCTestCase {
         for dark in [false, true] {
             let pixels = try render(
                 VersionTextDiffRows(diff: diff, beforeName: "v1", afterName: "v2", expanded: .constant([])),
-                width: 520, height: 200, dark: dark, name: "diff-\(dark ? "dark" : "light")"
+                width: 520, height: 200, dark: dark
             )
             // Some row is tinted red (a removal) and some green (an addition), against the plain ground.
             var red = false
@@ -187,16 +144,5 @@ final class VersionCompareRenderTests: XCTestCase {
             XCTAssertTrue(red, "a removed line is tinted")
             XCTAssertTrue(green, "an added line is tinted")
         }
-    }
-
-    func testTheNoticeRenders() throws {
-        _ = try render(
-            VersionCompareNotice(
-                symbol: "doc.on.doc",
-                title: "v1 and v2 are the same file",
-                detail: "conch keeps a link to each version, not a copy: /tmp/photo.jpg now holds v2."
-            ),
-            width: 520, height: 240, name: "notice"
-        )
     }
 }

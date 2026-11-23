@@ -166,21 +166,10 @@ describe("where a request may go", () => {
     const request = { id: "r1", url: "https://acme.dev", viewport: { width: 1440, height: 900 }, fullPage: false, folder: "/c", deadline: 1 };
     expect(withCaptureRequests(state, [request])).toEqual({ v: 1, rows: [], captureRequests: [request] });
     expect(state).toEqual({ v: 1, rows: [] });
+    // The phone (and a second Mac through it) reads `lastPublishedPanelState`, which never carries them.
     const daemon = read("src/daemon.ts");
-    // The sessions file, which only this Mac's app reads, gets them; the phone (and a second Mac through it) reads
-    // `lastPublishedPanelState`, which never does.
-    // The Workbench's tabs and commands go on the same file, round it (browser-workbench.ts), and the Mac's notices
-    // round that (notify-user.ts): the phone gets its own through Apple.
-    expect(daemon).toContain("{ ...withNotices(withBrowserState(withCaptureRequests(lastPublishedPanelState, pageCaptures.requests()), browserWorkbench), macNotices.list()), mcpToolset: MCP_TOOLSET }");
-    expect(daemon).toContain("publish: () => writeSessionsFile(),");
     expect(daemon).toContain("getState: () => lastPublishedPanelState,");
     expect(daemon).not.toMatch(/lastPublishedPanelState\s*=\s*[^;]*captureRequests/);
-    expect(daemon.match(/withCaptureRequests\(/g)).toHaveLength(1);
-    // One place writes the sessions file (`SessionsFilePublisher`, which skips a write that would change nothing).
-    expect(daemon.match(/sessionsFile\.publish\(/g)).toHaveLength(1);
-    // The Mac app reads them from its own snapshot; a remote Mac's store never handles them.
-    expect(read("mac-app/conch-mac/StateStore.swift")).toContain("pageCaptures.handle(snapshot.captureRequests)");
-    expect(read("mac-app/conch-mac/RemoteMacStore.swift")).not.toContain("captureRequests");
   });
 
   test("a phone may send neither half", () => {

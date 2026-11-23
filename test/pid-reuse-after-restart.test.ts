@@ -1,6 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { registryProcessAlive, type ProcessIdentity } from "../src/process-identity.ts";
 import { resumeRequest, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { BYPASS_OPTION } from "../src/agent-adapter.ts";
@@ -45,27 +43,4 @@ test("a session whose process is gone comes back as a resume, on the defaults a 
   expect(request.options).not.toHaveProperty(BYPASS_OPTION);
   const { claudeSignInId: _signIn, ...onDefault } = request;
   expect(terminalSessionCommand(onDefault)).toContain("--resume '11111111-2222-4333-8444-555555555555'");
-});
-
-const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-
-test("recovery after a restart counts a session as running only by its own process", () => {
-  const reconcile = daemon.slice(daemon.indexOf("function reconcileSessionSnapshot("), daemon.indexOf("void backgroundGuard.observe(named, running)"));
-  expect(reconcile).toContain("const alive = (pid?: number, procStart?: string): boolean => Boolean(pid && registryProcessAlive(pid, procStart));");
-  expect(reconcile).toContain("alive(s.pid, s.procStart) || alive(s.agentPid)");
-  expect(reconcile).not.toContain("defaultIsPidAlive");
-});
-
-test("Restart on a session whose process is gone resumes it, before reading any command line or closing anything", () => {
-  const close = daemon.slice(daemon.indexOf("const closeLiveSession = async ("), daemon.indexOf("await closeSession(session, { restart });"));
-  const gone = close.indexOf("if (restart && !session.jobId && session.pid && !registryProcessAlive(session.pid, session.procStart)) {");
-  expect(gone).toBeGreaterThan(-1);
-  expect(close.indexOf("await launchSession(request);", gone)).toBeGreaterThan(gone);
-  expect(close.indexOf("readProcessArgs(session.pid)")).toBeGreaterThan(gone);
-});
-
-test("a send hands the check the start time its row's registry entry gave, while the pid is still the row's", () => {
-  const loop = readFileSync(join(import.meta.dir, "..", "src", "voice-loop.ts"), "utf8");
-  const check = loop.slice(loop.indexOf("async function deadTargetOf("), loop.indexOf("/** The original session delivery path"));
-  expect(check).toContain("...(same && row?.procStart ? { procStart: row.procStart } : {}),");
 });

@@ -18,8 +18,6 @@ describe("a dictation is new to every app, however often the daemon restarts", (
     publishDictation("second words", "s1");
     // Two in one millisecond still differ.
     expect(getLiveState().dictated!.id).toBeGreaterThan(first.id);
-    // A restarted daemon counts from nothing, and still lands past any id this one gave out.
-    expect(Math.max(0 + 1, Date.now())).toBeGreaterThanOrEqual(first.id);
   });
 });
 

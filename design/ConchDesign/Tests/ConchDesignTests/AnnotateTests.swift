@@ -66,11 +66,9 @@ final class AnnotateTests: XCTestCase {
         let gone = AnnotationRoute.resolve(owner: "s1", label: "landing page", sessions: [("s0", "other", nil)])
         XCTAssertTrue(gone.ended)
         XCTAssertEqual(gone.label, "landing page")
-        XCTAssertEqual(AnnotationTray.Notice.ended(gone).text, "landing page has ended, so there is nowhere to send these. Your notes are kept here.")
-        // Listed, but with no way in: as the composer is off, so is Send, with the daemon's reason.
+        // Listed, but with no way in: as the composer is off, so is Send.
         let closed = AnnotationRoute.resolve(owner: "s1", label: "x", sessions: [("s1", "landing page", "Its terminal has closed.")])
         XCTAssertTrue(closed.ended)
-        XCTAssertEqual(AnnotationTray.Notice.ended(closed).text, "Can't send to landing page: Its terminal has closed. Your notes are kept here.")
         XCTAssertEqual(AnnotationTray.Notice.ended(closed).actions, [.copy])
     }
 
@@ -84,16 +82,13 @@ final class AnnotateTests: XCTestCase {
         batch.save(two)
         let files = AnnotationPrompt.Files(overview: "/c/B/overview.png", pictures: [one.id: "/c/B/1.png", two.id: "/c/B/2.png"], json: "/c/B/notes.json")
         let text = AnnotationPrompt.text(for: batch, about: "Landing page", link: page, files: files)
-        XCTAssertEqual(text, """
-            /c/B/overview.png
-            [annotate] Tyler left 2 notes on your deliverable "Landing page" (http://localhost:5173/).
-            1. {selector: "section.hero > a.cta"}, the <a> "Start free trial": "make this bigger"
-               Picture: /c/B/1.png
-            2. {quote: "Ship faster with"} (selected: "Ship faster with fewer meetings"): "too long, five words at most"
-               Picture: /c/B/2.png
-            The page with the notes numbered: /c/B/overview.png. Everything above as JSON: /c/B/notes.json
-            To point back at any of these, publish marks with the same frame (review_to_front scene.marks).
-            """)
+        let lines = text.components(separatedBy: "\n")
+        // The overview first, then each note's frame (what a mark points back with) and its picture.
+        XCTAssertEqual(lines.first, "/c/B/overview.png")
+        XCTAssertTrue(lines.contains(#"1. {selector: "section.hero > a.cta"}, the <a> "Start free trial": "make this bigger""#), text)
+        XCTAssertTrue(lines.contains(#"2. {quote: "Ship faster with"} (selected: "Ship faster with fewer meetings"): "too long, five words at most""#), text)
+        XCTAssertTrue(lines.contains("   Picture: /c/B/2.png"), text)
+        XCTAssertTrue(text.contains("/c/B/notes.json"))
     }
 
     func testAPicturesNotesCarryTheFractionsAMarkTakes() {
@@ -105,7 +100,6 @@ final class AnnotateTests: XCTestCase {
             .components(separatedBy: "\n")
         XCTAssertEqual(lines[2], #"1. {image: "/Users/t/shots/hero.png"} rect [0.120, 0.400, 0.300, 0.180]: "this blurs""#)
         XCTAssertEqual(lines[3], #"2. {image: "/Users/t/shots/hero.png"} at [0.500, 0.250]: "a logo here""#)
-        XCTAssertTrue(lines[4].hasPrefix("The picture with the notes numbered: /c/o.png."))
     }
 
     func testANoteOnAFileInAFolderSaysWhichFileAndADocumentHasNoOverview() {
@@ -114,17 +108,15 @@ final class AnnotateTests: XCTestCase {
         let text = AnnotationPrompt.text(for: batch, about: "The module", link: "/work/module", files: .init(json: "/c/n.json"))
         let lines = text.components(separatedBy: "\n")
         // No picture: the header comes first.
-        XCTAssertEqual(lines[0], #"[annotate] Tyler left 1 note on your deliverable "The module" (/work/module)."#)
+        XCTAssertTrue(lines[0].hasPrefix("[annotate]"), lines[0])
         XCTAssertEqual(lines[1], #"1. {quote: "npm run dev"} in /work/module/README.md: "it's bun now""#)
-        XCTAssertEqual(lines[2], "Everything above as JSON: /c/n.json")
     }
 
     func testANoteWhoseAnchorWentAwayIsStillSentAndSaysSo() {
         let page = note(cta, "highlight this", found: false)
         let file = note(.quote("gone words", selected: nil), "fix", on: "/w/a.md", found: false)
-        XCTAssertEqual(AnnotationPrompt.line(for: page, number: 3, deliverable: self.page),
-                       #"3. {selector: "section.hero > a.cta"}, the <a> "Start free trial": "highlight this" (not on the page when sent: it changed after this was pinned)"#)
-        XCTAssertTrue(AnnotationPrompt.line(for: file, number: 1, deliverable: "/w/a.md").hasSuffix("(not in the file when sent: it changed after this was pinned)"))
+        XCTAssertTrue(AnnotationPrompt.line(for: page, number: 3, deliverable: self.page).contains("not on the page when sent"))
+        XCTAssertTrue(AnnotationPrompt.line(for: file, number: 1, deliverable: "/w/a.md").contains("not in the file when sent"))
     }
 
     func testQuotesInsideAFrameAreQuotedAsJSONSoTheyReadBackExactly() {

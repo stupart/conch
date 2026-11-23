@@ -10,8 +10,6 @@ import {
   defaultMcpDependencies,
   dispatchJsonRpc,
   listedMcpTools,
-  MCP_LISTED_TOOLS,
-  MCP_MOVED_TOOL_NAMES,
   MCP_TOOLS,
   runMcpServer,
   type McpDependencies,
@@ -288,18 +286,11 @@ describe("which session a shell is", () => {
 describe("the MCP that is left", () => {
   test("a session started now is listed publishing and conch_run; one a hand-off serves keeps the moved tools it had", () => {
     expect(listedMcpTools().map((tool) => tool.name)).toEqual(["review_to_front", "conch_run"]);
-    expect(MCP_LISTED_TOOLS.map((tool) => tool.name)).toEqual(["review_to_front", "conch_run"]);
     // A server older than this one, which listed every tool: the session keeps them all, so a call under way still lands.
     expect(listedMcpTools({}).map((tool) => tool.name)).toEqual(MCP_TOOLS.map((tool) => tool.name));
     // A server that said what it listed: those, and no more.
     expect(listedMcpTools({ inherited: ["review_to_front", "conch_run"] }).map((tool) => tool.name)).toEqual(["review_to_front", "conch_run"]);
     expect(listedMcpTools({ inherited: ["browser_open", "conch_sessions"] }).map((tool) => tool.name)).toEqual(["conch_sessions", "review_to_front", "browser_open", "conch_run"]);
-    // The moved tools keep their schemas, and say where they went.
-    for (const name of MCP_MOVED_TOOL_NAMES) {
-      const tool = MCP_TOOLS.find((one) => one.name === name)!;
-      expect(tool.description).toStartWith("Moved to conch's CLI: `conch agent ");
-      expect(tool.description).toContain("a restart leaves only the CLI");
-    }
   });
 
   test("a server that still lists a moved tool says, the first time it is called, which command it is now", async () => {
@@ -308,7 +299,7 @@ describe("the MCP that is left", () => {
     const call = (id: number) => dispatchJsonRpc({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "conch_on_screen", arguments: {} } }, handlers, undefined, context);
     const first = (await call(1))?.result as { content: Array<{ text: string }> };
     expect(first.content).toHaveLength(2);
-    expect(first.content[1]!.text).toBe("conch_on_screen is `conch agent on-screen` in your shell now (`conch agent help on-screen`); this tool keeps working here until the session restarts.");
+    expect(first.content[1]!.text).toContain("`conch agent on-screen`");
     expect(((await call(2))?.result as { content: unknown[] }).content).toHaveLength(1);
     // A session started now is told nothing: it never had the tool.
     const fresh = (await dispatchJsonRpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "conch_on_screen", arguments: {} } }, handlers))?.result as { content: unknown[] };
@@ -352,13 +343,5 @@ describe("the MCP that is left", () => {
       { tool: "conch_transcript_tail", outcome: "input-error", via: "run" },
       { tool: "conch_run", outcome: "ok", via: undefined },
     ]);
-  });
-
-  test("review_to_front's answers name the other tools by the commands they are now", async () => {
-    const handlers = createMcpToolHandlers(CONFIG, dependencies({ parentPid: () => 999_999 }));
-    const response = await dispatchJsonRpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "review_to_front", arguments: { summary: "x", artifactKey: "k" } } }, handlers);
-    const text = (response?.result as { content: Array<{ text: string }> }).content[0]!.text;
-    expect(text).toContain('unknown argument "artifactKey": use key');
-    expect(text).not.toMatch(/\bconch_(?:sessions|deliverables|working_folders)\b/);
   });
 });

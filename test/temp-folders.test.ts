@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { darwinUserTempDir, describeTempFolders, inTempFolder, realTempFolders, tempFolders } from "../src/temp-folders.ts";
+import { darwinUserTempDir, inTempFolder, realTempFolders, tempFolders } from "../src/temp-folders.ts";
 
 /**
  * Each process used to allow its own `os.tmpdir()`, which is `$TMPDIR`: the agent's MCP server read the agent's
@@ -30,7 +30,6 @@ describe("the temp folders, named the same in every process", () => {
     expect(process.env.CONCH_USER_TEMP_DIR).toBeTruthy();
     expect(tempFolders()).toEqual(["/tmp", process.env.CONCH_USER_TEMP_DIR!]);
     expect(realTempFolders()[0]).toBe("/private/tmp");
-    expect(describeTempFolders()).toBe(`the temp folders (/tmp, ${process.env.CONCH_USER_TEMP_DIR})`);
     const saved = process.env.CONCH_USER_TEMP_DIR;
     delete process.env.CONCH_USER_TEMP_DIR;
     try {

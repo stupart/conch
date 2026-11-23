@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import type { Config } from "../src/config.ts";
 import {
@@ -473,36 +472,5 @@ describe("idle unload and prewarm (D2)", () => {
     expect(served).toBe(1);
     expect((await client.transcribeWarm(cfg, new Uint8Array(44), 1_000)).status).toBe("failed");
     expect(served).toBe(1);
-  });
-});
-
-describe("D2 wiring inside runDaemon", () => {
-  // runDaemon runs in no test; its wiring is pinned by source, the way the
-  // audio-lease and control-server seams are.
-  const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-
-  function between(startMarker: string, endMarker: string): string {
-    const start = daemonSource.indexOf(startMarker);
-    expect(start).toBeGreaterThan(-1);
-    const end = daemonSource.indexOf(endMarker, start);
-    expect(end).toBeGreaterThan(start);
-    return daemonSource.slice(start, end);
-  }
-
-  test("served transcriptions re-arm the clock, the window is read live, and a setting change re-arms", () => {
-    expect(daemonSource).toContain("whisperServerClient.setServedHandler(() => whisperSupervisor?.armIdleUnload())");
-    const construction = between(
-      "whisperSupervisor = new ServerSupervisor<WhisperRecoveryReason>({",
-      "resetReadiness: () => whisperServerClient.resetHealth()",
-    );
-    expect(construction).toContain("idleUnloadMs: () => cfg.whisperIdleUnloadMins * 60_000");
-    expect(daemonSource).toContain('if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload()');
-  });
-
-  // The order — a wake prewarms before its courtesy line, a finished turn
-  // before the bell — is executed in voice-loop.test.ts. What stays here is
-  // the daemon handing the loop this supervisor's prewarm.
-  test("the voice loop's prewarm is the whisper supervisor's", () => {
-    expect(daemonSource).toContain("prewarmEar: () => whisperSupervisor?.prewarm(),");
   });
 });

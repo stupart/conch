@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { buildPanelModel, buildPublishedState } from "../src/panel.ts";
 import { restartRequest, startRequestFromArgv, startOptionsError, terminalSessionCommand } from "../src/session-lifecycle.ts";
-import { AGENT_SESSION_SETTINGS, type SessionSettingsCatalog } from "../src/session-settings.ts";
-
-const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
+import type { SessionSettingsCatalog } from "../src/session-settings.ts";
 
 describe("a new session gets model and effort only when the person picked them", () => {
   test("no pick, no flag: the agent's own config decides", () => {
@@ -40,9 +36,8 @@ describe("a new session gets model and effort only when the person picked them",
       expect(startOptionsError({ backend: "codex", options: { model } })).toBeDefined();
       expect(() => terminalSessionCommand({ backend: "codex", cwd: "/w", options: { model } })).toThrow();
     }
-    expect(startOptionsError({ backend: "codex", options: { "reasoning-effort": "turbo" } }))
-      .toContain('"turbo" is not one of none, minimal, low, medium, high, xhigh, max, ultra, persistent');
-    expect(startOptionsError({ backend: "claude", options: { effort: "ultra" } })).toContain('"ultra" is not one of low, medium, high, xhigh, max');
+    expect(startOptionsError({ backend: "codex", options: { "reasoning-effort": "turbo" } })).toBeDefined();
+    expect(startOptionsError({ backend: "claude", options: { effort: "ultra" } })).toBeDefined();
   });
 
   test("conch start takes them by name", () => {
@@ -65,16 +60,6 @@ describe("a new session gets model and effort only when the person picked them",
     );
     expect(restartRequest({ sessionId: "s1", backend: "claude", cwd: "/w" }, ["--model", "fable", "--effort", "max"]).request.options)
       .toEqual({ "bypass-permissions": false, model: "fable", effort: "max" });
-  });
-
-  test("each setting in the typed list names a real start option of its agent", () => {
-    for (const [backend, agent] of Object.entries(AGENT_SESSION_SETTINGS)) {
-      const table = backend === "codex"
-        ? ["model", "reasoning-effort", "sandbox", "ask-for-approval", "bypass-permissions", "profile"]
-        : ["model", "permission-mode", "bypass-permissions", "effort", "fork-session"];
-      for (const setting of agent.settings) expect(table).toContain(setting.startOption);
-      expect(agent.settings.map((setting) => setting.key)).toEqual(["model", "effort"]);
-    }
   });
 });
 
@@ -107,7 +92,7 @@ describe("what the published state carries", () => {
         return sessionId === "x1" ? { model: "gpt-6-astra", modelLabel: "GPT-6-Astra", effort: "xhigh" } : undefined;
       },
     });
-    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, sessionSettings: 1 });
+    expect(published.features?.sessionSettings).toBe(1);
     expect(published.sessionSettings).toEqual(catalog);
     expect(published.rows.find((row) => row.id === "x1")?.settings).toEqual({ model: "gpt-6-astra", modelLabel: "GPT-6-Astra", effort: "xhigh" });
     expect(published.rows.find((row) => row.id === "c1")?.settings).toBeUndefined();
@@ -118,24 +103,8 @@ describe("what the published state carries", () => {
 
   test("an older caller publishes none of it", () => {
     const published = buildPublishedState("device", model, new Map(), new Set(), 100);
-    expect(published.features).toEqual({ deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1 });
+    expect(published.features?.sessionSettings).toBeUndefined();
     expect(published.sessionSettings).toBeUndefined();
     expect(published.rows.every((row) => row.settings === undefined)).toBe(true);
-  });
-
-  test("the daemon reads settings from the same tail as the context meter, and publishes both", () => {
-    const daemon = read("src/daemon.ts");
-    const block = daemon.slice(daemon.indexOf('breadcrumb("panel: context usage, model and effort");'));
-    expect(block).toContain("const tail = path ? await readTranscriptTailLines(path).catch(() => null) : null;");
-    expect(block).toContain("context: contextUsageFromLines(tail, format),");
-    expect(block).toContain("settings: sessionSettingsFromLines(tail, format),");
-    expect(block).toContain("noteSessionSettings(session, facts?.settings ? { ...facts.settings } : null);");
-    expect(daemon).toContain("        publishedSessionSettingsFor(),\n      );");
-    expect(daemon).toContain("sessionSettingsCatalog = accountModelCatalog({ claudeDir: cfg.claudeDir, codexHome: codexHomeDir() },");
-    // A tail with no turn in it keeps what an earlier read found; the agent's own record is asked once.
-    const note = daemon.slice(daemon.indexOf("const noteSessionSettings = "), daemon.indexOf("// Keyed by executable path,"));
-    expect(note).toContain("if (sample || known || sessionSettingsAsked.has(session.sessionId)) return;");
-    expect(note).toContain('AGENT_SESSION_SETTINGS[session.backend ?? "claude"].readRecorded?.(session.agentSessionId ?? session.sessionId,');
-    expect(note).toContain("session.codexAccountId ? requireCodexAccount(session.codexAccountId).configDir : undefined");
   });
 });

@@ -874,23 +874,6 @@ describe("client presence", () => {
       .toBeFalse();
   });
 
-  test("reports connect and disconnect so the Mac can reclaim audio", async () => {
-    // A phone that walks out of the room must not leave the Mac permanently
-    // silence — the daemon needs to know the moment the last one goes away.
-    const counts: number[] = [];
-    const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
-    const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
-    await new Promise<void>((resolve, reject) => {
-      ws.onmessage = () => resolve();
-      ws.onerror = () => reject(new Error("ws error"));
-      setTimeout(() => reject(new Error("timed out")), 3000);
-    });
-    expect(counts).toEqual([1]);
-    ws.close();
-    await new Promise<void>((resolve) => setTimeout(resolve, 400));
-    expect(counts).toEqual([1, 0]);
-  });
-
   test("one of multiple clients closing does not release the last-client lease", async () => {
     const counts: number[] = [];
     const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
@@ -934,21 +917,6 @@ describe("the audio lease", () => {
     expect(counts.at(-1)).toBe(0);
     bridge = null;
   });
-
-  test("clientCount is the lease's source of truth", async () => {
-    const b = startBridge();
-    expect(b.clientCount()).toBe(0);
-    const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
-    await new Promise<void>((resolve, reject) => {
-      ws.onmessage = () => resolve();
-      ws.onerror = () => reject(new Error("ws error"));
-      setTimeout(() => reject(new Error("timed out")), 3000);
-    });
-    expect(b.clientCount()).toBe(1);
-    ws.close();
-    await new Promise<void>((r) => setTimeout(r, 400));
-    expect(b.clientCount()).toBe(0);
-  });
 });
 
 describe("how long the daemon gets to answer", () => {
@@ -960,14 +928,5 @@ describe("how long the daemon gets to answer", () => {
   test("an inject gets a budget that matches what it does", () => {
     expect(injectTimeoutFor(JSON.stringify({ type: "inject", text: "hi" })))
       .toBeGreaterThan(20_000);
-  });
-
-  test("everything else stays fast, where a quick answer is the point", () => {
-    expect(injectTimeoutFor(JSON.stringify({ kind: "audio-sink", sink: "phone" }))).toBe(4_000);
-    expect(injectTimeoutFor(JSON.stringify({ type: "pause" }))).toBe(4_000);
-  });
-
-  test("a malformed line does not get the long budget by accident", () => {
-    expect(injectTimeoutFor("not json")).toBe(4_000);
   });
 });

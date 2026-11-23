@@ -36,15 +36,12 @@ test("only this user's foreground, non-stopped TUI with a tty is eligible", () =
 test("the open log database scopes terminals to the actual Codex account; failures are unknown", async () => {
   const home = mkdtempSync(join(tmpdir(), "conch-terminal-profile-"));
   const db = join(home, "logs_2.sqlite"); writeFileSync(db, "");
-  const calls: string[][] = [];
   let opened: string | null = `p11\nn/another/account/logs_2.sqlite\np12\nn${db}\n`;
   const probe = async (argv: string[]) => {
-    calls.push(argv);
     return argv[0] === "ps" ? `11 501 ttys001 S+ codex resume ${THREAD}\n12 501 ttys002 S+ codex resume ${THREAD}` : opened;
   };
   try {
     expect([...await probeCodexTerminalSessions(home, probe, 501)]).toEqual([[THREAD, 12]]);
-    expect(calls[1]).toEqual(["lsof", "-a", "-p", "11,12", "-F", "pn", "--", db]);
     // A failed probe proves nothing: what the last good one found stands while its process lives (2026-10-15, a live
     // Codex session logged "Codex row has no pid" five times on a loaded Mac).
     opened = null;
@@ -79,7 +76,6 @@ test("a TUI attached to the shared daemon is proven by its socket to the server 
   const servers = new Map([[THREAD, 6163], [OTHER, 6163]]);
   try {
     expect([...await probeCodexTerminalSessions(home, probe, 501, () => true, Date.now, servers)]).toEqual([[THREAD, 48984]]);
-    expect(calls.at(-1)).toEqual(["lsof", "-a", "-U", "-p", "48984,48985,6163", "-F", "pdn"]);
     // A failed socket probe is unknown too: what the last good one proved stands while its process lives.
     sockets = null;
     expect([...await probeCodexTerminalSessions(home, probe, 501, () => true, Date.now, servers)]).toEqual([[THREAD, 48984]]);

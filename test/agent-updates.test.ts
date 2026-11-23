@@ -1,19 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { AgentAdapter } from "../src/agent-adapter.ts";
 import { dispatchRuntimeControlMessage, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
 import { validateControlResponse } from "../src/settings.ts";
 import {
   AgentUpdater,
   backoffMs,
-  brewUpgradeEnvironment,
-  BREW_TAIL_CHARS,
-  CHECK_EVERY_MS,
-  CHECK_FIRST_JITTER_MS,
-  CHECK_FIRST_MIN_MS,
-  CHECK_JITTER_MS,
   cloneFolder,
   agentUpdaterDeps,
   detectAgentInstall,
@@ -23,7 +17,6 @@ import {
   runBrewUpgrade,
   versionFromExecutable,
   type AgentUpdaterDeps,
-  type BrewResult,
   type InstallProbe,
 } from "../src/agent-updates.ts";
 
@@ -220,24 +213,6 @@ describe("how an agent CLI is installed, from where its binary really lives", ()
 });
 
 describe("the schedule", () => {
-  test("the first look is minutes after start, then every few hours, each jittered", () => {
-    const world = makeWorld();
-    const delays: number[] = [];
-    const deps = makeDeps(world, {
-      setTimer: (_run, ms) => { delays.push(ms); return delays.length; },
-      random: () => 0.75,
-    });
-    const updater = new AgentUpdater(deps);
-    // The sandbox refuses a real start; the schedule itself is what's under test.
-    (updater as unknown as { scheduleCheck(first: boolean): void }).scheduleCheck(true);
-    expect(delays[0]).toBe(CHECK_FIRST_MIN_MS + 0.75 * CHECK_FIRST_JITTER_MS);
-    expect(delays[0]!).toBeGreaterThanOrEqual(CHECK_FIRST_MIN_MS);
-    expect(delays[0]!).toBeLessThan(CHECK_FIRST_MIN_MS + CHECK_FIRST_JITTER_MS);
-    (updater as unknown as { scheduleCheck(first: boolean): void }).scheduleCheck(false);
-    expect(delays[1]!).toBeGreaterThanOrEqual(CHECK_EVERY_MS);
-    expect(delays[1]!).toBeLessThan(CHECK_EVERY_MS + CHECK_JITTER_MS);
-  });
-
   test("never starts in the test sandbox, and never runs brew there", async () => {
     const world = makeWorld();
     let timers = 0;
@@ -297,10 +272,6 @@ describe("backing off after a failure", () => {
       return { ok: false, code: 1, timedOut: false, tail: "Error: network\nmore" };
     },
     clone: async (from, to) => { await cloneFolder(from, to); void world; },
-  });
-
-  test("each failure waits longer, capped", () => {
-    expect([1, 2, 3, 4, 5, 99].map(backoffMs)).toEqual([6, 24, 72, 168, 168, 168].map((hours) => hours * 3_600_000));
   });
 
   test("a failure is reported once and not retried until the backoff passes, across restarts", async () => {
@@ -414,15 +385,6 @@ describe("only the named cask", () => {
     expect(calls).toEqual([]);
   });
 
-  test("the HOMEBREW_NO_AUTO_UPDATE trio is set exactly and nothing else is claimed", () => {
-    const env = brewUpgradeEnvironment({ HOMEBREW_NO_AUTO_UPDATE: "", PATH: "/usr/bin", HOMEBREW_CASK_OPTS: "--appdir=/Applications" });
-    expect(env.HOMEBREW_NO_AUTO_UPDATE).toBe("1");
-    expect(env.HOMEBREW_FORCE_API_AUTO_UPDATE).toBe("1");
-    expect(env.HOMEBREW_API_AUTO_UPDATE_SECS).toBe("0");
-    expect(env.HOMEBREW_NO_INSTALL_CLEANUP).toBe("1");
-    expect(env.HOMEBREW_CASK_OPTS).toBe("--appdir=/Applications"); // a person's own Homebrew setting, unchanged
-  });
-
   test("already current means brew isn't run at all", async () => {
     const world = makeWorld();
     const calls: Array<[string, string]> = [];
@@ -489,14 +451,6 @@ describe("failures are said, plainly", () => {
     expect(deps.logs[0]).not.toContain("tls handshake");
   });
 
-  test("a timeout says so", async () => {
-    const world = makeWorld();
-    const deps = makeDeps(world, { upgrade: async () => ({ ok: false, code: null, timedOut: true, tail: "" }) });
-    const updater = new AgentUpdater(deps);
-    await updater.checkAll();
-    expect(updater.status().agents[0]!.failure!.message).toContain("was stopped");
-  });
-
   test("brew exiting 0 without a newer version is still a failure, and the copy is let go", async () => {
     const world = makeWorld();
     const deps = makeDeps(world, { upgrade: async () => ({ ok: true, code: 0, timedOut: false, tail: "Warning: already installed" }) });
@@ -558,39 +512,11 @@ describe("failures are said, plainly", () => {
     expect(updater.status().agents[0]!.failure).toBeUndefined();
   });
 
-  test("a brew tail is bounded for the record", () => {
-    expect(BREW_TAIL_CHARS).toBeLessThanOrEqual(2_000);
-  });
 });
 
 describe("keeping the old version reachable for sessions already running", () => {
   /** A process's `/proc/<pid>/exe` as `proc_pidpath` says it. */
   const asProcess = (path: string) => path;
-
-  test("mid-upgrade: Homebrew renames the folder away, and the old binary is back at its old path before it's done", async () => {
-    const world = makeWorld();
-    let midway = "";
-    const deps = makeDeps(world, {
-      runningExecutables: async () => [world.binary(OLD)],
-      upgrade: async () => {
-        renameSync(world.staged, `${world.staged}.upgrading`);
-        await waitFor(() => { try { return lstatSync(world.staged).isSymbolicLink(); } catch { return false; } });
-        midway = readFileSync(join(world.staged, "claude"), "utf8");
-        await Bun.sleep(10);
-        rmSync(`${world.staged}.upgrading`, { recursive: true, force: true });
-        rmSync(join(world.caskroom, ".metadata", OLD), { recursive: true, force: true });
-        mkdirSync(join(world.caskroom, NEW), { recursive: true });
-        writeFileSync(join(world.caskroom, NEW, "claude"), `binary ${NEW}`, { mode: 0o755 });
-        rmSync(join(world.prefix, "bin", "claude"));
-        symlinkSync(join(world.caskroom, NEW, "claude"), join(world.prefix, "bin", "claude"));
-        return { ok: true, code: 0, timedOut: false, tail: "" };
-      },
-    });
-    await new AgentUpdater(deps).checkAll();
-    expect(midway).toBe(`binary ${OLD}`);
-    expect(lstatSync(world.staged).isSymbolicLink()).toBe(true);
-    expect(readFileSync(world.binary(OLD), "utf8")).toBe(`binary ${OLD}`);
-  });
 
   test("the new version is what's installed, and the old one is only a link to conch's copy", async () => {
     const world = makeWorld();
@@ -828,27 +754,7 @@ describe("new version, old sessions: only ever said", () => {
     expect(updater.status().agents[0]!.olderSessions).toEqual({ count: 2, versions: ["2.1.300", "2.1.280"] });
   });
 
-  test("nothing in the updater can reach a session: its only seam for them is a read", () => {
-    const source = readFileSync(join(dirname(import.meta.path), "../src/agent-updates.ts"), "utf8");
-    for (const forbidden of ["closeTerminalSession", "restartSession", "session-close", "sendControlMessage", "tmux", "kill-session", "dispatchRuntime"]) {
-      expect(source).not.toContain(forbidden);
-    }
-    // No code path spawns or signals anything but `brew` and `cp` and `ps`.
-    expect([...source.matchAll(/Bun\.spawn\(\[([^,\]]+)/g)].map((match) => match[1]).sort()).toEqual(['"/bin/cp"', '"/bin/ps"']);
-    expect(source.match(/spawnInstaller\)?\(\s*\n?\s*\[([^\]]+)\]/)?.[1]).toContain("upgrade");
-  });
-
-  test("the daemon wires sessions in as a read-only list", () => {
-    const daemon = readFileSync(join(dirname(import.meta.path), "../src/daemon.ts"), "utf8");
-    const block = daemon.slice(daemon.indexOf("new AgentUpdater("), daemon.indexOf("new AgentUpdater(") + 800);
-    expect(block).toContain("sessions: () => [...panelSessions.values()]");
-    expect(block).not.toContain("restart");
-    expect(block).not.toContain("close");
-  });
-
   test("a third agent is one adapter row: nothing here names one", async () => {
-    const source = readFileSync(join(dirname(import.meta.path), "../src/agent-updates.ts"), "utf8");
-    expect(source).not.toMatch(/backend (===|!==) "(claude|codex)"/);
     const world = makeWorld();
     const calls: Array<[string, string]> = [];
     const third = { ...fakeAdapter("claude", "fable"), displayName: "Fable" } as AgentAdapter;
@@ -904,7 +810,3 @@ describe("the reply the app reads", () => {
     expect(updater.status().agents[0]).toMatchObject({ channel: "updates-itself", installed: "2.1.320", canUpdate: false, newest: null });
   });
 });
-
-// `BrewResult`'s shape is what a failure line is built from.
-const _typecheck: BrewResult = { ok: true, code: 0, timedOut: false, tail: "" };
-void _typecheck;

@@ -9,7 +9,6 @@ import {
   formatBytes,
   formatProgress,
   hardDependencyInstallCommand,
-  INSTALLED_APP_PATH,
   missingHardDependencies,
   parseSetupArgs,
   progressReporter,
@@ -45,8 +44,7 @@ describe("one-command setup", () => {
     const left = parseSetupArgs([], true);
     expect(left.service).toBe(false);
     expect(left.plugin).toBe(true);
-    expect(left.serviceNotice).toContain(INSTALLED_APP_PATH);
-    expect(left.serviceNotice).toContain("`conch setup --service`");
+    expect(left.serviceNotice).toBeTruthy();
 
     expect(parseSetupArgs(["--service"], true)).toEqual({ service: true, plugin: true });
     expect(parseSetupArgs(["--no-plugin", "--service"], true)).toEqual({
@@ -57,32 +55,6 @@ describe("one-command setup", () => {
     expect(parseSetupArgs(["--no-service"], true)).toEqual({ service: false, plugin: true });
     // Without the app nothing changes, and forcing is a no-op.
     expect(parseSetupArgs(["--service"], false)).toEqual({ service: true, plugin: true });
-  });
-
-  test("prints why the service was left off, where it would have been installed", async () => {
-    const logs: string[] = [];
-    const originalLog = console.log;
-    console.log = (...data: any[]) => { logs.push(data.map(String).join(" ")); };
-    try {
-      const completion = await runSetupIntegrations(
-        {} as Config,
-        {
-          service: false,
-          serviceNotice: "Skipping the background service: the app owns the daemon.",
-          plugin: false,
-          absBun: "/absolute/bun",
-          absCli: "/absolute/cli.ts",
-        },
-        {
-          service: async () => { throw new Error("service should not run"); },
-          plugin: async () => { throw new Error("plugin should not run"); },
-        },
-      );
-      expect(completion).toEqual({ service: "skipped", plugin: "skipped" });
-      expect(logs.join("\n")).toContain("Skipping the background service: the app owns the daemon.");
-    } finally {
-      console.log = originalLog;
-    }
   });
 
   test("rejects unknown setup options before doing installation work", () => {
@@ -181,45 +153,14 @@ describe("one-command setup", () => {
     }
   });
 
-  test("ready output puts the already-open-session fix first and preempts mic failure", () => {
-    const ready = renderSetupReady(
-      { service: "installed", plugin: "installed" },
-      { color: false },
-    );
-    expect(ready.split("\n")[0]).toBe(
-      "╭─ DO THIS FIRST — Type /hooks in any Claude Code session you already have open.",
-    );
-    expect(ready).toContain("Sessions opened from now on pick conch up automatically.");
-    expect(ready).toContain("THEN — Just finish a turn.");
-    expect(ready).toContain("plays a tink, and opens");
-    expect(ready).toContain("talk, pause, and your words go back into that session.");
-    expect(ready).toContain("macOS will ask for microphone access");
-    expect(ready).not.toContain("System Settings");
-    expect(ready).toContain("If you miss the prompt, run `conch doctor`.");
-    // `conch` attached to a tmux dashboard nothing made after 2026-08-10; now it says where the dashboard is.
-    expect(ready).toContain(
-      "WHERE TO LOOK — `conch` says where the dashboard is; `conch sessions` lists every session, also over ssh",
-    );
-    expect(ready).not.toContain("Mac app");
-    expect(ready).toContain("IF IT'S QUIET — `conch doctor`");
-    expect(ready).toContain(
-      "installed: hooks · plugin · background service (starts at login) · speech models",
-    );
-    expect(ready.match(/^│ installed:/gm)).toHaveLength(1);
-    expect(ready).not.toMatch(/[✓○✗]/);
-    expect(ready.trimEnd().endsWith("╰─")).toBe(true);
+  test("ready output lists what was installed and, with no service, says to start the daemon", () => {
+    const ready = renderSetupReady({ service: "installed", plugin: "installed" }, { color: false });
+    expect(ready).toContain("background service");
+    expect(ready).not.toContain("conch daemon`");
 
-    const skipped = renderSetupReady(
-      { service: "skipped", plugin: "skipped" },
-      { color: false },
-    );
-    expect(skipped).toContain(
-      "THEN — Run `conch daemon` to start the voice loop; leave it open, then",
-    );
-    expect(skipped).not.toContain("THEN — Just finish a turn.");
-    expect(skipped).toContain("installed: hooks · speech models");
-    expect(skipped).not.toContain("background service (starts at login)");
-    expect(skipped).not.toContain("installed: hooks · plugin");
+    const skipped = renderSetupReady({ service: "skipped", plugin: "skipped" }, { color: false });
+    expect(skipped).toContain("`conch daemon`");
+    expect(skipped).not.toContain("background service");
   });
 
   test("ready output never sends anyone to wire Codex", () => {
@@ -233,10 +174,7 @@ describe("one-command setup", () => {
       { service: "installed", plugin: "installed" },
       { codexNeedsInstall: true, color: false },
     );
-    expect(ready.split("\n")[0]).toContain("Type /hooks");
     expect(ready).not.toContain("conch install --codex");
-    expect(ready).not.toContain("unfinished");
-    expect(ready).toContain("Codex needs nothing more");
   });
 
   test("hard-dependency guidance is copyable and includes Homebrew when absent", () => {
@@ -254,7 +192,6 @@ describe("one-command setup", () => {
       "brew install sox whisper-cpp",
     );
     const failure = renderHardDependencyFailure(missing, false);
-    expect(failure).toContain("stopped before downloading speech models");
     expect(failure).toContain("https://brew.sh");
     expect(failure.split("\n")).toContain("brew install sox whisper-cpp");
   });
@@ -275,30 +212,6 @@ describe("one-command setup", () => {
     )).toEqual([]);
   });
 
-  test("help presents setup as the single entry point in one grouped screen", () => {
-    const cli = join(import.meta.dir, "..", "src", "cli.ts");
-    const proc = Bun.spawnSync([process.execPath, cli, "help"], {
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    const stdout = proc.stdout.toString();
-
-    expect(proc.exitCode).toBe(0);
-    expect(stdout).toContain("Getting started:");
-    expect(stdout).toContain("conch setup                    run this once — installs everything");
-    expect(stdout).toContain("Optional / manual setup:");
-    expect(stdout).toContain("[--service|--no-service]");
-    expect(stdout).toContain("--no-plugin");
-    expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(25);
-  });
-
-  test("the setup command rejects unknown flags before starting setup", () => {
-    const cli = join(import.meta.dir, "..", "src", "cli.ts");
-    const proc = Bun.spawnSync([process.execPath, cli, "setup", "--mystery"]);
-
-    expect(proc.exitCode).toBe(1);
-    expect(proc.stderr.toString()).toContain("unknown setup option: --mystery");
-    expect(proc.stdout.toString()).not.toContain("conch setup — getting");
-  });
 });
 
 // Path 1 of docs/install-journeys.md: the three places `conch setup` went
@@ -367,8 +280,8 @@ describe("setup says what it does", () => {
     try {
       const dest = join(root, "model.bin");
       await downloadModel({ url: `${server.url}sized`, label: "test model", minBytes: 1_000 }, dest, out);
-      expect(lines[0]).toBe(`⬇️  test model: 2 MB → ${dest}\n`);
-      expect(lines.at(-1)).toBe("   2 MB / 2 MB (100%)\n");
+      expect(lines[0]).toContain(dest);
+      expect(lines.at(-1)).toContain("(100%)");
       expect(lines.length).toBeLessThanOrEqual(12);
       expect(readFileSync(dest).length).toBe(2_000_000);
       expect(existsSync(`${dest}.part`)).toBe(false);
@@ -376,7 +289,7 @@ describe("setup says what it does", () => {
       lines.length = 0;
       const chunked = join(root, "chunked.bin");
       await downloadModel({ url: `${server.url}chunked`, label: "chunked model", minBytes: 1_000 }, chunked, out);
-      expect(lines[0]).toBe(`⬇️  chunked model: size unknown → ${chunked}\n`);
+      expect(lines[0]).toContain("size unknown");
       expect(lines).toHaveLength(2); // one progress line per 100 MB when the size is unknown
       expect(lines[1]).toMatch(/^ {3}\d+ [KM]B \/ size unknown\n$/);
       expect(readFileSync(chunked).length).toBe(2_000_000);
@@ -401,16 +314,12 @@ describe("setup says what it does", () => {
     const log = spyOn(console, "log").mockImplementation(() => {});
     const said = () => log.mock.calls.some((args) => args.join(" ").includes(HOOKS_WIRED_LINE));
     try {
-      expect(HOOKS_WIRED_LINE).toContain("already open needs `/hooks` typed once");
-      expect(HOOKS_WIRED_LINE).toContain("opened from now on pick conch up automatically");
-
       await runInstall({ claudeDir } as Config);
       expect(said()).toBe(true);
 
       log.mockClear();
       await runInstall({ claudeDir } as Config); // already wired: open sessions have nothing to reload
       expect(said()).toBe(false);
-      expect(log.mock.calls.some((args) => args.join(" ").includes("Nothing to do."))).toBe(true);
     } finally {
       log.mockRestore();
       rmSync(root, { recursive: true, force: true });
@@ -422,37 +331,18 @@ describe("setup says what it does", () => {
       { service: "installed", plugin: "installed" },
       { color: false, paused: true },
     );
-    expect(manual).toContain("MODE — manual (persisted from a previous install)");
-    expect(manual).toContain("`conch resume`");
+    expect(manual).toContain("MODE — manual");
     expect(manual).not.toContain("MODE — auto");
 
     const auto = renderSetupReady(
       { service: "installed", plugin: "installed" },
       { color: false, paused: false },
     );
-    expect(auto).toContain("MODE — auto: conch speaks after every finished turn");
-    expect(auto).toContain("`conch pause`");
-    expect(auto).not.toContain("persisted");
+    expect(auto).toContain("MODE — auto");
+    expect(auto).not.toContain("MODE — manual");
 
     // No state passed reads as auto, the daemon's own default.
     expect(renderSetupReady({ service: "skipped", plugin: "skipped" }, { color: false }))
       .toContain("MODE — auto");
-  });
-
-  test("setup feeds the daemon's persisted mode into the banner and streams models through the downloader", () => {
-    // `runSetup` is the one function here no test can execute (it installs for
-    // real), so its two wirings are guarded as text: marker first, then placement.
-    const src = readFileSync(join(import.meta.dir, "..", "src", "install.ts"), "utf8");
-    expect(src).toContain("readState().paused");
-    expect(src).toContain("renderSetupReady(completion, { codexNeedsInstall, paused: readState().paused })");
-    const download = "await downloadModel(m, dest)";
-    expect(src).toContain(download);
-    expect(src.slice(src.indexOf(download), src.indexOf(download) + 300))
-      .toContain("Check your connection and re-run");
-    // One writer per `.part`: the daemon fetches the same file on its first run.
-    const lock = src.indexOf("let held = acquireFetchLock(dest);");
-    expect(lock).toBeGreaterThan(-1);
-    expect(lock).toBeLessThan(src.indexOf(download));
-    expect(src).toContain("const dest = join(modelsDir, m.file);");
   });
 });

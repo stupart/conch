@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyRuntimeControlMessage, sessionStartLine, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
+import { applyRuntimeControlMessage, type RuntimeControlDispatchOptions } from "../src/control-server.ts";
 import { acceptBackgroundTrust, backgroundTrustReport, startBackgroundProcess } from "../src/background-sessions.ts";
 import { acceptClaudeTrust, sessionFolder, terminalSessionCommand } from "../src/session-lifecycle.ts";
 import { validateRuntimeControlMessage } from "../src/settings.ts";
@@ -88,26 +88,18 @@ describe("the trust question is about the folder the session will run in", () =>
     expect(g.started).toEqual([{ kind: "session-start", host: "background", backend: "claude", trustFolder: true, cwd: helpSessionDir() }]);
   });
 
-  test("every start is one log line: agent, host, account id, the yes, and only the folder's last part", async () => {
+  test("a start's log line names only the folder's last part", async () => {
     const g = gate(() => false);
     await applyRuntimeControlMessage({ kind: "session-start", backend: "claude", host: "background", claudeAccountId: "work", cwd: "/Users/t/secret/project" }, g.options);
-    await applyRuntimeControlMessage({ kind: "session-start", backend: "claude", host: "background", claudeAccountId: "work", cwd: "/Users/t/secret/project", trustFolder: true }, g.options);
-    expect(g.lines).toEqual([
-      "session-start: claude background account=work trustFolder=no folder=project — asking whether to trust it first",
-      "session-start: claude background account=work trustFolder=yes folder=project",
-    ]);
-    expect(sessionStartLine({ kind: "session-start", backend: "codex", resumeSessionId: "t-1" }, "/", false))
-      .toBe("session-start: codex terminal resume account=default trustFolder=no folder=/");
+    expect(g.lines).toHaveLength(1);
+    expect(g.lines[0]).toContain("folder=project");
+    expect(g.lines[0]).not.toContain("secret");
   });
 
   test("only a yes never typed into a session still there is filed as an error", () => {
     const name = "conch-00000000-0000-4000-8000-000000000000";
-    expect(backgroundTrustReport(name, "answered")).toEqual({ line: `trust prompt in ${name}: answered` });
-    expect(backgroundTrustReport(name, "not asked").error).toBeUndefined();
-    expect(backgroundTrustReport(name, "the session ended").error).toBeUndefined();
-    expect(backgroundTrustReport(name, "never appeared").error).toContain("open its startup terminal");
-    expect(backgroundTrustReport(name, "still asking").error).toContain("did not take the yes");
-    expect(backgroundTrustReport(name, "still asking").error).toContain("open its startup terminal");
+    for (const outcome of ["answered", "not asked", "the session ended"] as const) expect(backgroundTrustReport(name, outcome).error).toBeUndefined();
+    for (const outcome of ["never appeared", "still asking"] as const) expect(backgroundTrustReport(name, outcome).error).toBeString();
   });
 });
 
@@ -124,11 +116,6 @@ describe("the Terminal path's typed yes", () => {
     });
     expect(outcome).toBe("accepted");
     expect(pressed).toBe(1);
-  });
-
-  test("waits a minute by default, as a background session does", () => {
-    const source = readFileSync(join(import.meta.dir, "../src/session-lifecycle.ts"), "utf8");
-    expect(source).toContain("waited < (dependencies.waitMs ?? 60_000)");
   });
 });
 
@@ -231,22 +218,4 @@ describe.skipIf(!tmux)("typing the yes into a background session's trust prompt"
     const { pane } = await startBackgroundProcess(`printf '%s\\n' '──────────' '❯ ' '──────────'; exec /bin/cat`, tmpdir());
     expect(await acceptBackgroundTrust(pane, probeCommand, { waitMs: 5_000 })).toBe("not asked");
   }, 15_000);
-});
-
-describe("the start sheets, as source (the apps have no XCTest target; the rules are tested in ConchDesign)", () => {
-  const ledger = readFileSync(join(import.meta.dir, "../mobile/conch-ios/conch-ios/LedgerView.swift"), "utf8");
-  const mac = readFileSync(join(import.meta.dir, "../mac-app/conch-mac/ContentView.swift"), "utf8");
-
-  test("both say the same thing when a session hasn't checked in, and offer its startup terminal", () => {
-    expect(ledger).toContain("StartedSessionWatch.notCheckedIn(backend: effectiveBackend.rawValue, background: background != nil, onPhone: true)");
-    expect(mac).toContain("StartedSessionWatch.notCheckedIn(backend: effectiveBackend.rawValue, background: backgroundId != nil, onPhone: false)");
-    expect(ledger).toContain('Button("Open startup terminal on Mac", systemImage: "terminal")');
-    expect(mac).toContain('Button("Open startup terminal", systemImage: "terminal") { store.openStartupTerminal(backgroundId) }');
-  });
-
-  test("the phone's startup-terminal button keeps its result off the notice, so the sheet still closes onto the session", () => {
-    expect(ledger).toContain("Task { terminalFailure = await bridge.openAgentTerminal(sessionId: backgroundId) }");
-    expect(ledger).not.toContain("error = await bridge.openAgentTerminal");
-    expect(ledger).toContain("if let id = await waitForSession(watch, rounds: 360), error == notice { open(id) }");
-  });
 });

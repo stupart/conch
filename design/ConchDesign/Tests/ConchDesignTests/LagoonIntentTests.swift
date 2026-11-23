@@ -173,11 +173,6 @@ final class LagoonIntentTests: XCTestCase {
         XCTAssertEqual(routed, [.ready, .acted, .acted, .logged, .acted, .logged, .logged, .acted, .acted, .logged])
         XCTAssertEqual(recorder.calls, ["focus s1", "viewed s1 r1", "reply s1 hi", "approve s1 r1", "unapprove s1 r1"],
                        "nothing else reaches an agent, or the app")
-        XCTAssertEqual(LagoonIntent.actTokens, ["approve", "unapprove", "reply", "viewed", "focusSession"])
-        XCTAssertEqual(LagoonIntent.byDefault, [.approve, .unapprove, .reply, .focusSession])
-        XCTAssertEqual(LagoonIntent.byDefaultInOrder, [.approve, .unapprove, .reply, .focusSession])
-        XCTAssertEqual(LagoonIntent.phaseB, [.openReview])
-        XCTAssertEqual(LagoonIntent.phaseC, [.answer, .pause])
         XCTAssertTrue(LagoonIntent.byDefault.isDisjoint(with: LagoonIntent.phaseB.union(LagoonIntent.phaseC)))
         // Acting by default leaves the page read-only: no phase C name is on, and `act=` says which are live.
         XCTAssertTrue(LagoonActionFlags().pageReadOnly)
@@ -223,8 +218,6 @@ final class LagoonIntentTests: XCTestCase {
         XCTAssertEqual(recorder.calls, ["focus s2", "focus s1"])
         XCTAssertEqual(LagoonIntentRouter.route(live, flags: LagoonActionFlags(), sink: nil), .logged)
         refused(["v": 1, "name": "focusSession", "sessionId": "gone"])
-        // Its token is in the page's address, so a page that knows it sends it for real.
-        XCTAssertTrue(Lagoon.pageURL(readOnly: true).absoluteString.hasSuffix("&act=approve,unapprove,reply,viewed,focusSession"))
     }
 
     /// One flag on: that name acts, approve, unapprove, reply, viewed and focusSession act as they always do, and

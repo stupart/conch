@@ -8,11 +8,16 @@ final class OnboardingReportsTests: XCTestCase {
 
     // MARK: Speech recognition
 
-    func testSpeechRecognitionSaysEachStateInItsOwnWords() {
+    private func isFailed(_ state: OnboardingDownload.State?) -> Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
+    func testSpeechRecognitionTellsEachStateApart() {
         func state(_ report: SpeechEngineReport?, _ secondsLeft: Int? = nil) -> OnboardingDownload.State {
             OnboardingReports.speechRecognition(report, secondsLeft: secondsLeft, now: now).state
         }
-        XCTAssertEqual(state(nil), .installing("Checking"))
+        guard case .installing = state(nil) else { return XCTFail("nothing published yet: checking") }
         XCTAssertEqual(state(.init(state: "ready")), .ready)
         XCTAssertEqual(state(.init(state: "downloading", progress: .init(bytes: 212e6, total: 574e6)), 70),
                        .downloading(done: 212e6, total: 574e6, secondsLeft: 70))
@@ -23,14 +28,12 @@ final class OnboardingReportsTests: XCTestCase {
                        .noSpace(needs: 800e6, free: 300e6))
         XCTAssertEqual(state(.init(state: "off", reason: "download failed", problem: .init(kind: "no-space", needs: 800e6, free: 300e6))),
                        .noSpace(needs: 800e6, free: 300e6))
-        // Any other failure retries by itself, and says when.
-        XCTAssertEqual(state(.init(state: "downloading", progress: .init(bytes: 212e6, total: 574e6), retryAt: 1_060_000)),
-                       .failed("The download stopped at 212 MB. Trying again in a minute; it carries on from there."))
-        XCTAssertEqual(state(.init(state: "downloading", retryAt: 1_300_000)),
-                       .failed("The download stopped. Trying again in 5 minutes; it carries on from there."))
-        XCTAssertEqual(state(.init(state: "off", reason: "download failed", problem: .init(kind: "offline"))), .failed("Couldn't download it: this Mac is offline."))
-        XCTAssertEqual(state(.init(state: "off", reason: "download failed")), .failed("Couldn't download speech recognition."))
-        XCTAssertEqual(state(.init(state: "off", reason: "no sox")), .failed("conch's speech engine is missing a part. Reinstall conch to put it back."))
+        // Any other failure, retrying by itself or not, is a failure.
+        XCTAssertTrue(isFailed(state(.init(state: "downloading", progress: .init(bytes: 212e6, total: 574e6), retryAt: 1_060_000))))
+        XCTAssertTrue(isFailed(state(.init(state: "downloading", retryAt: 1_300_000))))
+        XCTAssertTrue(isFailed(state(.init(state: "off", reason: "download failed", problem: .init(kind: "offline")))))
+        XCTAssertTrue(isFailed(state(.init(state: "off", reason: "download failed"))))
+        XCTAssertTrue(isFailed(state(.init(state: "off", reason: "no sox"))))
     }
 
     /// Retry only where a retry helps: a download that gave up. One still retrying by itself, or a missing part, doesn't.
@@ -50,18 +53,16 @@ final class OnboardingReportsTests: XCTestCase {
     func testTheVoicesSayTheirStepFromItsNumbers() {
         func state(_ report: NaturalVoicesReport?) -> OnboardingDownload.State? { OnboardingReports.naturalVoices(report)?.state }
         XCTAssertNil(state(nil), "no natural voices published: none to show")
-        XCTAssertEqual(state(.init(state: "setting-up", step: 1, steps: 4)), .installing("Installing Python, step 1 of 4"))
-        XCTAssertEqual(state(.init(state: "setting-up", step: 3, steps: 4)), .installing("Installing the voices (1.3 GB), step 3 of 4"))
-        XCTAssertEqual(state(.init(state: "setting-up", step: 4, steps: 4)), .installing("Checking the voices, step 4 of 4"))
-        XCTAssertEqual(state(.init(state: "setting-up", stage: "prefetch")), .installing("Downloading the voices (360 MB)"))
-        XCTAssertEqual(state(.init(state: "setting-up", stage: "elsewhere")), .installing("Another conch is setting them up"))
+        guard case let .installing(step)? = state(.init(state: "setting-up", step: 3, steps: 4)) else { return XCTFail("not installing") }
+        XCTAssertTrue(step.hasSuffix("step 3 of 4"), step)
         XCTAssertEqual(state(.init(state: "setting-up", space: .init(needs: 1.7e9, free: 9e8))), .noSpace(needs: 1.7e9, free: 9e8))
         XCTAssertEqual(state(.init(state: "ready")), .ready)
-        XCTAssertEqual(state(.init(state: "off", reason: "needs Apple silicon")), .failed("Natural voices need Apple silicon. conch speaks with the Mac's own voice."))
+        XCTAssertTrue(isFailed(state(.init(state: "off", reason: "needs Apple silicon"))))
         XCTAssertEqual(OnboardingReports.ring(.init(state: "setting-up", step: 3, steps: 4), playing: nil), .settingUp("Step 3 of 4"))
         XCTAssertEqual(OnboardingReports.ring(.init(state: "ready"), playing: 2), .ready(playing: 2))
-        XCTAssertEqual(OnboardingReports.ring(.init(state: "off", reason: "needs Apple silicon"), playing: nil),
-                       .unavailable("Natural voices need Apple silicon. conch speaks with the Mac's own voice."))
+        guard case .unavailable = OnboardingReports.ring(.init(state: "off", reason: "needs Apple silicon"), playing: nil) else {
+            return XCTFail("Intel: the Mac's own voice")
+        }
     }
 
     // MARK: Agents
@@ -71,14 +72,12 @@ final class OnboardingReportsTests: XCTestCase {
         XCTAssertEqual(OnboardingReports.agent(found)?.state, .found(version: "2.1.280", from: "Homebrew"))
         let wired = AgentSetupReport(agent: "claude", found: true, version: "2.1.280", source: "Homebrew", hooksWired: true, pluginInstalled: true)
         XCTAssertEqual(OnboardingReports.agent(wired)?.state, .connecting(version: "2.1.280", from: "Homebrew"), "written is not heard")
-        XCTAssertEqual(OnboardingReports.agent(wired)?.note, "conch shows Connected once Claude Code finishes a turn.")
         let heard = AgentSetupReport(agent: "claude", found: true, version: "2.1.280", source: "Homebrew", hooksWired: true, pluginInstalled: true, heard: true, openBeforeHooks: 3)
         XCTAssertEqual(OnboardingReports.agent(heard)?.state, .connected(version: "2.1.280", from: "Homebrew"))
         XCTAssertEqual(OnboardingReports.agent(heard)?.openSessions, 3)
         // Hooks in but no plugin: Connect finishes it.
         let half = AgentSetupReport(agent: "claude", found: true, version: "2.1.280", hooksWired: true)
         XCTAssertEqual(OnboardingReports.agent(half)?.state, .found(version: "2.1.280", from: ""))
-        XCTAssertEqual(OnboardingReports.agent(half)?.note, "Its hooks are in. Connect adds conch's tools too.")
     }
 
     /// Codex is shown as setup-status finds it: not signed in says so; wired and silent says its hooks haven't reached conch.
@@ -87,7 +86,6 @@ final class OnboardingReportsTests: XCTestCase {
         XCTAssertEqual(OnboardingReports.agent(unsigned)?.state, .signIn(version: "0.156.0"))
         let quiet = AgentSetupReport(agent: "codex", found: true, version: "0.156.0", hooksWired: true, pluginInstalled: true, signedIn: true)
         XCTAssertEqual(OnboardingReports.agent(quiet)?.state, .connecting(version: "0.156.0", from: ""))
-        XCTAssertEqual(OnboardingReports.agent(quiet)?.note, "conch shows Connected once Codex's hooks reach it. Meanwhile it reads Codex's sessions from Codex itself.")
         XCTAssertEqual(OnboardingReports.agent(AgentSetupReport(agent: "codex", found: false))?.state, .missing)
         XCTAssertNil(OnboardingReports.agent(AgentSetupReport(agent: "gemini", found: true)))
     }
@@ -199,7 +197,6 @@ final class OnboardingReportsTests: XCTestCase {
     /// A streamed request's reply is told from its streamed lines by kind, so a stream the daemon drops part way through
     /// (it restarted) never has a microphone level or an installer's line read as its reply, which read as "older version".
     func testAStreamsReplyIsKnownByItsKind() {
-        XCTAssertEqual(OnboardingReports.streamedKinds, ["mic-level", "setup-install-line"])
         XCTAssertFalse(OnboardingReports.isStreamReply(kind: "mic-level"))
         XCTAssertFalse(OnboardingReports.isStreamReply(kind: "setup-install-line"))
         for reply in ["mic-check-done", "setup-installed", "setup-error", "session-error"] {

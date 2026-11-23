@@ -3867,7 +3867,6 @@ extension PublishedState {
     /// the daemon can do, and the model menus; nothing else — not `ts`, which moves on every publish, nor the screen, the
     /// deliveries, the Workbench's requests or the dismissed rows. A pick the daemon lists no row for is a subagent the
     /// pane builds from whichever conversation started it (`subagentRow`): that gets the whole state, as before.
-    /// test/app-cpu.test.ts holds the pane to reading only what is here.
     func forPane(pinned: SessionRow.ID?) -> PublishedState {
         if let pinned, row(pinned) == nil { return self }
         let shown = WorkspaceFocus.shown(in: Workspace(self), pinned: pinned)
@@ -3898,8 +3897,7 @@ extension PublishedState {
     /// The list was handed the whole state, and its actions are closures, so every publish ran its body and every folder
     /// header's: a conversation's next message or a reply read on further, none of which it draws. Offscreen on the app's
     /// own window with Tyler's sessions file (2026-11-11), ten publishes of a subagent's conversation ran the list's body
-    /// ten times and the folder headers' 110, now none. Not `ts`, which moves on every publish. test/app-cpu.test.ts holds
-    /// the list to reading only what is here.
+    /// ten times and the folder headers' 110, now none. Not `ts`, which moves on every publish.
     func forSidebar() -> PublishedState {
         PublishedState(
             v: v,

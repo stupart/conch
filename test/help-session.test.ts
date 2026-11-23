@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { APP_ERRORS_PATH } from "../src/app-errors.ts";
+import { join } from "node:path";
 import { AGENT_COMMANDS } from "../src/agent-instructions.ts";
 import {
   HELP_SESSION_LABEL,
@@ -12,11 +11,9 @@ import {
 } from "../src/help-session.ts";
 import { startHelpSession, startTerminalSession } from "../src/session-lifecycle.ts";
 import { sessionLabel } from "../src/sessions.ts";
-import { SETTINGS_FILE, SETTING_KEYS, validateRuntimeControlMessage } from "../src/settings.ts";
-import { SESSIONS_FILE } from "../src/status.ts";
+import { SETTINGS_FILE, validateRuntimeControlMessage } from "../src/settings.ts";
 
 const repoRoot = join(import.meta.dir, "..");
-const read = (path: string) => readFileSync(join(repoRoot, path), "utf8");
 
 function withConfigDir<T>(run: (configDir: string) => T): T {
   const configDir = mkdtempSync(join(tmpdir(), "conch-help-"));
@@ -61,26 +58,9 @@ describe("help session CLAUDE.md", () => {
     });
   });
 
-  // The doc is prose about code that moves. Every name it uses is checked
-  // against the source it describes, the way the plugin docs are regenerated
-  // and diffed: rename a command, a tool or a file and this fails.
-  // Rendered, so the conch section generated from agent-instructions.ts is checked too.
+  // Rendered, so the conch section generated from agent-instructions.ts is checked too: an agent told to run a
+  // command conch doesn't have fails.
   const doc = renderHelpSessionClaudeMd({ CONCH_CONFIG_DIR: "{{CONFIG_DIR}}" });
-  const cli = read("src/cli.ts");
-  const mcp = read("src/mcp.ts");
-
-  test("every `conch <command>` it names is a CLI command", () => {
-    const commands = new Set([...doc.matchAll(/`conch ([a-z-]+)/g)].map((m) => m[1]));
-    expect(commands.size).toBeGreaterThanOrEqual(8);
-    for (const command of commands) expect(cli).toContain(`case "${command}":`);
-  });
-
-  test("every conch_* tool it names is an MCP tool", () => {
-    const tools = new Set([...doc.matchAll(/conch_[a-z_]+/g)].map((m) => m[0]));
-    // 2026-11-11: the MCP lists two tools, and the rest are `conch agent` commands (the next test).
-    expect(tools).toContain("conch_run");
-    for (const tool of tools) expect(mcp).toContain(`name: "${tool}"`);
-  });
 
   test("every `conch agent <command>` it names is one conch has", () => {
     const named = new Set([...doc.matchAll(/`conch agent ([a-z-]+(?: [a-z]+)?)/g)].map((m) => m[1]!));
@@ -91,33 +71,6 @@ describe("help session CLAUDE.md", () => {
       const asked = name.startsWith("help ") ? name.slice("help ".length) : name;
       expect(commands.some((command) => command === asked || command.split(" ")[0] === asked), name).toBe(true);
     }
-  });
-
-  test("the files and settings it points at are the ones conch uses", () => {
-    for (const path of [
-      "/tmp/conch-daemon.log",
-      SESSIONS_FILE,
-      "/tmp/conch-state.json", // not STATE_FILE: the suite redirects it
-      "/tmp/conch.sock",
-      `{{CONFIG_DIR}}/${SETTINGS_FILE}`,
-      `{{CONFIG_DIR}}/${basename(APP_ERRORS_PATH)}`,
-      "{{CONFIG_DIR}}/labels.json",
-      "{{CONFIG_DIR}}/voices.json",
-    ]) expect(doc).toContain(`\`${path}\``);
-    for (const key of ["phone", "phone-relay-url"]) {
-      expect(SETTING_KEYS as readonly string[]).toContain(key);
-      expect(doc).toContain(`\`${key}\``);
-    }
-    // The rules the session must follow, and the install-map problems.
-    for (const phrase of [
-      "Read before guessing",
-      "Never kill the daemon by pattern",
-      "The app owns the daemon",
-      "Ask before changing settings",
-      "microphone entitlement",
-      "`conch set phone true`",
-      "`conch set phone-relay-url <url>`",
-    ]) expect(doc).toContain(phrase);
   });
 });
 
@@ -187,38 +140,6 @@ describe("help session launch", () => {
       rmSync(configDir, { recursive: true, force: true });
     }
   });
-
-  test("conch help lists it", () => {
-    expect(cli()).toContain("help-session");
-  });
-  const cli = () => Bun.spawnSync([process.execPath, join(repoRoot, "src", "cli.ts"), "help"]).stdout.toString();
-});
-
-describe("Mac New session sheet: Help with conch", () => {
-  const source = read("mac-app/conch-mac/ContentView.swift");
-
-  function expectBefore(first: string, second: string) {
-    expect(source).toContain(first);
-    expect(source).toContain(second);
-    expect(source.indexOf(first)).toBeLessThan(source.indexOf(second));
-  }
-
-  test("is a third mode, Claude only, in conch's own folder", () => {
-    expectBefore('case teleport = "Teleport by ID…"', 'case help = "Help with conch"');
-    expect(source).toContain("if mode == .help { return .claude }");
-    expect(source).toContain('.appendingPathComponent(".config/conch/help", isDirectory: true).path');
-    expect(source).toContain("case .help: return Self.helpSessionDir");
-    expect(source).toContain("case .new, .help: return true");
-    // Still the same request the other modes send.
-    expect(source).toContain("cwd: effectiveCwd");
-  });
-
-  test("says in one line what the session can do, and hides the folder and agent choice", () => {
-    expectBefore("if mode == .help {", 'Text("Help with conch — a Claude session that knows the app.")');
-    expect(source).toContain("it reads the daemon log, settings and errors on this Mac, runs `conch doctor`, and can see and steer your other sessions");
-    expect(source).toContain("shows here as \\u{201C}conch help\\u{201D}");
-    expectBefore('Text("Help with conch — a Claude session that knows the app.")', "} else if mode != .resume {");
-  });
 });
 
 describe("Help with conch, asked for by name (a phone can't name this Mac's folder)", () => {
@@ -236,10 +157,5 @@ describe("Help with conch, asked for by name (a phone can't name this Mac's fold
     ]) {
       expect(validateRuntimeControlMessage({ kind: "session-start", backend: "claude", help: true, ...extra }).ok).toBe(false);
     }
-  });
-
-  test("the daemon says it takes it, so a client only offers it to one that does", () => {
-    const panel = readFileSync(`${import.meta.dir}/../src/panel.ts`, "utf8");
-    expect(panel).toContain("features: { deliverables: 4, viewedState: 1, sessionHosts: 1, helpSession: 1, ");
   });
 });

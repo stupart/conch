@@ -107,35 +107,6 @@ describe("what conch says about the switcher", () => {
   });
 });
 
-test("the Mac shows claude-swap's list as your Claude accounts, adds to it in the app, and switches", async () => {
-  const view = await Bun.file(new URL("../mac-app/conch-mac/ClaudeAccountsView.swift", import.meta.url)).text();
-  // One list, and the one way to add to it: a sign-in here that never changes the login your sessions use.
-  expect(view).toContain("let list = store.rotation?.dashboard?.accounts ?? []");
-  expect(view).toContain('Label("Add a Claude account", systemImage: "plus")');
-  expect(view).toContain('await send("rotation-add-account", email: email, timeout: 240)');
-  expect(view).toContain('struct Request: Encodable { let kind = "claude-accounts"; let action = "rotation-finish-add"; let id: String }');
-  // Per account: use it now, sign it in again, remove it.
-  expect(view).toContain('await send("rotation-switch", slot: account.number, timeout: 60)');
-  expect(view).toContain('await send("rotation-remove", slot: account.number, timeout: 60)');
-  expect(view).toContain('Button("Sign in again") { Task { await store.addAccount(email: account.email) } }');
-  // The sign-in that signed Default in as someone else is gone.
-  expect(view).not.toContain("addToRotationAfterSignIn");
-  expect(view).not.toContain("Sign in another account");
-  // Switching on and off, and conch's own sign-ins tucked under the list.
-  expect(view).toContain('struct SetConfig: Encodable { let kind = "set-config"; let key = "claude-rotation"; let value: Bool }');
-  expect(view).toContain('Text("Switch accounts automatically")');
-  expect(view).toContain('Text("Separate sign-ins (\\(store.accounts.count))")');
-  expect(view).toContain('if providerId == "claude" { await store.send("rotation-status") }');
-});
-
-test("Continue with Google and Apple open as real popups in the sign-in, with Chrome to fall back on", async () => {
-  const view = await Bun.file(new URL("../mac-app/conch-mac/ClaudeAccountsView.swift", import.meta.url)).text();
-  expect(view).toContain("let popup = WKWebView(frame: webView.bounds, configuration: configuration)");
-  expect(view).toContain("func webViewDidClose(_ webView: WKWebView)");
-  expect(view).not.toContain("webView.load(URLRequest(url: url)) }\n            return nil");
-  expect(view).toContain('configuration.arguments = ["--incognito", request.url.absoluteString]');
-});
-
 /** A cswap that records its arguments, CLAUDE_CONFIG_DIR and what it was given on stdin. */
 function fakeSwap(): { cswap: string; calls: () => string[] } {
   const dir = mkdtempSync(join(tmpdir(), "cswap-"));

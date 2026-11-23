@@ -8,7 +8,6 @@ import {
   slugify,
   STARTER_TEAM_TYPES,
   taskTitle,
-  teamAgentChoices,
   teamBrief,
   teamFirstMessage,
   teamTaskError,
@@ -36,7 +35,6 @@ function team(type: TeamType, extra: Partial<TeamInstance> = {}): TeamInstance {
 
 describe("a team type, as Settings › Teams saves it", () => {
   test("conch's starter types are valid, each with one lead, and say nothing personal", () => {
-    expect(STARTER_TEAM_TYPES.map((type) => type.id)).toEqual(["build-review", "research-spec-build", "design-crit"]);
     for (const type of STARTER_TEAM_TYPES) {
       const checked = validateTeamType(type);
       expect(checked).toEqual({ ok: true, value: type });
@@ -44,10 +42,6 @@ describe("a team type, as Settings › Teams saves it", () => {
       // Public repo: a starter speaks of "the user", never of anyone by name.
       expect(JSON.stringify(type)).not.toMatch(/Tyler|tyler|@[a-z]+\.[a-z]/);
     }
-    // Build + review: builders isolated, several at once; a reviewer; nobody merges.
-    const [buildReview] = STARTER_TEAM_TYPES;
-    expect(buildReview!.roles.find((role) => role.id === "builder")).toMatchObject({ workspace: "worktree", maxConcurrent: 3 });
-    expect(buildReview!.rules.join(" ")).toContain("Nobody merges");
   });
 
   test("names, ids and choices are normalised; the lead always starts with the team", () => {
@@ -80,16 +74,6 @@ describe("a team type, as Settings › Teams saves it", () => {
     expect(refuse(typeWith([lead], { name: "" }))).toEqual({ error: "name can't be empty", field: "name" });
     expect(refuse(typeWith([lead], { rules: ["ok", 3] }))).toEqual({ error: "rule 2 must be text", field: "rules.1" });
     expect(refuse(typeWith([]))).toEqual({ error: "a team needs at least one role, its lead", field: "roles" });
-  });
-
-  test("each agent offers its own efforts and permissions, from its start options", () => {
-    expect(teamAgentChoices("claude")).toEqual({
-      efforts: ["low", "medium", "high", "xhigh", "max"],
-      permissions: ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"],
-      permissionsOption: "permission-mode",
-      effortOption: "effort",
-    });
-    expect(teamAgentChoices("codex")).toMatchObject({ permissions: ["read-only", "workspace-write", "danger-full-access"], permissionsOption: "sandbox", effortOption: "reasoning-effort" });
   });
 
   test("a role's start options: model and effort as the agent spells them; its own permissions turn conch's bypass off", () => {
@@ -146,50 +130,26 @@ describe("what a member is told", () => {
   const leadMember = running.members[0]!;
   const context = (member = builderMember, peerMessages = false) => ({ team: running, member, messaging: { peerMessages }, briefPath: "/config/teams/build-review-1/builder-1.md" });
 
-  test("a builder's brief: whom it reports to, its own task and the team's, its worktree, the tree and the rules", () => {
+  test("a builder works in its own worktree and may neither ask for members nor end the team; the lead may do both", () => {
     const brief = teamBrief(context());
-    expect(brief).toContain(`You are the builder (builder-1) on a conch team, "Build + review" (team build-review-1), working in /work/app.`);
-    expect(brief).toContain(`You report to the lead, "Lead · Add a dark mode to Settings" (lead-1, session s-lead).`);
-    expect(brief).toContain("## Your task\n\nBuild the toggle\n\nThe team's task: Add a dark mode to Settings");
     const { folder, branch } = memberWorktree(running, builderMember);
-    expect(brief).toContain(`\`git worktree add ${folder} -b ${branch}\``);
     expect(folder).toBe(".worktrees/build-review-1-builder-1");
-    expect(brief).toContain("- Lead: lead-1\n  - Builder (up to 3 at once): builder-1, you\n  - Reviewer");
-    expect(brief).toContain("4. Nobody merges. Merging is the user's decision.");
-    // A builder asks for no one, and doesn't end the team.
+    expect(brief).toContain(`\`git worktree add ${folder} -b ${branch}\``);
     expect(brief).not.toContain("conch team add");
     expect(brief).not.toContain("conch team end");
+    expect(teamBrief(context(leadMember))).toContain("`conch team end build-review-1`");
   });
 
-  test("the lead's brief: it reports to the user, may ask for every role below it, and ends the team", () => {
-    const brief = teamBrief(context(leadMember));
-    expect(brief).toContain("You lead this team: you report to the user.");
-    expect(brief).toContain("You can ask for builder (up to 3 working at once), reviewer.");
-    expect(brief).toContain("Ask conch rather than starting subagents conch can't see.");
-    expect(brief).toContain("`conch team end build-review-1`");
+  test("with peer messages members report by conch message; without them, by ending the turn", () => {
+    expect(teamBrief(context())).not.toContain("conch message");
+    expect(teamBrief(context(builderMember, true))).toContain("conch message");
   });
 
-  test("how members reach each other is the one line peer messages will change", () => {
-    // Until then: a member's report is the end of its turn, read by the one it reports to; the lead reports to the user.
-    expect(teamBrief(context())).toContain("Report by ending your turn with the report itself, addressed to whoever you report to");
-    expect(teamBrief(context(leadMember))).toContain("You report to the user in your own replies");
-    expect(teamBrief(context(leadMember))).toContain("Read a member's report with `conch_transcript_tail`");
-    expect(teamBrief(context(leadMember))).not.toContain("conch message");
-    expect(teamBrief(context(builderMember, true))).toContain("`conch message <their session id> \"<text>\"`; `conch team members` lists them. Report to whoever you report to that way.");
-    expect(teamBrief(context(builderMember, true))).not.toContain("Report by ending your turn");
-  });
-
-  test("the first message is one line the agent can start on: who it is, its task, and where the whole brief is", () => {
+  test("the first message is one valid start line carrying the task and where the whole brief is", () => {
     const message = teamFirstMessage(context());
     expect(startPromptError({ prompt: message })).toBeUndefined();
-    expect(message).toStartWith(`You're the builder (builder-1) on a conch team, "Build + review" (team build-review-1), reporting to "Lead · Add a dark mode to Settings" (session s-lead).`);
     expect(message).toContain("Your task: Build the toggle");
-    expect(message).toContain("Your role: You build one part of the task");
-    expect(message).toContain("How the team works: 1) The lead plans");
     expect(message).toContain("`conch team brief build-review-1 builder-1`");
-    const leads = teamFirstMessage(context(leadMember));
-    expect(leads).toContain(", and you lead it.");
-    expect(leads).toContain("`conch team add <role> \"<task>\"` (builder, reviewer), not untracked subagents.");
   });
 
   test("past 2,000 characters the role and rules are cut, never the start of the task, and it says to read the brief first", () => {

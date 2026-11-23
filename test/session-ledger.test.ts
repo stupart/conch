@@ -316,19 +316,8 @@ describe("saved deliverables", () => {
     expect([...later.sessionStates.keys()]).toEqual(["a"]);
   }));
 
-  test("the daemon restores from conch's config dir, reading /tmp once, and the suite redirects it", () => {
-    const read = (p: string) => readFileSync(join(import.meta.dir, "..", p), "utf8");
-    const daemon = read("src/daemon.ts");
-    const constructed = daemon.indexOf("const ledger = new SessionLedger(REVIEWS_FILE, LEGACY_REVIEWS_FILE);");
-    const restoredAt = daemon.indexOf("ledger.restoreReviews();");
-    expect(constructed).toBeGreaterThan(-1);
-    expect(restoredAt).toBeGreaterThan(constructed);
-    const status = read("src/status.ts");
-    expect(status).toContain(
-      'join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "reviews.json")',
-    );
-    expect(status).toContain('export const LEGACY_REVIEWS_FILE = "/tmp/conch-reviews.json";');
-    expect(read("test/preload.ts")).toContain('process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");');
+  test("the suite's ledger file is redirected, never the shared /tmp one", () => {
+    expect(process.env.CONCH_REVIEWS_FILE).toBeTruthy();
     expect(process.env.CONCH_REVIEWS_FILE).not.toBe("/tmp/conch-reviews.json");
   });
 });

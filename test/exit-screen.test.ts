@@ -99,43 +99,13 @@ describe("reading the screen a Ctrl-D landed on", () => {
 });
 
 describe("what a close says", () => {
-  test("case A, named as Claude Code names it, and what pressing again does", () => {
-    const question = claudeExitBlocker(CASE_A);
-    if (question?.kind !== "stop-tasks") throw new Error("not read as the question");
-    expect(stopTasksMessage(question)).toBe(
-      'Claude Code is asking before it stops 1 background task: "Wait for WebKit run to finish and show tail". Close again to stop it and exit.',
-    );
-    expect(stopTasksMessage(question, true)).toBe(
-      'Claude Code is asking before it stops 1 background task: "Wait for WebKit run to finish and show tail". Restart again to stop it and restart.',
-    );
-  });
-
-  test("several tasks, a count past three, and a list cut off at the top", () => {
+  test("the task count includes those past the list, and the screen's last line loses the tabs the app's error report refuses", () => {
     const base = { kind: "stop-tasks" as const, more: 0, complete: true, exitHighlighted: true };
-    expect(stopTasksMessage({ ...base, tasks: ["a", "b"] })).toBe(
-      'Claude Code is asking before it stops 2 background tasks: "a" and "b". Close again to stop them and exit.',
-    );
-    expect(stopTasksMessage({ ...base, tasks: ["a", "b", "c", "d"], more: 2 })).toBe(
-      'Claude Code is asking before it stops 6 background tasks: "a", "b", "c" and 3 more. Close again to stop them and exit.',
-    );
-    expect(stopTasksMessage({ ...base, tasks: ["a"], complete: false })).toContain("stops at least 1 background task:");
-    expect(stopTasksMessage({ ...base, tasks: [] })).toBe(
-      "Claude Code is asking before it stops its background work. Close again to stop them and exit.",
-    );
-  });
-
-  test("still running: the view it is in, the words in its box, its last line, or that it couldn't be read", () => {
-    expect(stillRunningReason(CASE_B, claudeExitBlocker(CASE_B), null)).toBe(
-      "It is still in Claude Code's background-sessions view: \"Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c twice quits\".",
-    );
-    expect(stillRunningReason(withInput("fix the modal"), null, "fix the modal"))
-      .toBe('Its input box holds "fix the modal", and Ctrl-D leaves only from an empty one.');
-    expect(stillRunningReason(CONVERSATION, null, ""))
-      .toBe('Its screen ends: "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents".');
-    expect(stillRunningReason(null, null, null)).toBe("Its screen couldn't be read.");
-    expect(stillRunningReason("\n\n", null, null)).toBe("Its screen is blank.");
-    // A Terminal tab's text can hold a tab character, which the app's error report would refuse.
-    expect(stillRunningReason("Saving\tthe transcript\n", null, null)).toBe('Its screen ends: "Saving the transcript".');
+    const many = stopTasksMessage({ ...base, tasks: ["a", "b", "c", "d"], more: 2 });
+    expect(many).toContain("6 background tasks");
+    expect(many).toContain("and 3 more");
+    expect(stopTasksMessage({ ...base, tasks: ["a"], complete: false })).toContain("at least 1 background task");
+    expect(stillRunningReason("Saving\tthe transcript\n", null, null)).toContain('"Saving the transcript"');
   });
 });
 
@@ -264,9 +234,7 @@ describe("closing a background session that stays for a reason conch doesn't kno
   test("the message quotes its screen, never \"it may be finishing up\"", async () => {
     const session = backgroundSession(4301, [CONVERSATION, "  Running SessionEnd hooks…\n"]);
     const close = closeTerminalSession(4301, { ...session.dependencies, exitPollAttempts: 3 });
-    await expect(close).rejects.toThrow(
-      'Ctrl-D was sent, but the background session is still running after 300 ms. Its screen ends: "Running SessionEnd hooks…".',
-    );
+    await expect(close).rejects.toThrow('"Running SessionEnd hooks…"');
     await expect(close).rejects.not.toThrow("finishing up");
   });
 

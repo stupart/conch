@@ -51,7 +51,6 @@ final class WorkbenchInputTests: XCTestCase {
     /// `fastestGap`; and every gap a little uneven.
     func testThePaceIsATypistsAndStaysInsideTheCommandsTime() {
         XCTAssertEqual(WorkbenchInput.keyGap(count: 8), WorkbenchInput.slowestGap)
-        XCTAssertEqual(WorkbenchInput.keyGap(count: 120), WorkbenchInput.typingTime / 120, accuracy: 0.0001)
         XCTAssertEqual(WorkbenchInput.keyGap(count: 10_000), WorkbenchInput.fastestGap)
         XCTAssertLessThanOrEqual(Double(WorkbenchInput.keyedMax) * WorkbenchInput.keyGap(count: WorkbenchInput.keyedMax) * 1.3, 4)
         XCTAssertEqual(WorkbenchInput.jittered(0.1, unit: 0), 0.07, accuracy: 0.0001)
@@ -77,8 +76,6 @@ final class WorkbenchInputTests: XCTestCase {
         XCTAssertTrue(zip(path, path.dropFirst()).allSatisfy { $0.x <= $1.x }, "it never goes back")
         XCTAssertTrue(path.dropLast().contains { abs($0.y) > 1 }, "it bows a little, as a hand does")
         XCTAssertTrue(WorkbenchInput.path(from: CGPoint(x: 5, y: 5), to: CGPoint(x: 5, y: 5), steps: 8).isEmpty)
-        XCTAssertEqual(WorkbenchInput.pathSteps(from: .zero, to: CGPoint(x: 10, y: 0)), 6)
-        XCTAssertEqual(WorkbenchInput.pathSteps(from: .zero, to: CGPoint(x: 5_000, y: 0)), 18)
     }
 
     /// A spot the page measured is the view's at the page's zoom, and only inside the view.

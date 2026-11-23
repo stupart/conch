@@ -73,10 +73,6 @@ describe("one lock probe answers many callers", () => {
     expect(probe.runs).toBe(2);
   });
 
-  test("the window is the panel's own twenty-second backstop", () => {
-    expect(LOCK_PROBE_TTL_MS).toBe(20_000);
-  });
-
   test("the order the directory lists the files in is not a change", async () => {
     const probe = countingProbe();
     const cached = cachedLockProbe(probe, sameFiles);

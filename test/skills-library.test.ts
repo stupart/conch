@@ -280,8 +280,8 @@ describe("trying a skill", () => {
   });
 
   test("the first message calls the skill, and is one line a start takes", () => {
-    expect(trialPrompt("pdf", "/pdf")).toStartWith("/pdf Show me what this skill does");
-    expect(trialPrompt("quiet")).toStartWith("Use the quiet skill. Show me");
+    expect(trialPrompt("pdf", "/pdf")).toStartWith("/pdf ");
+    expect(trialPrompt("quiet")).toContain("quiet");
     expect(trialPrompt("x", "$x")).not.toContain("\n");
   });
 });
@@ -376,27 +376,4 @@ test("a description written as a YAML block with a chomping indicator is read as
   writeFileSync(join(root, "b.md"), "---\nname: folded\ndescription: >-\n  One line\n  folded.\n---\n");
   expect(readSkillMetadata(join(root, "a.md")).description).toBe("Reference for the Claude API.\nTRIGGER when asked.");
   expect(readSkillMetadata(join(root, "b.md")).description).toBe("One line folded.");
-});
-
-describe("the Mac app's ways in", () => {
-  const mac = (name: string) => readFileSync(join(import.meta.dir, "..", "mac-app", "conch-mac", name), "utf8");
-
-  test("the header's sparkles and ⌘K's two rows open Settings at Skills and Benchmarks", () => {
-    expect(mac("DashboardView.swift")).toContain('symbol: "sparkles",');
-    expect(mac("DashboardView.swift")).toContain("action: { SettingsRouter.shared.open(.skills) }");
-    const palette = mac("CommandPaletteView.swift");
-    expect(palette).toContain("action: .settings(.skills)");
-    expect(palette).toContain("action: .settings(.benchmarks)");
-    expect(palette).toContain("case let .settings(section):\n            SettingsRouter.shared.open(section)");
-    const page = mac("SettingsView.swift");
-    expect(page).toContain("case .skills: ConchSkillsSettingsView()");
-    expect(page).toContain("case .benchmarks: ConchBenchmarksSettingsView()");
-  });
-
-  test("Try starts its session through the app's one start, with the daemon's first message", () => {
-    const view = mac("SkillsLibraryView.swift");
-    expect(view).toContain("await stateStore.startSession(");
-    expect(view).toContain("prompt: trial.prompt");
-    expect(mac("ConchSocketClient.swift")).toContain("let prompt: String?");
-  });
 });

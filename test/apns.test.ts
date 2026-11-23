@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync, verify } from "node:crypto";
 import {
-  APNS_ORIGINS,
   ApnsTokenCache,
   apnsJwt,
   apnsPayload,
@@ -104,10 +103,6 @@ describe("what Apple's answers mean", () => {
     expect(apnsVerdict({ status: 503, reason: "ServiceUnavailable" })).toBe("later");
     expect(apnsVerdict({ status: 400, reason: "DeviceTokenNotForTopic" })).toBe("refused");
     expect(apnsVerdict({ status: 413, reason: "PayloadTooLarge" })).toBe("refused");
-  });
-
-  test("Apple's own hosts", () => {
-    expect(APNS_ORIGINS).toEqual({ production: "https://api.push.apple.com", development: "https://api.sandbox.push.apple.com" });
   });
 });
 

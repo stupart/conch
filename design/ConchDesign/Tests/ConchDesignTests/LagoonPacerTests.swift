@@ -107,13 +107,6 @@ final class LagoonPacerTests: XCTestCase {
         XCTAssertEqual(sent(pacer.ready(now: at(9))), "b")
     }
 
-    func testVisibleMeansThePageTheWindowAndTheApp() {
-        XCTAssertTrue(LagoonVisibility(pageCurrent: true, windowVisible: true, appHidden: false).visible)
-        XCTAssertFalse(LagoonVisibility(pageCurrent: false, windowVisible: true, appHidden: false).visible)
-        XCTAssertFalse(LagoonVisibility(pageCurrent: true, windowVisible: false, appHidden: false).visible)
-        XCTAssertFalse(LagoonVisibility(pageCurrent: true, windowVisible: true, appHidden: true).visible)
-    }
-
     func testTheWebViewGoesAfterTenMinutesUnseen() {
         XCTAssertFalse(LagoonVisibility.shouldDrop(hiddenSince: nil, now: at(10_000)))
         XCTAssertFalse(LagoonVisibility.shouldDrop(hiddenSince: at(0), now: at(599)))

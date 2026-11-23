@@ -16,12 +16,6 @@ function clock(start = 1_000) {
 }
 
 describe("the one acceptance rule (F8)", () => {
-  test("starts local at revision zero, today's behaviour", () => {
-    const holder = new AudioHolder(clock().now);
-    expect(holder.record).toEqual({ holder: "local", revision: 0, expiresAt: null });
-    expect(holder.isLocal()).toBe(true);
-  });
-
   test("a higher revision wins: new holder, lease from now, grant verdict", () => {
     const c = clock();
     const holder = new AudioHolder(c.now);

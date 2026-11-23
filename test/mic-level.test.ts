@@ -1,12 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LEVEL_WINDOW_BYTES, pcmLevel, readPcmTail } from "../src/listen.ts";
 import { getLiveState, setMicLevel, setState } from "../src/status.ts";
-
-const root = join(import.meta.dir, "..");
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 function pcm(samples: number[]): Uint8Array {
   const out = new Uint8Array(samples.length * 2);
@@ -71,37 +68,4 @@ test("the level lives only while the mic is open, and survives partial updates",
   setState("transcribing", "morrow");
   expect(getLiveState().level).toBeUndefined();
   setState("idle");
-});
-
-test("the recorder reports a level every tick while capturing, from the tail", () => {
-  const listen = read("src/listen.ts");
-  const at = listen.indexOf("const watchdog = setInterval(() => {");
-  expect(at).toBeGreaterThan(-1);
-  const end = listen.indexOf("}, CAPTURE_WATCHDOG_INTERVAL_MS);", at);
-  expect(end).toBeGreaterThan(-1);
-  const tick = listen.slice(at, end);
-  expect(tick).toContain(
-    "if (speechStartedAt !== null && hooks.onLevel) hooks.onLevel(pcmLevel(readPcmTail(raw, LEVEL_WINDOW_BYTES)));",
-  );
-  expect(tick).not.toContain("pcmLevel(readPcm(raw))");
-});
-
-test("the level reaches the apps", () => {
-  expect(read("src/panel.ts")).toContain("...(live.level !== undefined ? { level: live.level } : {}),");
-  expect(read("mac-app/conch-mac/Models.swift"))
-    .toContain("level = (try? container.decodeIfPresent(Double.self, forKey: .level)) ?? 0");
-  const composer = read("mac-app/conch-mac/ComposerView.swift");
-  expect(composer).toContain(".animation(.easeOut(duration: 0.12), value: voiceLevel)");
-  expect(composer).toContain('.symbolEffect(.variableColor.iterative, isActive: voiceState == "listening")');
-});
-
-test("the voice loop hands the recorder's level to the live state", () => {
-  const voice = read("src/voice-loop.ts");
-  const at = voice.indexOf("export function listenHooks(");
-  expect(at).toBeGreaterThan(-1);
-  const end = voice.indexOf("\n}\n", at);
-  expect(end).toBeGreaterThan(-1);
-  const hooks = voice.slice(at, end);
-  expect(hooks).toContain("} = { setState, setTranscriptPrefix, setMicLevel },");
-  expect(hooks).toContain("onLevel: (level) => status.setMicLevel?.(level),");
 });

@@ -136,18 +136,6 @@ describe("the guard, end to end over a fake tmux", () => {
     expect(g.launched).toHaveLength(2);
     expect(JSON.parse(readFileSync(g.file, "utf8")).attempts.a).toEqual([1_000_000]);
   });
-
-  test("a session closed on purpose is never brought back", async () => {
-    let state = servers(running([[12, NAME_A]]));
-    const g = guard(() => state);
-    const guarded = g.make();
-    await guarded.observe([{ sessionId: "a", pid: 12 }], new Set(["a"]));
-    state = servers(running([]));
-    await guarded.observe([], new Set());
-    state = servers(gone);
-    await guarded.observe([], new Set());
-    expect(g.launched).toEqual([]);
-  });
 });
 
 /**

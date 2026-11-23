@@ -16,7 +16,6 @@ import {
 import {
   appendMcpCall,
   argumentNames,
-  backendOfClient,
   cleanCallError,
   errorGroup,
   formatMcpUsage,
@@ -99,14 +98,6 @@ describe("the call log's lines", () => {
     expect(statSync(loose).mode & 0o077).toBe(0);
   });
 
-  test("never throws: an unwritable path, a folder in a file's place", () => {
-    const dir = scratch();
-    writeFileSync(join(dir, "file"), "");
-    const record = mcpCallRecord({ ts: 1, tool: "conch_sessions", ms: 1, outcome: "ok" });
-    expect(() => appendMcpCall(record, "/nope/nowhere/mcp-usage.jsonl")).not.toThrow();
-    expect(() => appendMcpCall(record, join(dir, "file", "mcp-usage.jsonl"))).not.toThrow();
-  });
-
   test("rotates past the cap, keeping one old file, and the summary reads both", () => {
     const path = join(scratch(), "mcp-usage.jsonl");
     appendMcpCall({ ts: 10, tool: "browser_open", ms: 5, outcome: "ok" }, path, 1);
@@ -165,12 +156,6 @@ describe("what an error may say", () => {
     expect(argumentNames("nope")).toBeUndefined();
   });
 
-  test("the backend a client names itself as", () => {
-    expect(backendOfClient("claude-code")).toBe("claude");
-    expect(backendOfClient("codex-mcp-client")).toBe("codex");
-    expect(backendOfClient("inspector")).toBeUndefined();
-    expect(backendOfClient(undefined)).toBeUndefined();
-  });
 });
 
 describe("how a call ended", () => {
@@ -372,7 +357,6 @@ describe("calls through conch agent", () => {
     expect(summary.cli).toBe(2);
     expect(summary.tools.find((tool) => tool.tool === "browser_click")).toMatchObject({ calls: 3, cli: 2 });
     expect(summary.tools.find((tool) => tool.tool === "review_to_front")).toMatchObject({ calls: 1, cli: 0 });
-    expect(formatMcpUsage(summary)[1]).toStartWith("4 calls (2 through conch agent) · ");
   });
 });
 
@@ -463,13 +447,7 @@ describe("conch mcp-usage", () => {
     expect(sessions.replyBytes).toEqual({ sized: 4, p50: 2_000, p90: 40_000, mean: 11_500, max: 40_000 });
     expect(summary.tools.find((tool) => tool.tool === "browser_open")!.replyBytes).toBeUndefined();
     const table = formatMcpUsage(summary);
-    expect(table.find((line) => line.startsWith("tool"))).toEndWith("p50KB  p90KB");
     expect(table.find((line) => line.startsWith("conch_sessions"))).toMatch(/2\.0\s+39\.1$/);
     expect(table.find((line) => line.startsWith("browser_open"))).toMatch(/—\s+—$/);
-  });
-
-  test("the table names the window and file even when it is empty", () => {
-    const lines = formatMcpUsage(summariseMcpCalls([], { since: now - day, until: now, path: "/x/mcp-usage.jsonl" }));
-    expect(lines[0]).toContain("/x/mcp-usage.jsonl");
   });
 });

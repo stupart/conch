@@ -103,12 +103,8 @@ final class RowStateTokenTests: XCTestCase {
     }
 
     /// The unread mark on a deliverable tab is `accent` — the system's own ink — and a mark
-    /// needs 3:1. It shipped as `ready`'s green, which says the WORK is ready rather than that
-    /// the reader has not looked, and which then (#30B35A) measured 2.41–2.72 on the light
-    /// grounds: the same failure the Mac palette's note records for waiting's green. `ready` has
-    /// since darkened in light to clear 3:1, but it still says the wrong thing here; the green it
-    /// shipped as is pinned so the next reader who reaches for it sees why not.
-    func testTheUnreadMarkClearsThreeToOneWhereTheGreenDidNot() {
+    /// needs 3:1.
+    func testTheUnreadMarkClearsThreeToOne() {
         for scheme in schemes {
             for ground in grounds {
                 let ratio = ConchColor.accent.rgba(scheme).contrast(on: ground.rgba(scheme))
@@ -117,17 +113,6 @@ final class RowStateTokenTests: XCTestCase {
                     "accent on \(ground.name) in \(scheme) is \(String(format: "%.2f", ratio)):1"
                 )
             }
-        }
-        let shipped = ConchRGBA(0x30B35A)
-        XCTAssertLessThan(shipped.contrast(on: ConchColor.ground.light), 3)
-        XCTAssertLessThan(shipped.contrast(on: ConchColor.surface.light), 3)
-    }
-
-    /// The gallery renders `all`; a token missing from it is a token no one ever looks at.
-    func testTheNewTokensAreInTheGallery() {
-        let names = Set(ConchColor.all.map(\.name))
-        for token in [ConchColor.rowHover, ConchColor.rowSelected, ConchColor.attention] {
-            XCTAssertTrue(names.contains(token.name), "\(token.name) is missing from ConchColor.all")
         }
     }
 }

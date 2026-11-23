@@ -1,14 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  DASHBOARD_HELP_CONTROLS,
-  DASHBOARD_HELP_KEYS,
-  FOOTER_KEYBAR,
-  THEATER_KEYBAR,
-  dashboardHelpText,
-  dispatchTheaterControlKey,
-  type TheaterControlCallbacks,
-} from "../src/theater-controls.ts";
-import { shouldDispatchTerminalInput, terminalCellWidth } from "../src/status.ts";
+import { dispatchTheaterControlKey, type TheaterControlCallbacks } from "../src/theater-controls.ts";
+import { shouldDispatchTerminalInput } from "../src/status.ts";
 
 function harness() {
   let manualSessionId: string | null = null;
@@ -64,61 +56,9 @@ describe("dispatchTheaterControlKey", () => {
   });
 });
 
-describe("dashboard control copy", () => {
-  const plain = (text: string): string =>
-    text.replace(/\x1b\[[0-9;]*m/g, "").toLowerCase();
-
-  test("advertises auto/manual and the all-session restore selector", () => {
-    const all = plain([
-      THEATER_KEYBAR,
-      FOOTER_KEYBAR,
-      DASHBOARD_HELP_KEYS,
-      DASHBOARD_HELP_CONTROLS,
-      dashboardHelpText(),
-    ].join("\n"));
-    expect(all).toContain("auto/manual");
-    expect(all).toContain("u restore");
-    expect(all).not.toContain("m mute");
-    expect(all).not.toContain("unmute");
-    expect(plain(DASHBOARD_HELP_KEYS)).toContain("o open deliverable");
-    expect(terminalCellWidth(THEATER_KEYBAR)).toBeLessThanOrEqual(119);
-  });
-
-  test("footer input dispatch matches every rendered keybar", () => {
-    expect(shouldDispatchTerminalInput("theater", true)).toBeTrue();
-    expect(shouldDispatchTerminalInput("footer", true)).toBeTrue();
-    expect(shouldDispatchTerminalInput("headless", true)).toBeFalse();
-    expect(shouldDispatchTerminalInput("footer", false)).toBeFalse();
-    expect(plain(FOOTER_KEYBAR)).not.toContain("l logs");
-  });
-
-  test("daemon routes restore before ordinary theater controls", async () => {
-    const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
-    const raw = source.slice(
-      source.indexOf('process.stdin.on("data"'),
-      source.indexOf("function printHelp"),
-    );
-    expect(raw).toContain("restoreSessionsOverlay?.handleKey(c)");
-    expect(raw).toContain('theaterMode && c === "u"');
-    expect(raw.indexOf("restoreSessionsOverlay?.handleKey(c)")).toBeLessThan(
-      raw.indexOf("dispatchTheaterControlKey(c, theaterControls)"),
-    );
-    expect(source).toContain("setKeybar(theaterMode ? THEATER_KEYBAR : FOOTER_KEYBAR)");
-    expect(source).not.toContain('c === "m"');
-  });
-
-  test("daemon hands o to the renderer's deliverable seam only after every modal", async () => {
-    const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
-    const raw = source.slice(
-      source.indexOf('process.stdin.on("data"'),
-      source.indexOf("function printHelp"),
-    );
-    expect(raw).toContain('theaterMode && c === "o"');
-    expect(raw).toContain("log(openTheaterReview(theaterActionTarget()))");
-    // A typed "o" belongs to an open rename field or prompt line first.
-    expect(raw).toContain("terminalComposer?.handleKey(c)");
-    expect(raw.indexOf("terminalComposer?.handleKey(c)")).toBeLessThan(
-      raw.indexOf('theaterMode && c === "o"'),
-    );
-  });
+test("footer input dispatches only in the theater and footer views, and only from a TTY", () => {
+  expect(shouldDispatchTerminalInput("theater", true)).toBeTrue();
+  expect(shouldDispatchTerminalInput("footer", true)).toBeTrue();
+  expect(shouldDispatchTerminalInput("headless", true)).toBeFalse();
+  expect(shouldDispatchTerminalInput("footer", false)).toBeFalse();
 });

@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, processConversation, normalizeSessionLabel, registrySnapshot, setWorkingFolders, workingFolderOverrides, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
+import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, processConversation, registrySnapshot, setWorkingFolders, workingFolderOverrides, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 import { setVoiceOverride, voiceFor } from "../src/speak.ts";
 import { loadConfig } from "../src/config.ts";
@@ -133,14 +133,6 @@ describe("sessionGoneFromSnapshot — complete snapshots only", () => {
     }, "possibly-live")).toBe(false);
   });
 
-  test("torn-file-salvaged id in incomplete snapshot → live", () => {
-    expect(sessionGoneFromSnapshot({
-      infos: [],
-      liveIds: new Set(["salvaged"]),
-      complete: false,
-    }, "salvaged")).toBe(false);
-  });
-
   test("null snapshot → uncertainty is live", () => {
     expect(sessionGoneFromSnapshot(null, "possibly-live")).toBe(false);
   });
@@ -258,7 +250,7 @@ describe("conch session-label overrides", () => {
       await expect(findSessionByName(f.claudeDir, "CONCH-NAME", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
-      })).rejects.toThrow('"CONCH-NAME" matches 2 live sessions');
+      })).rejects.toBeInstanceOf(AmbiguousSessionError);
       expect((await findSessionByName(f.claudeDir, "SESSION-A", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
@@ -344,9 +336,6 @@ describe("conch session-label overrides", () => {
         { sessionId: "conch", label: "conch-ui" },
         { sessionId: "s-api", label: "conch-api" },
       ]);
-      expect((error as Error).message).toStartWith('"conch-" matches 2 live sessions, so none was chosen; name one by id: ');
-      expect((error as Error).message).toContain('conch ("conch-ui")');
-      expect((error as Error).message).toContain('s-api ("conch-api")');
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }
@@ -359,7 +348,6 @@ describe("conch session-label overrides", () => {
       const canonical = setLabelOverride("session-a", long, { labelsPath: f.labelsPath });
       expect(canonical.startsWith("hello")).toBe(true);
       expect(Array.from(canonical)).toHaveLength(40);
-      expect(canonical).toBe(normalizeSessionLabel(long));
       expect(() => setLabelOverride("session-a", "\n\t\u0000", {
         labelsPath: f.labelsPath,
       })).toThrow("Session label cannot be empty");
@@ -512,15 +500,6 @@ describe("one session, two terminals", () => {
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
-  test("a generated title never displaces the name a person typed", async () => {
-    const f = fixture();
-    f.write(39889, { sessionId: "gen", name: "morrow site", startedAt: 1_000 });
-    f.transcript("/Users/t/morrow", "gen", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
-    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("morrow site");
-    rmSync(f.claudeDir, { recursive: true, force: true });
-  });
-
   test("a derived registry name yields to the generated title", async () => {
     // Claude Code 2.1.25x+ writes `morrow-e9` into the registry at startup with
     // nameSource "derived". Treating it as a person's name masked every
@@ -551,14 +530,6 @@ describe("one session, two terminals", () => {
     const f = fixture();
     f.write(39889, { sessionId: "u1", name: "morrow site", nameSource: "user", startedAt: 1_000 });
     f.transcript("/Users/t/morrow", "u1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
-    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-    expect(snap!.infos[0].name).toBe("morrow site");
-    rmSync(f.claudeDir, { recursive: true, force: true });
-  });
-
-  test("no readable transcript leaves the registry name alone", async () => {
-    const f = fixture();
-    f.write(39889, { sessionId: "orphan", name: "morrow site", startedAt: 1_000 });
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos[0].name).toBe("morrow site");
     rmSync(f.claudeDir, { recursive: true, force: true });

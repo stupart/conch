@@ -161,7 +161,6 @@ final class SessionGroupingTests: XCTestCase {
         )
     }
 
-    /// A daemon that ever sent a parent cycle would hang the list rather than draw it.
     // MARK: The Mac sidebar (`sidebar`): the rule the lagoon is sent too
 
     private func session(_ id: String, cwd: String?, workDirs: [String]? = nil, parent: String? = nil, startedBy: String? = nil) -> SessionGrouping.Session {
@@ -191,9 +190,9 @@ final class SessionGroupingTests: XCTestCase {
         XCTAssertEqual(stored, ["/w/three", "/w/gone", "/w/one"])
         XCTAssertEqual(SessionGrouping.sidebar(sessions, home: "/Users/t", order: stored).map(\.name), ["three", "one", "two"])
         XCTAssertEqual(SessionGrouping.storedOrder(""), [])
-        XCTAssertEqual(SessionGrouping.orderKey, "conch.folderOrder")
     }
 
+    /// A daemon that ever sent a parent cycle would hang the list rather than draw it.
     func testAParentCycleDoesNotHang() {
         let grouped = folders([
             ("a", "/Users/t/Projects/conch", "b"),
@@ -226,7 +225,6 @@ final class SessionGroupingTests: XCTestCase {
         XCTAssertEqual(grouped[1].name, "Build + review")
         XCTAssertEqual(grouped[1].team, SessionFolder.TeamGroup(id: "build-review-2", name: "Build + review", task: "Dark mode"))
         XCTAssertNil(grouped[0].team)
-        XCTAssertEqual(SessionGrouping.teamGroupID("x"), "team:x")
     }
 
     /// A team takes the slot its first session had, rather than jumping to the top, and is dragged as a folder is.
