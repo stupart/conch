@@ -301,7 +301,10 @@ import { assertCodexAccountIdle, assertClaudeAccountIdle, accountRegistrySnapsho
 import { ParkedJobAttacher } from "./parked-jobs.ts";
 import { claudeSwapRuns } from "./claude-swap-runs.ts";
 import { canonicalDir, elsewhereAccountLabel, elsewhereResumeRequest, ElsewhereWatch, registeredAccount, type ElsewhereRequest } from "./elsewhere.ts";
-import { hasSidebarGroups, readSidebarGroups, writeSidebarGroups, type SidebarGroups } from "./sidebar-groups.ts";
+import {
+  editSidebarGroups, familyHead, FOCUS_RANK, focusPriority, hasSidebarGroups, listFocusGroups, readSidebarGroups, validateSidebarGroups,
+  writeSidebarGroups, type FocusGroupsRequest, type SidebarGroups,
+} from "./sidebar-groups.ts";
 import { transcriptFolder } from "./review-roots.ts";
 import { defaultCodexDir, readCodexAccounts, addCodexAccount, removeCodexAccount, requireCodexAccount, cachedCodexAccount, invalidateCodexAccount, codexAccountForLaunch } from "./codex-accounts.ts";
 import { installProfileSignal } from "./daemon-profile.ts";
@@ -1040,10 +1043,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   } = ledger;
   /** Codex threads on the shared daemon already logged as out of conch's reach (the registry pass below). */
   const reportedSharedCodexThreads = new Set<string>();
+  /**
+   * Tyler's focus groups and order (sidebar-groups.ts): read once, replaced whole when the Mac app saves a change or an
+   * agent's `conch agent groups` makes one. Read here, before the queue, since a group's priority orders its hand-off.
+   */
+  let sidebarLayout: SidebarGroups = readSidebarGroups();
+  /** The live session above this one (a subagent's, or the one that started it), whose focus group it is drawn in. */
+  const sessionAbove = (sessionId: string): string | undefined => {
+    const session = panelSessions.get(sessionId);
+    const above = session?.parentSessionId ?? session?.startedBySessionId;
+    return above !== undefined && panelSessions.has(above) ? above : undefined;
+  };
   const eventQueue = new EventQueue({
     handle,
     handoffOrder: () => cfg.handoffOrder,
     prioritized: prioritizedSessionIds,
+    // A top focus group's sessions are taken first, then working (and every session in no group), then shelf.
+    tier: (sessionId) => FOCUS_RANK[focusPriority(sidebarLayout, sessionId, sessionAbove)],
     shuttingDown: () => shuttingDown,
     consumeStopKey: () => voice.consumeStop(),
     onError: (event, error) => {
@@ -1871,8 +1887,29 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     backgroundServersLook.invalidate();
   }
 
-  /** Tyler's sidebar groups and order (sidebar-groups.ts): read once, replaced whole when the Mac app saves a change. */
-  let sidebarLayout: SidebarGroups = readSidebarGroups();
+  /**
+   * `conch agent groups` (sidebar-groups.ts `editSidebarGroups`): an agent lists Tyler's focus groups or changes one,
+   * applied to the layout held here and checked as the Mac's save is, then saved and published, so the Mac and the
+   * phone redraw it at once. The list names the running sessions at the top of their families, as the sidebar does.
+   */
+  function editFocusGroups(request: FocusGroupsRequest): Record<string, unknown> {
+    const listed = () => listFocusGroups(sidebarLayout, [...panelSessions.keys()]
+      .filter((id) => sessionAbove(id) === undefined)
+      .map((id) => ({ id, label: labelForSessionId(id) })));
+    if (request.action === "list") return { kind: "focus-groups", ...listed() };
+    const edited = editSidebarGroups(sidebarLayout, request, {
+      newId: () => `group:${crypto.randomUUID()}`,
+      headOf: (sessionId) => familyHead(sessionId, sessionAbove),
+    });
+    if (!edited.ok) return { kind: "focus-groups-error", error: edited.error };
+    const checked = validateSidebarGroups(edited.value);
+    if (!checked.ok) return { kind: "focus-groups-error", error: checked.error };
+    writeSidebarGroups(checked.value);
+    sidebarLayout = checked.value;
+    log(`focus groups, by an agent: ${edited.said}`);
+    void renderSessionPanel();
+    return { kind: "focus-groups", done: edited.said, ...listed() };
+  }
   /** The agents running outside conch (elsewhere.ts), looked for after a registry read, at most every ten seconds. */
   const elsewhere = new ElsewhereWatch({ onChange: () => void renderSessionPanel() });
   function observeElsewhere(infos: readonly SessionInfo[]): void {
@@ -4850,6 +4887,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         void renderSessionPanel();
         return { kind: "sidebar-groups", layout };
       },
+      edit: (request) => editFocusGroups(request),
     },
     // A send the socket refused before it reached the voice loop: the Mac app drops that reply, so it is filed here.
     onFailure: recordDaemonError,

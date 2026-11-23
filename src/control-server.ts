@@ -5,7 +5,7 @@ import { decodePeerMessageRequest, type PeerMessageReply, type PeerMessageReques
 import { decodeResourceRequest, type ResourceReply, type ResourceRequest } from "./resource-ledger.ts";
 import { decodeTeamRequest, type TeamDesk } from "./team-desk.ts";
 import { decodeElsewhereRequest, type ElsewhereRequest } from "./elsewhere.ts";
-import { decodeSidebarGroupsRequest, type SidebarGroups } from "./sidebar-groups.ts";
+import { decodeFocusGroupsRequest, decodeSidebarGroupsRequest, type FocusGroupsRequest, type SidebarGroups } from "./sidebar-groups.ts";
 import type { AccountToolsRequest, AccountToolsReply } from "./account-tools.ts";
 import { PROMPT_DIGEST } from "./delivery-evidence.ts";
 import { validAccountId, type ClaudeAccountRequest, type ClaudeAccountsReply } from "./claude-accounts.ts";
@@ -1386,8 +1386,11 @@ export interface ControlServerOptions {
    * or read its profile folder as an account. Absent: such a request is answered as unavailable.
    */
   elsewhere?: { act(request: ElsewhereRequest): Promise<Record<string, unknown>> };
-  /** The Mac sidebar's groups and order (sidebar-groups.ts): saved whole and published. */
-  sidebarGroups?: { save(layout: SidebarGroups): Record<string, unknown> };
+  /**
+   * The Mac sidebar's focus groups and order (sidebar-groups.ts): saved whole and published. `edit` is an agent's list or
+   * one change (`conch agent groups`), applied to the layout the daemon holds.
+   */
+  sidebarGroups?: { save(layout: SidebarGroups): Record<string, unknown>; edit?(request: FocusGroupsRequest): Record<string, unknown> };
   /**
    * A failure this server answered for itself, filed as the daemon files its own (`recordDaemonError`): an inject
    * refused before the voice loop saw it, whose refusal the Mac app's socket client drops unread.
@@ -1676,6 +1679,23 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             catch (error) { reply = { kind: "sidebar-groups-error", error: error instanceof Error ? error.message : String(error) }; }
           }
           sock.end(encodeControlFrame(JSON.stringify(reply)));
+          return;
+        }
+        // An agent's `conch agent groups` (sidebar-groups.ts `editSidebarGroups`): from this Mac's shells, never a phone's
+        // (phone-bridge.ts `MAC_APP_ONLY_DECODERS`), which shows the groups and arranges none.
+        const focus = decodeFocusGroupsRequest(body);
+        if (focus) {
+          let reply: Record<string, unknown>;
+          if ("error" in focus) reply = { kind: "focus-groups-error", error: focus.error };
+          else if (!options.sidebarGroups?.edit) reply = { kind: "focus-groups-error", error: "This conch keeps no focus groups." };
+          else {
+            try { reply = options.sidebarGroups.edit(focus); }
+            catch (error) { reply = { kind: "focus-groups-error", error: error instanceof Error ? error.message : String(error) }; }
+          }
+          let frame: Buffer;
+          try { frame = encodeControlFrame(JSON.stringify(reply)); }
+          catch { frame = encodeControlFrame(JSON.stringify({ kind: "focus-groups-error", error: "That was too large to send." })); }
+          sock.end(frame);
           return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the

@@ -883,6 +883,8 @@ private struct SessionLedger: View {
                                             count: folder.sessionIDs.count,
                                             isCollapsed: collapsedFolders.contains(folder.id),
                                             isDropTarget: dropTargetFolderID == folder.id,
+                                            // A focus group's Top or Shelf, quietly (2026-11-23); a folder has none.
+                                            priority: layout.priority(of: folder.id),
                                             onToggle: { toggleFolder(folder.id) }
                                         )
                                         .equatable()
@@ -1109,15 +1111,15 @@ private struct SessionLedger: View {
         } message: { _ in
             Text("Its sessions keep running; they just stop being grouped as a team.")
         }
-        // Naming a group, new or renamed: one field, and what was wrong with the last try said under it.
-        .alert(naming?.renaming == nil ? "New Group" : "Rename Group", isPresented: Binding(
+        // Naming a focus group, new or renamed: one field, and what was wrong with the last try said under it.
+        .alert(naming?.renaming == nil ? "New Focus Group" : "Rename Focus Group", isPresented: Binding(
             get: { naming != nil }, set: { if !$0 { naming = nil } }
         )) {
             TextField("Name", text: $groupName)
             Button(naming?.renaming == nil ? "Create" : "Rename", action: commitNaming)
             Button("Cancel", role: .cancel) { naming = nil }
         } message: {
-            Text(naming?.problem ?? (naming?.placing == nil ? "A group of your own in the sidebar. Drag sessions into it." : "A group of your own, with this session in it."))
+            Text(naming?.problem ?? (naming?.placing == nil ? "A group of your own in the sidebar. Drag sessions into it; they keep running where they are." : "A group of your own, with this session in it."))
         }
         // Not in conch's Resume and Add, asked first: what happens, and that the original is never stopped.
         .alert(
@@ -1134,21 +1136,45 @@ private struct SessionLedger: View {
         .onChange(of: state?.sidebarGroups) { _, _ in pendingLayout = nil }
     }
 
-    /// A section header's menu, and its VoiceOver actions: a group's Rename and Delete, and New Group on any.
+    /// A section header's menu, and its VoiceOver actions: a focus group's Priority, Rename and Delete, and New Focus
+    /// Group on any.
     @ViewBuilder
     private func sectionMenu(_ folder: SessionFolder, divided: Bool = true) -> some View {
         if folder.isGroup {
-            Button("Rename Group…") {
+            // 2026-11-23, Tyler: "it would always return me to any top ones first and then working if all top is busy".
+            // The hand-off's order (src/event-queue.ts), never the list's: the group stays where he put it.
+            if divided {
+                Menu("Priority") { priorityChoices(folder) }
+            } else {
+                // VoiceOver's actions are flat: one each, named for what it sets.
+                ForEach(FocusPriority.allCases, id: \.self) { priority in
+                    if layout.priority(of: folder.id) != priority {
+                        Button("Priority: \(priority.title)") { apply(layout.settingPriority(priority, of: folder.id)) }
+                    }
+                }
+            }
+            Button("Rename Focus Group…") {
                 groupName = folder.name
                 naming = GroupNaming(renaming: folder.id, placing: nil)
             }
             // Its sessions go back under their folders; nothing else is lost, so it isn't asked about.
-            Button("Delete Group") { apply(layout.deletingGroup(folder.id)) }
+            Button("Delete Focus Group") { apply(layout.deletingGroup(folder.id)) }
             if divided { Divider() }
         }
-        Button("New Group…") {
+        Button("New Focus Group…") {
             groupName = ""
             naming = GroupNaming(renaming: nil, placing: nil)
+        }
+    }
+
+    /// Top, Working and Shelf, with a check on the group's own.
+    @ViewBuilder
+    private func priorityChoices(_ folder: SessionFolder) -> some View {
+        let current = layout.priority(of: folder.id)
+        ForEach(FocusPriority.allCases, id: \.self) { priority in
+            Button { apply(layout.settingPriority(priority, of: folder.id)) } label: {
+                if current == priority { Label(priority.title, systemImage: "checkmark") } else { Text(priority.title) }
+            }
         }
     }
 
@@ -1386,6 +1412,8 @@ private struct FolderHeader: View {
     var alwaysCounts = false
     /// What VoiceOver reads in place of the name and count.
     var accessibilityName: String? = nil
+    /// A focus group's priority, said after its name when it isn't Working (`FocusPriorityLabel`); nil for a folder.
+    var priority: FocusPriority? = nil
     let onToggle: () -> Void
 
     @State private var hovering = false
@@ -1404,6 +1432,9 @@ private struct FolderHeader: View {
                     .font(ConchTypography.font(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let priority {
+                    FocusPriorityLabel(priority, font: ConchTypography.font(size: 10, weight: .medium))
+                }
                 Spacer(minLength: 4)
                 if isCollapsed || alwaysCounts {
                     Text("\(count)")
@@ -1427,7 +1458,8 @@ private struct FolderHeader: View {
         )
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityName ?? (isCollapsed ? "\(name), \(count) sessions, collapsed" : name))
+        .accessibilityLabel(accessibilityName ?? [name, priority?.headerLabel.map { "\($0) priority" }, isCollapsed ? "\(count) sessions, collapsed" : nil]
+            .compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(.isHeader)
     }
 }
@@ -1436,7 +1468,7 @@ private struct FolderHeader: View {
 extension FolderHeader: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.name == b.name && a.count == b.count && a.isCollapsed == b.isCollapsed && a.isDropTarget == b.isDropTarget
-            && a.alwaysCounts == b.alwaysCounts && a.accessibilityName == b.accessibilityName
+            && a.alwaysCounts == b.alwaysCounts && a.accessibilityName == b.accessibilityName && a.priority == b.priority
     }
 }
 

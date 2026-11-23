@@ -175,6 +175,19 @@ describe("words to arguments", () => {
     expect(refused(["sesions"]).message).toContain("did you mean `sessions`");
   });
 
+  // 2026-11-23: the user's focus groups (sidebar-groups.ts), one command with an action, as mode is.
+  test("groups: list by default, and each change's words, a group's name with spaces quoted except before a priority", () => {
+    expect(run(["groups"]).args).toEqual({ action: "list" });
+    expect(run(["groups", "new", "Harbor", "site", "--priority", "top"]).args).toEqual({ action: "new", name: "Harbor site", priority: "top" });
+    expect(run(["groups", "rename", "Harbor site", "Harbor"]).args).toEqual({ action: "rename", group: "Harbor site", name: "Harbor" });
+    expect(run(["groups", "priority", "Harbor", "site", "shelf"]).args).toEqual({ action: "priority", group: "Harbor site", priority: "shelf" });
+    expect(run(["groups", "add", "Harbor", "1a2b", "api work"]).args).toEqual({ action: "add", group: "Harbor", sessions: ["1a2b", "api work"] });
+    expect(run(["focus-groups", "remove", "1a2b"]).args).toEqual({ action: "remove", sessions: ["1a2b"] });
+    expect(refused(["groups", "priority", "Harbor", "urgent"]).message).toContain("a priority is top, working or shelf, not \"urgent\"");
+    expect(refused(["groups", "add", "Harbor", "--priority", "top"]).message).toContain("--priority goes with new");
+    expect(refused(["groups", "delete", "Harbor"]).message).toContain("groups is list, new, rename, priority, add or remove");
+  });
+
   test("`--` ends the flags, for words that start with a dash", () => {
     expect(run(["speak", "--", "-5 degrees outside"]).args).toEqual({ text: "-5 degrees outside" });
   });

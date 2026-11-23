@@ -57,15 +57,20 @@ export function insertQueuedEvent(
 /**
  * Remove the next queued session event without sorting the queue. Imperative
  * events are LIFO barriers: only the state-event cohort newer than the latest
- * command is reordered, preserving wake/speak/mode command semantics. Session
- * priority narrows that eligible cohort but can never reach below the barrier.
+ * command is reordered, preserving wake/speak/mode command semantics. A
+ * session's rank narrows that eligible cohort to its lowest-ranked sessions
+ * but can never reach below the barrier; within them, `order` picks.
+ *
+ * The rank is the session's focus-group tier, then its ★ (`handoffRank`). It was the ★ set alone until 2026-11-23,
+ * and a set passed still is: 0 for a starred session, 1 for the rest.
  */
 export function takeNextQueuedEvent(
   queue: TurnEvent[],
   order: HandoffOrder,
-  prioritized: ReadonlySet<string> = new Set(),
+  ranked: ReadonlySet<string> | ((sessionId: string) => number) = () => 0,
 ): TurnEvent | undefined {
   if (!queue.length) return undefined;
+  const rank = typeof ranked === "function" ? ranked : (sessionId: string) => (ranked.has(sessionId) ? 0 : 1);
 
   let latestCommand = -1;
   for (let i = queue.length - 1; i >= 0; i--) {
@@ -77,15 +82,17 @@ export function takeNextQueuedEvent(
   const cohortStart = latestCommand + 1;
   if (cohortStart === queue.length) return queue.pop();
 
-  const prioritizedIndices: number[] = [];
-  if (prioritized.size) {
-    for (let i = cohortStart; i < queue.length; i++) {
-      if (prioritized.has(queue[i]!.sessionId)) prioritizedIndices.push(i);
+  let best = Infinity;
+  let candidates: number[] = [];
+  for (let i = cohortStart; i < queue.length; i++) {
+    const place = rank(queue[i]!.sessionId);
+    if (place < best) {
+      best = place;
+      candidates = [i];
+    } else if (place === best) {
+      candidates.push(i);
     }
   }
-  const candidates = prioritizedIndices.length
-    ? prioritizedIndices
-    : Array.from({ length: queue.length - cohortStart }, (_, index) => cohortStart + index);
 
   let selected = order === "newest"
     ? candidates[candidates.length - 1]!
@@ -100,11 +107,23 @@ export function takeNextQueuedEvent(
   return queue.splice(selected, 1)[0];
 }
 
+/**
+ * A session's place in the hand-off, lower first: its focus group's tier (sidebar-groups.ts `FOCUS_RANK`: top, working,
+ * shelf), then ★ prioritized ahead of the rest of its tier. 2026-11-23, Tyler: "it would always return me to any top
+ * ones first and then working if all top is busy". So a ★ on a shelf session lifts it within the shelf, not above
+ * working: the group is the coarser choice, and the one he makes for a whole project at once.
+ */
+export function handoffRank(tier: (sessionId: string) => number, prioritized: ReadonlySet<string>): (sessionId: string) => number {
+  return (sessionId) => tier(sessionId) * 2 + (prioritized.has(sessionId) ? 0 : 1);
+}
+
 export interface EventQueueOptions {
   /** The resolved value (an inject's outcome) is the caller's; the queue ignores it. */
   handle(event: TurnEvent): Promise<unknown>;
   handoffOrder(): HandoffOrder;
   prioritized: ReadonlySet<string>;
+  /** A session's focus-group tier, read on every dequeue (`handoffRank`); every session is one tier when absent. */
+  tier?(sessionId: string): number;
   shuttingDown(): boolean;
   /** Called only at drain entry with pending work, never during an exchange. */
   consumeStopKey(): boolean;
@@ -185,7 +204,7 @@ export class EventQueue {
     return takeNextQueuedEvent(
       this.#pending,
       this.#options.handoffOrder(),
-      this.#options.prioritized,
+      handoffRank((sessionId) => this.#options.tier?.(sessionId) ?? 0, this.#options.prioritized),
     )!;
   }
 

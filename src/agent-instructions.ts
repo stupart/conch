@@ -286,6 +286,16 @@ export const AGENT_COMMANDS: readonly AgentCommandText[] = [
     summary: "save the display label the user asked for",
     help: "Prefer the session's id; a name that fits several sessions is refused with the candidates.",
   },
+  // 2026-11-23, Tyler: "in the future the agent can manage these groups and their priorities". His focus groups
+  // (sidebar-groups.ts), edited through the daemon as the Mac's sidebar edits them, so both apps redraw at once.
+  {
+    name: "groups",
+    tool: "conch_focus_groups",
+    group: "Sessions",
+    usage: "groups [list] | groups new <name> [--priority top|working|shelf] | groups rename <group> <name> | groups priority <group> top|working|shelf | groups add <group> <session>... | groups remove <session>...",
+    summary: "the user's focus groups in the sidebar, and their hand-off priority",
+    help: "Focus groups are the user's own sections in conch's sidebar (by project, say): organization only, a session never moves. Each has a priority: top, working (the default) or shelf. When several sessions are waiting to be heard, conch hands the user a top one first, then working (and any session in no group), then shelf. Change them only at the user's request. With no action, the groups in the user's order, each with its priority and running sessions. new makes one, at the top of the sidebar; add puts sessions in a group (a session is in one at most); remove takes them out, back under their folders. A group is its name or id; a session is an id from sessions, or its label. The Mac app and the phone show each change at once.",
+  },
   // 2026-11-10, Tyler: "we should also add a way for me to let sessions send me messages on my phone via conch that
   // ping and show notification". When to use it comes first: a ping is for what he asked to hear, never chatter.
   {

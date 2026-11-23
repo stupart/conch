@@ -40,6 +40,7 @@ import {
 import { AGENT_COMMANDS, AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, movedToolDescription, type AgentInstructions } from "./agent-instructions.ts";
 import { AgentUsageError, cliWorded, cliWording, parseAgentCommand, renderAgentAnswer, splitCommandLine, usageErrorText } from "./agent-commands.ts";
 import { checkBugReport, requestBugReport, bugRecord, BUG_REPORT_KIND, BUG_REPORT_REPLY_MS, type BugReportRequest } from "./bug-report.ts";
+import { decodeFocusGroupsRequest, requestFocusGroups, type FocusGroupsRequest } from "./sidebar-groups.ts";
 import { appendConchError } from "./app-errors.ts";
 import { publishForVerdict, REVIEW_VERDICT_TIMEOUT_MS, type PublishReply } from "./review-verdict.ts";
 import { NOTICE_BODY_MAX, NOTICE_TITLE_MAX, noticeLinkError, noticeText, requestNotice, type NoticeRequest } from "./notice-wire.ts";
@@ -1022,9 +1023,10 @@ export type McpToolHandlers = Record<McpToolName, McpToolHandler>;
 
 /**
  * Commands that are `conch agent`'s alone (`AGENT_COMMANDS`), never an MCP tool: `conch bug` (2026-11-11, Tyler: "Also
- * tool for them to submit bugs if possible"), reached from a shell or `conch_run`, and `whoami`.
+ * tool for them to submit bugs if possible"), reached from a shell or `conch_run`, `whoami`, and `groups` (2026-11-23,
+ * his focus groups: "in the future the agent can manage these groups and their priorities").
  */
-export const AGENT_ONLY_HANDLERS = ["conch_bug", "conch_whoami"] as const;
+export const AGENT_ONLY_HANDLERS = ["conch_bug", "conch_whoami", "conch_focus_groups"] as const;
 export type AgentHandlerName = McpToolName | (typeof AGENT_ONLY_HANDLERS)[number];
 export type AgentHandlers = Record<AgentHandlerName, McpToolHandler>;
 
@@ -1101,6 +1103,8 @@ export interface McpDependencies {
   shellCaller?(): Promise<ShellCaller>;
   /** `conch bug`'s report to the daemon, held open for its ticket (`requestBugReport`). */
   fileBug?(socketPath: string, request: BugReportRequest, timeoutMs?: number): ReturnType<typeof requestBugReport>;
+  /** `conch agent groups`' list or change, sent to the daemon, which holds the focus groups (`requestFocusGroups`). */
+  focusGroups?(socketPath: string, request: FocusGroupsRequest, timeoutMs?: number): ReturnType<typeof requestFocusGroups>;
   /** A report written straight to the records, when the daemon isn't running to file it (`appendConchError`). */
   recordBugOffline?(record: ReturnType<typeof bugRecord>): void;
   /** Which agent this server serves, as its `initialize` said: the backend a bug report names. */
@@ -1940,6 +1944,31 @@ export function createMcpToolHandlers(
         ...(session.cwd ? { cwd: session.cwd } : {}),
         ...(via ? { via } : {}),
       };
+    },
+
+    // Tyler's focus groups (sidebar-groups.ts): the daemon holds them and applies the change, as it saves the Mac's,
+    // so the Mac and the phone redraw at once. A session is named as rename names one: an id, or a label that fits one.
+    async conch_focus_groups(argumentsValue) {
+      const args = toolArguments(argumentsValue);
+      allowOnly(args, ["action", "name", "group", "priority", "sessions"], { session: "sessions (a list)", tier: "priority" });
+      let sessions: string[] | undefined;
+      if (args.sessions !== undefined) {
+        if (!Array.isArray(args.sessions) || !args.sessions.length || !args.sessions.every((one) => typeof one === "string" && one.trim())) {
+          throw new ToolInputError("sessions must be a list of session ids or labels");
+        }
+        sessions = [];
+        for (const query of args.sessions as string[]) sessions.push((await resolveSession(query, config, dependencies)).sessionId);
+      }
+      const checked = decodeFocusGroupsRequest({ ...args, kind: "focus-groups", action: args.action ?? "list", ...(sessions ? { sessions } : {}) });
+      if (!checked || "error" in checked) throw new ToolInputError(checked?.error ?? "not a focus group request");
+      const sent = await (dependencies.focusGroups ?? requestFocusGroups)(config.socketPath, checked);
+      if (!sent.ok && sent.reason === "daemon-down") throw new Error("failed: conch daemon is not running, and it keeps the focus groups");
+      if (!sent.ok && sent.reason === "older") throw new Error("failed: conch's daemon is older than focus groups; once conch is updated and restarted, try again");
+      if (!sent.ok) throw new Error(`failed: conch's daemon didn't answer${sent.diagnostic ? ` (${sent.diagnostic})` : ""}; groups lists what it holds now`);
+      const { kind, ...reply } = sent.reply;
+      // What was wrong with the change (a group no one has, a name taken): the agent's to correct.
+      if (kind === "focus-groups-error") throw new ToolInputError(String(reply.error ?? "the daemon refused it"));
+      return reply;
     },
 
     async conch_history(argumentsValue, meta) {

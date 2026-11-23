@@ -66,7 +66,8 @@ struct LedgerView: View {
     /// The rows grouped by the folder they run in — the same rule the Mac list uses
     /// (ConchDesign/SessionGrouping.swift), so two checkouts of one repo are told apart and
     /// a child belongs wherever its parent does — with Tyler's own groups and order from the
-    /// Mac on top (ConchDesign/SidebarLayout.swift, 2026-11-12): arranged there, drawn the same here.
+    /// Mac on top (ConchDesign/SidebarLayout.swift, 2026-11-12): arranged there, drawn the same here, a focus group's
+    /// priority with it (2026-11-23).
     private func folders(in state: PublishedState) -> [SessionFolder] {
         SessionGrouping.sidebar(
             state.rows.map {
@@ -197,6 +198,11 @@ struct LedgerView: View {
                                             Text(folder.name)
                                                 .lineLimit(1)
                                                 .truncationMode(.middle)
+                                            // A focus group's Top or Shelf, as the Mac's header says it (2026-11-23);
+                                            // set on the Mac, read here.
+                                            if let priority = state.sidebarGroups?.priority(of: folder.id) {
+                                                FocusPriorityLabel(priority, font: .caption2.weight(.medium))
+                                            }
                                             Spacer(minLength: 8)
                                             if isCollapsed(folder) {
                                                 Text("\(rows(of: folder, in: state).count)").monospacedDigit()
@@ -211,6 +217,7 @@ struct LedgerView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel(isCollapsed(folder) ? "Show \(folder.name)" : "Hide \(folder.name)")
+                                    .accessibilityValue(state.sidebarGroups?.priority(of: folder.id)?.headerLabel.map { "\($0) priority" } ?? "")
                                 }
                             }
                         }

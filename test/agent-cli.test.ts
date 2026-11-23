@@ -16,6 +16,7 @@ import {
 } from "../src/mcp.ts";
 import { McpCallLog, readMcpCalls, type McpCallRecord } from "../src/mcp-usage.ts";
 import type { BugReportRequest } from "../src/bug-report.ts";
+import type { FocusGroupsRequest } from "../src/sidebar-groups.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
 
 /**
@@ -81,6 +82,44 @@ async function agent(argv: string[], options: { caller?: () => Promise<ShellCall
   });
   return { code, out: out.join("\n"), err: err.join("\n"), logged };
 }
+
+// 2026-11-23, Tyler: "in the future the agent can manage these groups and their priorities". His focus groups, which the
+// daemon holds and changes; the command names sessions as rename does.
+describe("conch agent groups", () => {
+  test("a session named by its label reaches the daemon as its id, and the groups print a line each", async () => {
+    const sent: FocusGroupsRequest[] = [];
+    const focusGroups: McpDependencies["focusGroups"] = async (_socket, request) => {
+      sent.push(request);
+      return { ok: true, reply: {
+        kind: "focus-groups",
+        done: "put s-beta in Ship",
+        groups: [{ id: "group:ship", name: "Ship", priority: "top", sessions: [{ id: "s-beta", label: "Beta" }], notRunning: 2 }, { id: "group:later", name: "Later", priority: "shelf", sessions: [], notRunning: 0 }],
+        ungrouped: 1,
+      } };
+    };
+    const added = await agent(["groups", "add", "Ship", "Beta"], { deps: { focusGroups } });
+    expect(added.code).toBe(0);
+    expect(sent).toEqual([{ kind: "focus-groups", action: "add", group: "Ship", sessions: ["s-beta"] }]);
+    expect(added.out.split("\n")).toEqual([
+      "done: put s-beta in Ship",
+      "Ship (top) group:ship: s-beta \"Beta\"; 2 not running",
+      "Later (shelf) group:later: none running",
+      "in no focus group, handed off as working: 1 running",
+    ]);
+    expect(added.logged).toMatchObject([{ tool: "conch_focus_groups", outcome: "ok", via: "cli" }]);
+  });
+
+  test("what the daemon can't do is the agent's to correct, and with no daemon nothing changed", async () => {
+    const refusedChange = await agent(["groups", "priority", "Nowhere", "top"], {
+      deps: { focusGroups: async () => ({ ok: true, reply: { kind: "focus-groups-error", error: "no focus group called \"Nowhere\"; there are Ship" } }) },
+    });
+    expect(refusedChange.code).toBe(AGENT_EXIT["input-error"]);
+    expect(refusedChange.err).toContain("no focus group called \"Nowhere\"; there are Ship");
+    const down = await agent(["groups"], { deps: { focusGroups: async () => ({ ok: false, reason: "daemon-down" }) } });
+    expect(down.code).toBe(AGENT_EXIT.failed);
+    expect(down.err).toContain("conch daemon is not running, and it keeps the focus groups");
+  });
+});
 
 describe("conch agent, from a shell", () => {
   test("whoami says which session conch takes the shell for, and how it knows", async () => {
