@@ -1153,6 +1153,8 @@ try renderStillRunning()
 // Settings › Teams and a team in the sidebar (TeamsGallery.swift).
 try MainActor.assumeIsolated { try renderTeams() }
 try renderSidebarOrganise()
+// A video deliverable's card, its poster and its symbol row (VideoPosterGallery.swift).
+try renderVideoPosters()
 
 // MARK: - Infinite scroll
 

@@ -42,13 +42,15 @@ final class VideoFramesTests: XCTestCase {
 
     // MARK: A movie to read
 
-    /// `seconds` long, 320x180, each second a different shade. No sound track.
-    static func movie(at url: URL, seconds: Int, fps: Int32 = 4) async throws -> URL {
+    /// `seconds` long, 320x180, each second a different shade. No sound track. `transform` is what a player turns it by,
+    /// as a phone stores a portrait recording: landscape, with a quarter turn.
+    static func movie(at url: URL, seconds: Int, fps: Int32 = 4, transform: CGAffineTransform = .identity) async throws -> URL {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let picture = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180,
         ])
         picture.expectsMediaDataInRealTime = false
+        picture.transform = transform
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: picture, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: 320,
