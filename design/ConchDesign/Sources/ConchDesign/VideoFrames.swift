@@ -16,7 +16,13 @@ import UniformTypeIdentifiers
 extension VideoStoryboard {
     /// Frames of the video, upright, no longer than `edge`.
     public static func frames(of video: URL, edge: CGFloat) -> AVAssetImageGenerator {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+        frames(of: AVURLAsset(url: video), edge: edge)
+    }
+
+    /// The same, from an asset already opened: a card's poster reads the track's shape and the frame from one
+    /// (`VideoPoster`).
+    public static func frames(of asset: AVAsset, edge: CGFloat) -> AVAssetImageGenerator {
+        let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: edge, height: edge)
         let near = CMTime(seconds: 0.2, preferredTimescale: 600)

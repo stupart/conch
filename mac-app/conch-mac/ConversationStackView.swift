@@ -2166,6 +2166,8 @@ private struct ArtifactPreview: View {
     @State private var isHovering = false
     /// The picture, decoded off the main thread, under the key it was decoded for (`MaterialRow`'s way).
     @State private var decoded: (key: String, image: NSImage)?
+    /// A video's poster, read off the main thread with its shape and length (`VideoPoster`), under the key it was read for.
+    @State private var readPoster: VideoPoster?
 
     var body: some View {
         Button(action: onOpen) {
@@ -2211,16 +2213,28 @@ private struct ArtifactPreview: View {
                     .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1)
             )
             .contentShape(Rectangle())
+            // A video's poster is read here, not in `inlinePreview`, which is nothing until the poster is there.
+            .task(id: videoPath.flatMap(ConchImage.key(forPath:))) {
+                guard let path = videoPath, videoPoster == nil else { return }
+                let size = Self.maxPixelSize
+                let poster = await Task.detached(priority: .userInitiated) {
+                    await VideoPoster.poster(atPath: path, maxPixelSize: size)
+                }.value
+                guard !Task.isCancelled, let poster else { return }
+                readPoster = poster
+            }
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help("Open the deliverable")
-        .accessibilityLabel("Deliverable: \(artifact.summary)")
+        .accessibilityLabel(videoPoster.map { "Deliverable, a \($0.duration) video: \(artifact.summary)" }
+            ?? "Deliverable: \(artifact.summary)")
         .accessibilityHint("Opens it full size")
     }
 
     /// The type's mark, for a deliverable with no inline preview: a local picture
-    /// always has one (`inlinePreview`), so this is never a picture.
+    /// always has one (`inlinePreview`), so this is never a picture. A video wears
+    /// it until its poster is read, and keeps it when there is none to read.
     private var thumbnail: some View {
         RoundedRectangle(cornerRadius: 6)
             .fill(ConchPalette.bg)
@@ -2232,7 +2246,7 @@ private struct ArtifactPreview: View {
             )
     }
 
-    private enum InlinePreviewKind { case image, document }
+    private enum InlinePreviewKind { case image, video, document }
 
     /// Which inline render this artifact gets, or nil for icon-only. Only
     /// absolute local paths qualify — a relative link resolves against the
@@ -2242,6 +2256,8 @@ private struct ArtifactPreview: View {
         guard let link = artifact.link, link.hasPrefix("/") else { return nil }
         switch (link as NSString).pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "gif", "heic", "webp": return picture == nil ? nil : .image
+        // Icon-only until its poster is read, and for good when it can't be.
+        case let ext where VideoPoster.extensions.contains(ext): return videoPoster == nil ? nil : .video
         case "md", "markdown", "txt": return documentHead == nil ? nil : .document
         default: return nil
         }
@@ -2277,6 +2293,18 @@ private struct ArtifactPreview: View {
                     guard !Task.isCancelled, let image else { return }
                     decoded = (picture.key, NSImage(cgImage: image, size: .zero))
                 }
+            }
+        case .video:
+            if let poster = videoPoster {
+                // Tyler, 2026-11-24: "the videos don't have thumbnails os i have to
+                // click on every one blind to see the content". A frame a little way
+                // in, at the video's own shape under the picture's 420 pt cap, with a
+                // play mark and its length in the corner so it isn't taken for a
+                // still. Never an empty box: the poster's shape is read with its
+                // frame, and until both are here the card is its symbol row, so the
+                // box appears once, at its final size.
+                VideoPosterView(poster: poster, cornerRadius: 8)
+                    .frame(maxWidth: .infinity, maxHeight: 420)
             }
         case .document:
             if let head = documentHead {
@@ -2325,7 +2353,24 @@ private struct ArtifactPreview: View {
         return ConchImage.picture(atPath: link)
     }
 
-    /// The card is at most 420 pt tall in a 700 pt column: 1,400 pixels on its longest side is 2x either way.
+    /// A video deliverable on this Mac that AVFoundation can read (`VideoPoster.extensions`); a webm keeps its symbol.
+    private var videoPath: String? {
+        guard let link = artifact.link, link.hasPrefix("/"),
+              VideoPoster.extensions.contains((link as NSString).pathExtension.lowercased())
+        else { return nil }
+        return link
+    }
+
+    /// The video's poster once it has been read, for this card or any other showing the same file as it is now: drawn
+    /// at once, at its own shape. Else nil, and the card keeps its symbol row.
+    private var videoPoster: VideoPoster? {
+        guard let path = videoPath, let key = ConchImage.key(forPath: path) else { return nil }
+        if let readPoster, readPoster.key == key { return readPoster }
+        return VideoPoster.cached(atPath: path, maxPixelSize: Self.maxPixelSize)
+    }
+
+    /// The card is at most 420 pt tall in a 700 pt column: 1,400 pixels on its longest side is 2x either way. A video's
+    /// poster is read at the same size.
     private static let maxPixelSize = 1_400
 
     /// Decoded already, for this card or any other showing the same file: drawn at once. Else nothing yet.
@@ -2343,7 +2388,7 @@ private struct ArtifactPreview: View {
         if artifact.kind == "folder" { return "folder" }
         switch (link as NSString).pathExtension.lowercased() {
         case "pdf": return "doc.richtext"
-        case "mp4", "mov", "webm": return "play.rectangle"
+        case "mp4", "mov", "m4v", "webm": return "play.rectangle"
         case "md", "markdown", "txt": return "doc.text"
         default: return "doc"
         }
